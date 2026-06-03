@@ -26,7 +26,7 @@ export async function listProjectsForUser(userId: string, isSuperAdmin: boolean)
   //  - org admins see ALL projects in orgs where they hold the org_admin role;
   //  - other members see only the projects they belong to.
   return q<ProjectRow>(
-    `SELECT DISTINCT p.id, p.code, p.title, p.status, p.mode, p.donor, p.currency,
+    `SELECT p.id, p.code, p.title, p.status, p.mode, p.donor, p.currency,
             p.start_date AS "startDate", p.end_date AS "endDate",
             (SELECT role FROM project_member WHERE project_id=p.id AND user_id=$1) AS role
      FROM project p

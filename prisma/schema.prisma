@@ -1,0 +1,651 @@
+// Project Strand — data model.
+// DEV: SQLite (zero-setup local run). PROD: change provider to "postgresql"
+// and DATABASE_URL, then `prisma migrate deploy`. No model changes required:
+// statuses are String (validated by Zod + TS unions in src/lib/enums.ts) and
+// structured payloads are JSON-encoded String columns, both portable as-is.
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../node_modules/.prisma/client"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Org & Access ─────────────────────────────
+
+model Organization {
+  id            String   @id @default(cuid())
+  name          String
+  slug          String   @unique
+  logoUrl       String?
+  brandColor    String   @default("#2f5d62")
+  defaultMode   String   @default("advanced") // simple | advanced
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  memberships   OrgMembership[]
+  roles         Role[]
+  projects      Project[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
+  approvalMatrix ApprovalMatrix[]
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  name          String
+  passwordHash  String?            // null until invite accepted
+  status        String   @default("active") // active | disabled | invited
+  isSuperAdmin  Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  profile         UserProfile?
+  orgMemberships  OrgMembership[]
+  projectMembers  ProjectMember[]
+  signatures      SignatureAsset[]
+  notifications   Notification[]
+  auditLogs       AuditLog[]
+  comments        Comment[]
+  reminders       Reminder[]
+}
+
+model UserProfile {
+  id           String  @id @default(cuid())
+  userId       String  @unique
+  user         User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title        String?
+  phone        String?
+  avatarUrl    String?
+  bio          String?
+  timezone     String  @default("Africa/Nairobi")
+  notifyPrefs  String  @default("{}") // JSON: per-channel/event prefs
+}
+
+// org-level role (system + custom)
+model Role {
+  id          String  @id @default(cuid())
+  orgId       String?
+  org         Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  key         String  // org_admin | support_admin | finance_admin | custom-*
+  name        String
+  isSystem    Boolean @default(false)
+  permissions String  @default("[]") // JSON string[] of permission keys
+
+  memberships OrgMembership[]
+  @@unique([orgId, key])
+}
+
+model OrgMembership {
+  id        String   @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId    String?
+  role      Role?    @relation(fields: [roleId], references: [id])
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  @@unique([orgId, userId])
+}
+
+// ───────────────────────────── Projects ─────────────────────────────
+
+model Project {
+  id            String   @id @default(cuid())
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  code          String
+  title         String
+  summary       String?
+  status        String   @default("setup") // setup | active | on_hold | closed
+  mode          String   @default("advanced") // simple | advanced
+  donor         String?
+  fundingSource String?
+  grantNumber   String?
+  currency      String   @default("USD")
+  startDate     DateTime?
+  endDate       DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  members       ProjectMember[]
+  documents     ProjectDocument[]
+  folders       Folder[]
+  sow           Sow?
+  objectives    Objective[]
+  outputs       Output[]
+  activities    Activity[]
+  budgets       Budget[]
+  expenditures  Expenditure[]
+  commitments   Commitment[]
+  requisitions  Requisition[]
+  reports       Report[]
+  meetings      Meeting[]
+  events        CalendarEvent[]
+  risks         RiskIssue[]
+  anomalies     AnomalyFlag[]
+  baselines     TimelineBaseline[]
+  extractionJobs ImportedExtractionJob[]
+  approvalMatrix ApprovalMatrix[]
+
+  @@unique([orgId, code])
+}
+
+model ProjectMember {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        String   // pi | project_manager | finance_admin | coordinator | assistant | member | reviewer | approver | viewer
+  permissions String   @default("[]") // JSON string[] override grants
+  createdAt   DateTime @default(now())
+  @@unique([projectId, userId])
+}
+
+// ───────────────────────────── Documents ─────────────────────────────
+
+model Folder {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  category  String  @default("general") // proposals|sows|budgets|reports|approvals|contracts|meetings|evidence|hr_admin|general
+  parentId  String?
+  documents ProjectDocument[]
+}
+
+model ProjectDocument {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  folderId    String?
+  folder      Folder?  @relation(fields: [folderId], references: [id])
+  name        String
+  docType     String   @default("other") // proposal|sow|budget|workplan|report|contract|evidence|other
+  mimeType    String?
+  storageKey  String?  // S3 key in prod
+  sizeBytes   Int      @default(0)
+  extractedText String?
+  tags        String   @default("[]")
+  linkedEntity String? // e.g. "activity:<id>"
+  createdAt   DateTime @default(now())
+  versions    DocumentVersion[]
+}
+
+model DocumentVersion {
+  id          String   @id @default(cuid())
+  documentId  String
+  document    ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  version     Int
+  storageKey  String?
+  note        String?
+  createdById String?
+  createdAt   DateTime @default(now())
+}
+
+// ───────────────────────────── SOW ─────────────────────────────
+
+model Sow {
+  id          String   @id @default(cuid())
+  projectId   String   @unique
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status      String   @default("draft") // draft | in_review | approved
+  version     Int      @default(1)
+  approvedById String?
+  approvedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  sections    SowSection[]
+  versions    SowVersion[]
+}
+
+model SowSection {
+  id       String @id @default(cuid())
+  sowId    String
+  sow      Sow    @relation(fields: [sowId], references: [id], onDelete: Cascade)
+  key      String // background|goal|objectives|milestones|deliverables|reporting|payment|assumptions|annexes
+  title    String
+  content  String @default("") // rich text / markdown
+  order    Int    @default(0)
+  sourceRef String? // traceability to extraction suggestion
+}
+
+model SowVersion {
+  id        String   @id @default(cuid())
+  sowId     String
+  sow       Sow      @relation(fields: [sowId], references: [id], onDelete: Cascade)
+  version   Int
+  snapshot  String   // JSON of sections at time of version
+  createdById String?
+  createdAt DateTime @default(now())
+}
+
+// ─────────────────────── Logframe / Objectives ───────────────────────
+
+model Objective {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  level       String   @default("objective") // goal | objective
+  code        String
+  statement   String
+  narrative   String?
+  order       Int      @default(0)
+  outputs     Output[]
+  indicators  Indicator[]
+}
+
+model Output {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  objectiveId String?
+  objective   Objective? @relation(fields: [objectiveId], references: [id])
+  code        String
+  statement   String
+  order       Int      @default(0)
+  activities  Activity[]
+  indicators  Indicator[]
+}
+
+model Indicator {
+  id            String  @id @default(cuid())
+  objectiveId   String?
+  objective     Objective? @relation(fields: [objectiveId], references: [id], onDelete: Cascade)
+  outputId      String?
+  output        Output? @relation(fields: [outputId], references: [id])
+  name          String
+  baseline      Float   @default(0)
+  target        Float   @default(0)
+  unit          String  @default("count")
+  meansOfVerification String?
+  assumptions   String?
+  actuals       IndicatorActual[]
+}
+
+model IndicatorActual {
+  id          String   @id @default(cuid())
+  indicatorId String
+  indicator   Indicator @relation(fields: [indicatorId], references: [id], onDelete: Cascade)
+  period      String   // e.g. 2025-Q1
+  value       Float
+  note        String?
+  recordedAt  DateTime @default(now())
+}
+
+// ─────────────────────── Work plan / Activities ───────────────────────
+
+model Activity {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  outputId    String?
+  output      Output?  @relation(fields: [outputId], references: [id])
+  parentId    String?
+  parent      Activity? @relation("ActivityTree", fields: [parentId], references: [id])
+  children    Activity[] @relation("ActivityTree")
+  code        String?
+  title       String
+  type        String   @default("activity") // activity | subactivity | task
+  ownerId     String?
+  status      String   @default("not_started") // not_started|in_progress|blocked|done|cancelled
+  progress    Int      @default(0) // 0-100
+  startDate   DateTime?
+  endDate     DateTime?
+  recurrence  String?  // RRULE-ish or null
+  order       Int      @default(0)
+  budgetLineId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tasks         Task[]
+  depsFrom      Dependency[] @relation("DepFrom")
+  depsTo        Dependency[] @relation("DepTo")
+  comments      Comment[]
+  requisitions  Requisition[]
+}
+
+model Task {
+  id         String   @id @default(cuid())
+  activityId String
+  activity   Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  title      String
+  ownerId    String?
+  status     String   @default("not_started")
+  dueDate    DateTime?
+  done       Boolean  @default(false)
+}
+
+model Dependency {
+  id        String   @id @default(cuid())
+  fromId    String
+  from      Activity @relation("DepFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  toId      String
+  to        Activity @relation("DepTo", fields: [toId], references: [id], onDelete: Cascade)
+  type      String   @default("FS") // FS|SS|FF|SF
+  @@unique([fromId, toId])
+}
+
+model TimelineBaseline {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  snapshot  String   // JSON: [{activityId,start,end}]
+  createdAt DateTime @default(now())
+}
+
+// ───────────────────────────── Budget ─────────────────────────────
+
+model Budget {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name        String
+  kind        String   @default("donor") // donor | internal
+  currency    String   @default("USD")
+  periodType  String   @default("quarter") // month | quarter | year
+  status      String   @default("draft") // draft | approved | revised
+  version     Int      @default(1)
+  createdAt   DateTime @default(now())
+  periods     BudgetPeriod[]
+  categories  BudgetCategory[]
+  lines       BudgetLine[]
+}
+
+model BudgetPeriod {
+  id        String  @id @default(cuid())
+  budgetId  String
+  budget    Budget  @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  label     String  // 2025-Q1
+  startDate DateTime
+  endDate   DateTime
+}
+
+model BudgetCategory {
+  id       String @id @default(cuid())
+  budgetId String
+  budget   Budget @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  name     String // Personnel | Travel | Equipment | Indirect ...
+  costType String @default("direct") // direct | indirect
+  lines    BudgetLine[]
+}
+
+model BudgetLine {
+  id          String   @id @default(cuid())
+  budgetId    String
+  budget      Budget   @relation(fields: [budgetId], references: [id], onDelete: Cascade)
+  categoryId  String?
+  category    BudgetCategory? @relation(fields: [categoryId], references: [id])
+  code        String
+  description String
+  unit        String   @default("unit")
+  unitCost    Float    @default(0)
+  quantity    Float    @default(1)
+  planned     Float    @default(0) // unitCost*quantity (denormalized)
+  justification String?
+  activityArea String?
+  createdAt   DateTime @default(now())
+
+  expenditures Expenditure[]
+  commitments  Commitment[]
+  requisitions Requisition[]
+}
+
+model Expenditure {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  budgetLineId String
+  budgetLine  BudgetLine @relation(fields: [budgetLineId], references: [id])
+  requisitionId String?
+  amount      Float
+  date        DateTime
+  reference   String?  // invoice/voucher ref
+  payee       String?
+  note        String?
+  approved    Boolean  @default(false)
+  createdById String?
+  createdAt   DateTime @default(now())
+}
+
+model Commitment {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  budgetLineId String
+  budgetLine  BudgetLine @relation(fields: [budgetLineId], references: [id])
+  amount      Float
+  date        DateTime
+  note        String?
+}
+
+// ─────────────────────── Requisitions & Approvals ───────────────────────
+
+model Requisition {
+  id            String   @id @default(cuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  number        String
+  title         String
+  activityId    String?
+  activity      Activity? @relation(fields: [activityId], references: [id])
+  budgetLineId  String?
+  budgetLine    BudgetLine? @relation(fields: [budgetLineId], references: [id])
+  amount        Float
+  justification String?
+  neededBy      DateTime?
+  payee         String?
+  requestedById String?
+  status        String   @default("draft") // draft|submitted|finance_review|pm_approval|admin_approval|approved|partially_funded|rejected|disbursed|retired|closed
+  disbursedAmount Float  @default(0)
+  disbursementRef String?
+  retirementNote  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  approvals   RequisitionApproval[]
+  items       RequisitionItem[]
+}
+
+model RequisitionItem {
+  id            String  @id @default(cuid())
+  requisitionId String
+  requisition   Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  description   String
+  unitCost      Float   @default(0)
+  quantity      Float   @default(1)
+  amount        Float   @default(0)
+}
+
+model RequisitionApproval {
+  id            String   @id @default(cuid())
+  requisitionId String
+  requisition   Requisition @relation(fields: [requisitionId], references: [id], onDelete: Cascade)
+  step          Int
+  role          String   // finance_admin | pm | admin
+  approverId    String?
+  decision      String   @default("pending") // pending | approved | rejected
+  comment       String?
+  signatureId   String?
+  decidedAt     DateTime?
+}
+
+model ApprovalMatrix {
+  id        String  @id @default(cuid())
+  orgId     String?
+  org       Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  projectId String?
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  docType   String  @default("requisition")
+  steps     String  @default("[]") // JSON: [{step, role, thresholdMin}]
+}
+
+model SignatureAsset {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storageKey String? // image in prod
+  dataUrl   String?  // small inline svg/png for local
+  createdAt DateTime @default(now())
+}
+
+// ───────────────────────────── Reporting ─────────────────────────────
+
+model Report {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type        String   @default("monthly") // monthly|quarterly|donor|internal|financial|milestone|team
+  title       String
+  periodLabel String?
+  status      String   @default("draft") // draft|in_review|final|sent
+  generatedByAi Boolean @default(false)
+  createdAt   DateTime @default(now())
+  sections    ReportSection[]
+}
+
+model ReportSection {
+  id       String @id @default(cuid())
+  reportId String
+  report   Report @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  key      String // completed|delayed|outputs|budget|risks|next
+  title    String
+  content  String @default("")
+  order    Int    @default(0)
+}
+
+// ─────────────────────── Calendar / Meetings ───────────────────────
+
+model Meeting {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title     String
+  startsAt  DateTime
+  endsAt    DateTime
+  location  String?
+  meetingUrl String?
+  agenda    String?
+  attendees String   @default("[]") // JSON userIds
+}
+
+model CalendarEvent {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title     String
+  kind      String   @default("deadline") // deadline|meeting|reminder|milestone
+  startsAt  DateTime
+  endsAt    DateTime?
+  refEntity String?  // activity:<id> | requisition:<id> | report:<id>
+}
+
+model Reminder {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  dueAt     DateTime
+  sent      Boolean  @default(false)
+  refEntity String?
+}
+
+// ───────────────────── Notifications / Audit / Misc ─────────────────────
+
+model Notification {
+  id        String   @id @default(cuid())
+  orgId     String?
+  org       Organization? @relation(fields: [orgId], references: [id])
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String   // assignment|approval_needed|meeting|deadline|overdue|report_due|signature|finance_flag
+  title     String
+  body      String?
+  link      String?
+  read      Boolean  @default(false)
+  emailStatus String @default("pending") // pending|sent|failed
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  orgId     String?
+  org       Organization? @relation(fields: [orgId], references: [id])
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String   // create|update|delete|approve|sign|role_change|import|impersonate
+  entity    String   // e.g. requisition
+  entityId  String?
+  before    String?  // JSON
+  after     String?  // JSON
+  meta      String?  // JSON
+  createdAt DateTime @default(now())
+}
+
+model RiskIssue {
+  id        String  @id @default(cuid())
+  projectId String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  kind      String  @default("risk") // risk | issue | assumption
+  title     String
+  detail    String?
+  severity  String  @default("medium") // low|medium|high
+  likelihood String @default("medium")
+  status    String  @default("open") // open | mitigating | closed
+  ownerId   String?
+}
+
+model Comment {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activityId String?
+  activity   Activity? @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  body       String
+  createdAt  DateTime @default(now())
+}
+
+model AnomalyFlag {
+  id        String   @id @default(cuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  rule      String   // over_budget|wrong_line|out_of_period|negative_balance|budget_decrease|high_unit_cost|missing_approval|exceeds_available|duplicate_ref
+  severity  String   @default("warning") // info|warning|critical
+  message   String
+  entity    String?  // expenditure:<id>
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+// ─────────────────────── Import / Extraction ───────────────────────
+
+model ImportedExtractionJob {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  fileName    String
+  docType     String   @default("unknown")
+  status      String   @default("parsed") // queued|parsing|parsed|applied|failed
+  rawText     String?
+  createdAt   DateTime @default(now())
+  suggestions ParsingSuggestion[]
+}
+
+model ParsingSuggestion {
+  id        String  @id @default(cuid())
+  jobId     String
+  job       ImportedExtractionJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  kind      String  // summary|objective|milestone|deliverable|workplan_row|budget_line|reporting|stakeholder|risk|indicator|sow_section
+  payload   String  // JSON of suggested record
+  confidence Float  @default(0.7)
+  accepted  Boolean @default(false)
+  sourceRef String? // where in the doc it came from
+}

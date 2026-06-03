@@ -1,0 +1,190 @@
+import "server-only";
+import { q, one } from "@/server/db";
+import { id } from "@/lib/ids";
+import { writeAudit, notify } from "@/server/services/audit";
+import { evaluateProject } from "@/server/services/anomaly";
+
+type Step = { step: number; role: "finance_admin" | "pm" | "admin"; thresholdMin: number };
+const PHASE: Record<Step["role"], string> = {
+  finance_admin: "finance_review", pm: "pm_approval", admin: "admin_approval",
+};
+
+const DEFAULT_MATRIX: Step[] = [
+  { step: 1, role: "finance_admin", thresholdMin: 0 },
+  { step: 2, role: "pm", thresholdMin: 0 },
+  { step: 3, role: "admin", thresholdMin: 5000 },
+];
+
+async function matrixFor(projectId: string): Promise<Step[]> {
+  const m = await one<{ steps: string }>(
+    `SELECT steps FROM approval_matrix
+     WHERE doc_type='requisition' AND (project_id=$1 OR project_id IS NULL)
+     ORDER BY project_id NULLS LAST LIMIT 1`,
+    [projectId]
+  );
+  if (m?.steps) { try { return JSON.parse(m.steps) as Step[]; } catch {} }
+  return DEFAULT_MATRIX;
+}
+
+export async function nextNumber(projectId: string): Promise<string> {
+  const row = await one<{ c: number }>(
+    `SELECT COUNT(*)::int AS c FROM requisition WHERE project_id = $1`, [projectId]
+  );
+  return `REQ-${String((row?.c ?? 0) + 1).padStart(4, "0")}`;
+}
+
+export async function createRequisition(input: {
+  projectId: string; userId: string; title: string; amount: number;
+  budgetLineId?: string; activityId?: string; justification?: string; neededBy?: string; payee?: string;
+}): Promise<string> {
+  const rid = id("req");
+  const number = await nextNumber(input.projectId);
+  await q(
+    `INSERT INTO requisition (id, project_id, number, title, activity_id, budget_line_id,
+       amount, justification, needed_by, payee, requested_by_id, status)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'draft')`,
+    [rid, input.projectId, number, input.title, input.activityId ?? null, input.budgetLineId ?? null,
+     input.amount, input.justification ?? null, input.neededBy ?? null, input.payee ?? null, input.userId]
+  );
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [input.projectId]);
+  await writeAudit({ orgId: org?.orgId, userId: input.userId, action: "create", entity: "requisition", entityId: rid, after: { number, amount: input.amount } });
+  return rid;
+}
+
+export async function submitRequisition(reqId: string, userId: string): Promise<void> {
+  const req = await one<{ projectId: string; amount: number; number: string; status: string }>(
+    `SELECT project_id AS "projectId", amount, number, status FROM requisition WHERE id=$1`, [reqId]
+  );
+  if (!req || req.status !== "draft") throw new Error("Requisition not in draft");
+
+  const steps = (await matrixFor(req.projectId)).filter((s) => req.amount >= s.thresholdMin);
+  for (const s of steps) {
+    await q(
+      `INSERT INTO requisition_approval (id, requisition_id, step, role, decision)
+       VALUES ($1,$2,$3,$4,'pending')`,
+      [id("rap"), reqId, s.step, s.role]
+    );
+  }
+  const firstPhase = PHASE[steps[0].role];
+  await q(`UPDATE requisition SET status=$2, updated_at=now() WHERE id=$1`, [reqId, firstPhase]);
+
+  // notify the approver pool for the first step
+  await notifyApprovers(req.projectId, steps[0].role, reqId, req.number, true);
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
+  await writeAudit({ orgId: org?.orgId, userId, action: "update", entity: "requisition", entityId: reqId, before: { status: "draft" }, after: { status: firstPhase } });
+}
+
+async function notifyApprovers(projectId: string, role: Step["role"], reqId: string, number: string, email: boolean) {
+  const memberRole = role === "pm" ? "project_manager" : role === "admin" ? "pi" : "finance_admin";
+  const members = await q<{ userId: string }>(
+    `SELECT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role IN ($2,'pi')`,
+    [projectId, memberRole]
+  );
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
+  for (const m of members) {
+    await notify({
+      orgId: org?.orgId, userId: m.userId, type: "signature",
+      title: `Requisition ${number} awaiting your approval`,
+      body: `A requisition needs your review and signature.`,
+      link: `/projects/${projectId}/requisitions/${reqId}`, email,
+    });
+  }
+}
+
+export async function decideRequisition(input: {
+  reqId: string; approverId: string; decision: "approved" | "rejected";
+  comment?: string; signatureId?: string;
+}): Promise<void> {
+  const req = await one<{ projectId: string; number: string; amount: number; budgetLineId: string | null; requestedById: string | null }>(
+    `SELECT project_id AS "projectId", number, amount, budget_line_id AS "budgetLineId",
+            requested_by_id AS "requestedById" FROM requisition WHERE id=$1`,
+    [input.reqId]
+  );
+  if (!req) throw new Error("Requisition not found");
+  const pending = await one<{ id: string; step: number; role: Step["role"] }>(
+    `SELECT id, step, role FROM requisition_approval
+     WHERE requisition_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`,
+    [input.reqId]
+  );
+  if (!pending) throw new Error("No pending approval step");
+
+  await q(
+    `UPDATE requisition_approval SET decision=$2, comment=$3, approver_id=$4, signature_id=$5, decided_at=now()
+     WHERE id=$1`,
+    [pending.id, input.decision, input.comment ?? null, input.approverId, input.signatureId ?? null]
+  );
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
+  await writeAudit({
+    orgId: org?.orgId, userId: input.approverId,
+    action: input.decision === "approved" ? "approve" : "update",
+    entity: "requisition", entityId: input.reqId,
+    meta: { step: pending.step, role: pending.role, signed: Boolean(input.signatureId), comment: input.comment },
+  });
+
+  if (input.decision === "rejected") {
+    await q(`UPDATE requisition SET status='rejected', updated_at=now() WHERE id=$1`, [input.reqId]);
+    if (req.requestedById) await notify({ orgId: org?.orgId, userId: req.requestedById, type: "approval_needed", title: `Requisition ${req.number} was rejected`, link: `/projects/${req.projectId}/requisitions/${input.reqId}`, email: true });
+    return;
+  }
+
+  const next = await one<{ role: Step["role"] }>(
+    `SELECT role FROM requisition_approval WHERE requisition_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`,
+    [input.reqId]
+  );
+  if (next) {
+    await q(`UPDATE requisition SET status=$2, updated_at=now() WHERE id=$1`, [input.reqId, PHASE[next.role]]);
+    await notifyApprovers(req.projectId, next.role, input.reqId, req.number, true);
+  } else {
+    // fully approved → reserve funds via a commitment
+    await q(`UPDATE requisition SET status='approved', updated_at=now() WHERE id=$1`, [input.reqId]);
+    if (req.budgetLineId) {
+      await q(
+        `INSERT INTO commitment (id, project_id, budget_line_id, amount, date, note)
+         VALUES ($1,$2,$3,$4,now(),$5)`,
+        [id("cmt"), req.projectId, req.budgetLineId, req.amount, `Commitment for ${req.number}`]
+      );
+    }
+    if (req.requestedById) await notify({ orgId: org?.orgId, userId: req.requestedById, type: "approval_needed", title: `Requisition ${req.number} approved`, body: "Your requisition has been fully approved.", link: `/projects/${req.projectId}/requisitions/${input.reqId}`, email: true });
+    await evaluateProject(req.projectId);
+  }
+}
+
+export async function disburse(reqId: string, userId: string, amount: number, ref: string): Promise<void> {
+  const req = await one<{ projectId: string; amount: number }>(
+    `SELECT project_id AS "projectId", amount FROM requisition WHERE id=$1`, [reqId]
+  );
+  if (!req) throw new Error("Requisition not found");
+  const status = amount >= req.amount ? "disbursed" : "partially_funded";
+  await q(`UPDATE requisition SET status=$2, disbursed_amount=$3, disbursement_ref=$4, updated_at=now() WHERE id=$1`,
+    [reqId, status, amount, ref]);
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
+  await writeAudit({ orgId: org?.orgId, userId, action: "update", entity: "requisition", entityId: reqId, after: { status, disbursed: amount, ref } });
+}
+
+// Record actual spend against the requisition's budget line, release the
+// reserving commitment, then re-run the anomaly engine.
+export async function recordExpenditureForRequisition(input: {
+  reqId: string; userId: string; amount: number; reference: string; payee?: string; date?: string; approved?: boolean;
+}): Promise<string> {
+  const req = await one<{ projectId: string; budgetLineId: string | null; number: string }>(
+    `SELECT project_id AS "projectId", budget_line_id AS "budgetLineId", number FROM requisition WHERE id=$1`,
+    [input.reqId]
+  );
+  if (!req || !req.budgetLineId) throw new Error("Requisition has no budget line");
+  const eid = id("exp");
+  await q(
+    `INSERT INTO expenditure (id, project_id, budget_line_id, requisition_id, amount, date, reference, payee, approved, created_by_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [eid, req.projectId, req.budgetLineId, input.reqId, input.amount,
+     input.date ?? new Date().toISOString(), input.reference, input.payee ?? null,
+     input.approved ?? true, input.userId]
+  );
+  // release the commitment now that money is actually spent
+  await q(`DELETE FROM commitment WHERE budget_line_id=$1 AND note LIKE $2`,
+    [req.budgetLineId, `Commitment for ${req.number}%`]);
+  await q(`UPDATE requisition SET status='retired', updated_at=now() WHERE id=$1`, [input.reqId]);
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
+  await writeAudit({ orgId: org?.orgId, userId: input.userId, action: "create", entity: "expenditure", entityId: eid, after: { amount: input.amount, reference: input.reference } });
+  await evaluateProject(req.projectId);
+  return eid;
+}

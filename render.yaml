@@ -1,0 +1,30 @@
+# Render Blueprint for Project Strand.
+# Deploy: Render Dashboard → New + → Blueprint → connect this repo.
+# It provisions a Node WEB SERVICE (not a static site) plus a Postgres database
+# and wires DATABASE_URL automatically. The app applies its own schema on boot.
+services:
+  - type: web
+    name: project-strand
+    runtime: node
+    plan: free
+    branch: main
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /login
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: TRIAL_DAYS
+        value: "90"
+      - key: EMAIL_PROVIDER
+        value: console
+      - key: DATABASE_URL
+        fromDatabase:
+          name: project-strand-db
+          property: connectionString
+
+databases:
+  - name: project-strand-db
+    plan: free

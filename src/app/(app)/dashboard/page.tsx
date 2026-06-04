@@ -2,12 +2,16 @@ import Link from "next/link";
 import { requireUser } from "@/server/auth";
 import { listProjectsForUser, getProjectSummary, healthScore } from "@/server/services/projects";
 import { q } from "@/server/db";
+import { getUserOrg } from "@/server/services/accounts";
 import { PageHeader, Stat, Badge, StatusBadge, ProgressBar, Empty } from "@/components/ui";
 import { money, pct, fmtDateTime, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 
 export default async function DashboardPage() {
   const user = await requireUser();
+  const org = user.isSuperAdmin ? null : await getUserOrg(user.id);
+  const trialDaysLeft = org?.plan === "trial" && org.trialEndsAt
+    ? Math.ceil((new Date(org.trialEndsAt).getTime() - Date.now()) / 86400000) : null;
   const projects = await listProjectsForUser(user.id, user.isSuperAdmin);
   const summaries = await Promise.all(projects.map((p) => getProjectSummary(p.id)));
 
@@ -44,6 +48,28 @@ export default async function DashboardPage() {
         subtitle="Your portfolio at a glance — schedule, spend, and anything that needs a signature."
         actions={<Link href="/projects/new" className="btn btn-primary">+ New project</Link>}
       />
+
+      {trialDaysLeft !== null && (
+        <div className="card p-4 mb-5 flex flex-wrap items-center justify-between gap-3"
+          style={{ borderColor: trialDaysLeft <= 14 ? "var(--warn)" : "var(--border)" }}>
+          <div>
+            <div className="text-xs uppercase tracking-wide" style={{ color: "var(--muted)" }}>Free trial</div>
+            <div className="font-display text-lg font-semibold">
+              {trialDaysLeft > 0
+                ? <>{trialDaysLeft} day{trialDaysLeft === 1 ? "" : "s"} remaining</>
+                : <span style={{ color: "var(--danger)" }}>Trial ended</span>}
+            </div>
+            {org?.trialEndsAt && (
+              <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                {org.name} · ends {fmtDate(org.trialEndsAt)}
+              </div>
+            )}
+          </div>
+          {org?.isOrgAdmin && (
+            <a href="/upgrade" target="_blank" rel="noopener" className="btn btn-primary">Upgrade plan</a>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
         <Stat label="Active projects" value={projects.filter((p) => p.status === "active").length} sub={`${projects.length} total`} />

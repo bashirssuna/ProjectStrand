@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getCurrentUser } from "@/server/auth";
 import { signIn } from "@/app/actions";
+import { OPERATOR_NAME, CONTACT_EMAIL } from "@/lib/config";
 
 const DEMO: [string, string][] = [
   ["admin@strand.dev", "Platform admin"],
@@ -134,6 +135,10 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
             </div>
             <div className="mt-5 pt-4 text-center text-sm" style={{ borderTop: "1px solid var(--border)", color: "var(--muted)" }}>
               New organisation? <Link href="/signup" className="hover:underline" style={{ color: "var(--brand)" }}>Start a free trial</Link>
+              <div className="mt-3 text-xs leading-relaxed">
+                © {new Date().getFullYear()} {OPERATOR_NAME}.<br />
+                <a href={`mailto:${CONTACT_EMAIL}`} className="hover:underline" style={{ color: "var(--brand)" }}>{CONTACT_EMAIL}</a>
+              </div>
             </div>
           </div>
         </div>

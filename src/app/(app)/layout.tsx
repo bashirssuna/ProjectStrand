@@ -15,8 +15,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const projects = await listProjectsForUser(user.id, user.isSuperAdmin);
   const mayCreate = await canCreateProjects(user.id, user.isSuperAdmin);
-  const org = user.isSuperAdmin ? null : await getUserOrg(user.id);
-  const trialDaysLeft = org?.plan === "trial" && org.trialEndsAt
+  const org = await getUserOrg(user.id);
+  const trialEnded = !!(org?.plan === "trial" && org.trialEndsAt && new Date(org.trialEndsAt) < new Date());
+  const locked = !user.isSuperAdmin && !!org && (trialEnded || org.status === "suspended");
+  if (locked) redirect("/upgrade");
+  const trialDaysLeft = !user.isSuperAdmin && org?.plan === "trial" && org.trialEndsAt
     ? Math.ceil((new Date(org.trialEndsAt).getTime() - Date.now()) / 86400000) : null;
   const unread = await q<{ c: number }>(
     `SELECT COUNT(*)::int c FROM notification WHERE user_id=$1 AND read=false`, [user.id]
@@ -31,7 +34,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <Link href="/dashboard" className="block font-display text-lg font-semibold" style={{ color: "var(--brand)" }}>
             Project Strand
           </Link>
-          <div className="text-xs mt-1.5" style={{ color: "var(--muted)" }}>Savanna Research Institute</div>
+          <div className="text-xs mt-1.5" style={{ color: "var(--muted)" }}>{user.isSuperAdmin ? "Platform administrator" : (org?.name ?? "")}</div>
         </div>
 
         <nav className="p-3 space-y-1">
@@ -89,8 +92,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               color: trialDaysLeft > 0 ? "var(--fg)" : "var(--danger)",
             }}>
               {trialDaysLeft > 0
-                ? <>Free trial — <strong>{trialDaysLeft} day{trialDaysLeft === 1 ? "" : "s"}</strong> remaining{org?.isOrgAdmin ? <> · <a href="mailto:sales@projectstrand.app?subject=Upgrade%20Project%20Strand" className="underline">Upgrade</a></> : null}</>
-                : <>Your free trial has ended. {org?.isOrgAdmin ? <a href="mailto:sales@projectstrand.app?subject=Upgrade%20Project%20Strand" className="underline">Upgrade to continue</a> : "Contact your organisation admin to upgrade."}</>}
+                ? <>Free trial — <strong>{trialDaysLeft} day{trialDaysLeft === 1 ? "" : "s"}</strong> remaining{org?.isOrgAdmin ? <> · <a href="/upgrade" target="_blank" rel="noopener" className="underline">Upgrade</a></> : null}</>
+                : <>Your free trial has ended. {org?.isOrgAdmin ? <a href="/upgrade" target="_blank" rel="noopener" className="underline">Upgrade to continue</a> : "Contact your organisation admin to upgrade."}</>}
             </div>
           )}
           <div className="max-w-6xl mx-auto px-5 py-7">{children}</div>

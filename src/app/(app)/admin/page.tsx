@@ -3,13 +3,23 @@ import Link from "next/link";
 import { requireUser } from "@/server/auth";
 import { q } from "@/server/db";
 import { PageHeader, Stat, SectionTitle, Badge, StatusBadge, severityTone, Field } from "@/components/ui";
-import { createAdminAction } from "@/app/actions";
-import { money, fmtDateTime } from "@/lib/format";
+import { createAdminAction, createOrganizationAction, setOrgStateAction } from "@/app/actions";
+import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
 
-export default async function AdminPage() {
+export default async function AdminPage({ searchParams }: { searchParams: Promise<{ created?: string; error?: string }> }) {
   const user = await requireUser();
   if (!user.isSuperAdmin) redirect("/dashboard");
+  const { created, error } = await searchParams;
+
+  const orgs = await q<{ id: string; name: string; plan: string; status: string; trialEndsAt: string | null; adminEmail: string | null; members: number; projects: number }>(
+    `SELECT o.id, o.name, o.plan, o.status, o.trial_ends_at AS "trialEndsAt",
+            (SELECT u.email FROM org_membership m JOIN app_user u ON u.id=m.user_id JOIN role r ON r.id=m.role_id
+             WHERE m.org_id=o.id AND r.key='org_admin' ORDER BY m.created_at LIMIT 1) AS "adminEmail",
+            (SELECT COUNT(*)::int FROM org_membership m WHERE m.org_id=o.id) AS members,
+            (SELECT COUNT(*)::int FROM project p WHERE p.org_id=o.id) AS projects
+     FROM organization o ORDER BY o.created_at DESC`
+  );
 
   const counts = await q<{ orgs: number; projects: number; users: number; flags: number }>(
     `SELECT (SELECT COUNT(*)::int FROM organization) AS orgs,
@@ -46,6 +56,58 @@ export default async function AdminPage() {
         <Stat label="Projects" value={c.projects} />
         <Stat label="Users" value={c.users} />
         <Stat label="Open flags" value={c.flags} tone={c.flags ? "danger" : "ok"} />
+      </div>
+
+      {/* ---------------- Organisations (tenants) ---------------- */}
+      <div>
+        <SectionTitle>Organisations</SectionTitle>
+        {created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Organisation created — the admin was emailed their username and temporary password.</div>}
+        {error && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{error}</div>}
+
+        <form action={createOrganizationAction} className="card p-4 mb-3 grid sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
+          <Field label="Organisation name"><input name="orgName" required className="input" placeholder="African Center for Health Research" /></Field>
+          <Field label="Admin name"><input name="adminName" className="input" placeholder="Full name" /></Field>
+          <Field label="Admin email"><input type="email" name="adminEmail" required className="input" placeholder="admin@org.org" /></Field>
+          <div className="flex items-end gap-2">
+            <Field label="Trial (days)"><input type="number" name="trialDays" defaultValue={90} className="input" style={{ width: 90 }} /></Field>
+            <button className="btn btn-primary" type="submit">Create</button>
+          </div>
+          <p className="sm:col-span-2 lg:col-span-4 text-xs" style={{ color: "var(--muted)" }}>
+            Creates the workspace + its admin account and emails them their username and temporary password. Each organisation only ever sees its own projects.
+          </p>
+        </form>
+
+        <div className="card overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr>
+              <th className="th text-left">Organisation</th><th className="th text-left">Admin</th>
+              <th className="th text-left">Plan</th><th className="th text-center">Projects</th>
+              <th className="th text-left">Actions</th>
+            </tr></thead>
+            <tbody>
+              {orgs.map((o) => {
+                const ended = o.plan === "trial" && o.trialEndsAt && new Date(o.trialEndsAt) < new Date();
+                const tone = o.status === "suspended" ? "danger" : o.plan === "active" ? "ok" : ended ? "danger" : "warn";
+                const planLabel = o.status === "suspended" ? "Suspended" : o.plan === "active" ? "Paid · active" : ended ? "Trial ended" : `Trial · ends ${fmtDate(o.trialEndsAt)}`;
+                return (
+                  <tr key={o.id} className="hover:bg-[var(--surface)]">
+                    <td className="td"><div className="font-medium">{o.name}</div><div className="text-xs" style={{ color: "var(--muted)" }}>{o.members} member{o.members === 1 ? "" : "s"}</div></td>
+                    <td className="td text-xs">{o.adminEmail ?? "—"}</td>
+                    <td className="td"><Badge tone={tone}>{planLabel}</Badge></td>
+                    <td className="td text-center">{o.projects}</td>
+                    <td className="td">
+                      <div className="flex flex-wrap gap-1.5">
+                        <form action={setOrgStateAction}><input type="hidden" name="orgId" value={o.id} /><input type="hidden" name="action" value="activate" /><button className="btn btn-sm" type="submit">Activate</button></form>
+                        <form action={setOrgStateAction}><input type="hidden" name="orgId" value={o.id} /><input type="hidden" name="action" value="extend" /><input type="hidden" name="days" value="90" /><button className="btn btn-sm" type="submit">+90d trial</button></form>
+                        <form action={setOrgStateAction}><input type="hidden" name="orgId" value={o.id} /><input type="hidden" name="action" value={o.status === "suspended" ? "activate" : "suspend"} /><button className="btn btn-sm" type="submit">{o.status === "suspended" ? "Unsuspend" : "Suspend"}</button></form>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="grid lg:grid-cols-2 gap-6">

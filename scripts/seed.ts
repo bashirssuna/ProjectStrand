@@ -34,7 +34,7 @@ async function main() {
   // ---- Organization ----
   const orgId = id("org");
   await q(`INSERT INTO organization (id, name, slug, brand_color, default_mode, plan, status) VALUES ($1,$2,$3,$4,'advanced','active','active')`,
-    [orgId, "Savanna Research Institute", "savanna", "#2f5d62"]);
+    [orgId, "Demo Organisation", "demo-org", "#2f5d62"]);
 
   const orgAdminRole = id("role");
   const memberRole = id("role");

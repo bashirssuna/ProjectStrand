@@ -1,5 +1,4 @@
 // AUTO-GENERATED from schema.sql — single source of truth for the DB schema.
-// Bundled as a string so it is available at runtime on serverless hosts (Vercel).
 export const SCHEMA_SQL = String.raw`-- Project Strand schema (Postgres / PGlite). Mirrors prisma/schema.prisma.
 -- JSON-ish columns are text (parsed in app) for a single mental model.
 

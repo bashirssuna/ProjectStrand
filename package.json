@@ -9,7 +9,8 @@
     "lint": "next lint",
     "db:seed": "tsx scripts/seed.ts",
     "db:reset": "node -e \"require('fs').rmSync('.pgdata',{recursive:true,force:true})\" && tsx scripts/seed.ts",
-    "db:push": "tsx scripts/db-push.ts"
+    "db:push": "tsx scripts/db-push.ts",
+    "create-admin": "tsx scripts/create-admin.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.4.6",

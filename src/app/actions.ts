@@ -7,7 +7,7 @@ import { PROJECT_STATUS } from "@/lib/enums";
 import { createSession, destroySession, requireUser, verifyPassword } from "@/server/auth";
 import { requirePermission, getProjectAccess, canCreateProjects } from "@/server/policy";
 import { createProject } from "@/server/services/projects";
-import { addProjectMemberByEmail, createAdminAccount, issuePasswordToken, consumePasswordToken, markTokenUsed, signupOrganization, getUserOrg } from "@/server/services/accounts";
+import { addProjectMemberByEmail, createAdminAccount, issuePasswordToken, consumePasswordToken, markTokenUsed, signupOrganization, getUserOrg, createOrganizationWithAdmin, setOrgState, requestUpgrade } from "@/server/services/accounts";
 import { hashPassword } from "@/lib/password";
 import { createExtractionJob, applySuggestions } from "@/server/services/parsing";
 import { extractFile } from "@/server/services/extract";
@@ -711,4 +711,33 @@ export async function signupOrganizationAction(formData: FormData) {
   if ("error" in res) redirect(`/signup?error=${encodeURIComponent(res.error)}`);
   await createSession(res.userId);
   redirect("/dashboard");
+}
+
+/* ---------------- Operator: organisation provisioning & lifecycle ---------------- */
+export async function createOrganizationAction(formData: FormData) {
+  const user = await requireUser();
+  if (!user.isSuperAdmin) throw new Error("FORBIDDEN — only the platform admin can create organisations");
+  const res = await createOrganizationWithAdmin({
+    orgName: String(formData.get("orgName") || ""),
+    adminName: String(formData.get("adminName") || ""),
+    adminEmail: String(formData.get("adminEmail") || ""),
+    trialDays: Number(formData.get("trialDays") || 90),
+  });
+  if ("error" in res) redirect(`/admin?error=${encodeURIComponent(res.error)}`);
+  revalidatePath("/admin");
+  redirect("/admin?created=1");
+}
+
+export async function setOrgStateAction(formData: FormData) {
+  const user = await requireUser();
+  if (!user.isSuperAdmin) throw new Error("FORBIDDEN");
+  const action = String(formData.get("action")) as "activate" | "suspend" | "extend";
+  await setOrgState(String(formData.get("orgId")), action, Number(formData.get("days") || 90));
+  revalidatePath("/admin");
+}
+
+export async function requestUpgradeAction() {
+  const user = await requireUser();
+  await requestUpgrade(user.id);
+  redirect("/upgrade?sent=1");
 }

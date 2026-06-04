@@ -1,6 +1,6 @@
 import { getProjectAccess } from "@/server/policy";
 import { q } from "@/server/db";
-import { addMemberAction, updateMemberRoleAction } from "@/app/actions";
+import { addMemberAction, updateMemberRoleAction, removeMemberAction } from "@/app/actions";
 import { SectionTitle, Badge, Field } from "@/components/ui";
 import { PROJECT_ROLES, ROLE_PERMISSIONS, label } from "@/lib/enums";
 
@@ -29,6 +29,7 @@ export default async function TeamPage({ params }: { params: Promise<{ id: strin
               <th className="th text-left">Role</th>
               <th className="th text-left">Capabilities</th>
               <th className="th text-left">Status</th>
+              {canManage && <th className="th text-left">Actions</th>}
             </tr></thead>
             <tbody>
               {members.map((m) => (
@@ -54,6 +55,19 @@ export default async function TeamPage({ params }: { params: Promise<{ id: strin
                     {(ROLE_PERMISSIONS[m.role as keyof typeof ROLE_PERMISSIONS] ?? []).length} permissions
                   </td>
                   <td className="td">{m.status === "invited" ? <Badge tone="warn">invited</Badge> : <Badge tone="ok">active</Badge>}</td>
+                  {canManage && (
+                    <td className="td">
+                      {m.userId === access.user.id ? (
+                        <span className="text-xs" style={{ color: "var(--muted)" }}>You</span>
+                      ) : (
+                        <form action={removeMemberAction}>
+                          <input type="hidden" name="projectId" value={id} />
+                          <input type="hidden" name="userId" value={m.userId} />
+                          <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Revoke</button>
+                        </form>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

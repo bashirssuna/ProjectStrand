@@ -7,7 +7,7 @@ import { PROJECT_STATUS } from "@/lib/enums";
 import { createSession, destroySession, requireUser, verifyPassword } from "@/server/auth";
 import { requirePermission, getProjectAccess, canCreateProjects } from "@/server/policy";
 import { createProject } from "@/server/services/projects";
-import { addProjectMemberByEmail, createAdminAccount, issuePasswordToken, consumePasswordToken, markTokenUsed, signupOrganization, getUserOrg, createOrganizationWithAdmin, setOrgState, requestUpgrade } from "@/server/services/accounts";
+import { addProjectMemberByEmail, removeProjectMember, createAdminAccount, issuePasswordToken, consumePasswordToken, markTokenUsed, signupOrganization, getUserOrg, createOrganizationWithAdmin, setOrgState, requestUpgrade } from "@/server/services/accounts";
 import { hashPassword } from "@/lib/password";
 import { createExtractionJob, applySuggestions } from "@/server/services/parsing";
 import { extractFile } from "@/server/services/extract";
@@ -303,6 +303,16 @@ export async function updateMemberRoleAction(formData: FormData) {
   await requirePermission(projectId, "members.manage");
   await q(`UPDATE project_member SET role=$3 WHERE project_id=$1 AND user_id=$2`,
     [projectId, String(formData.get("userId")), String(formData.get("role"))]);
+  revalidatePath(`/projects/${projectId}/team`);
+}
+
+export async function removeMemberAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "members.manage");
+  const userId = String(formData.get("userId"));
+  if (userId === user.id) throw new Error("You can't revoke your own access.");
+  await removeProjectMember(projectId, userId, user.id);
   revalidatePath(`/projects/${projectId}/team`);
 }
 

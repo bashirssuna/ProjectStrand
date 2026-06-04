@@ -24,6 +24,7 @@ export async function issuePasswordToken(userId: string, purpose: "invite" | "re
     subject: purpose === "invite" ? "You've been invited to Project Strand" : "Reset your Project Strand password",
     html:
       `<p>Hi ${name || email},</p><p>${intro}</p>` +
+      (purpose === "invite" ? `<p><strong>Your username:</strong> ${email}</p>` : "") +
       `<p><a href="${link}">${link}</a></p>` +
       `<p>This link expires in 48 hours. If you didn't expect this, you can ignore it.</p>`,
   });
@@ -223,4 +224,18 @@ export async function requestUpgrade(userId: string): Promise<void> {
       title: `Upgrade request: ${org.name}`, body: `${requester?.email ?? "An org admin"} requested an upgrade.`, link: "/admin", email: false });
   }
   await writeAudit({ orgId: org.id, userId, action: "request", entity: "upgrade", entityId: org.id });
+}
+
+// Revoke a member's access to a single project (their account and any other
+// project memberships are untouched). The removed user is notified.
+export async function removeProjectMember(projectId: string, userId: string, actorId: string): Promise<void> {
+  const proj = await one<{ orgId: string; title: string }>(`SELECT org_id AS "orgId", title FROM project WHERE id=$1`, [projectId]);
+  await q(`DELETE FROM project_member WHERE project_id=$1 AND user_id=$2`, [projectId, userId]);
+  await notify({
+    orgId: proj?.orgId ?? null, userId, type: "access_revoked",
+    title: "Project access removed",
+    body: `Your access to "${proj?.title ?? "a project"}" has been revoked.`,
+    link: "/dashboard", email: true,
+  });
+  await writeAudit({ orgId: proj?.orgId ?? null, userId: actorId, action: "delete", entity: "project_member", entityId: projectId, before: { userId } });
 }

@@ -26,6 +26,29 @@ export async function sendEmail(msg: EmailMessage): Promise<{ status: "sent" | "
     }
   }
 
+  if (provider === "smtp" && process.env.SMTP_HOST) {
+    try {
+      const nodemailer = await import("nodemailer");
+      const port = Number(process.env.SMTP_PORT || 465);
+      const transport = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port,
+        secure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === "true" : port === 465,
+        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+      });
+      await transport.sendMail({
+        from: process.env.EMAIL_FROM || process.env.SMTP_USER,
+        to: msg.to, subject: msg.subject, html: msg.html,
+        ...(msg.ics ? { icalEvent: { content: msg.ics, method: "REQUEST" } } : {}),
+      });
+      return { status: "sent" };
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[email:smtp] send failed:", (err as Error).message);
+      return { status: "failed" };
+    }
+  }
+
   // console (dev default): print the message + any links so invites/resets are testable
   // eslint-disable-next-line no-console
   console.log(`\n[email:${provider}] → ${msg.to}\n  subject: ${msg.subject}\n  ${msg.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()}`);

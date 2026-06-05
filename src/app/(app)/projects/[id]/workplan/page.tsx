@@ -105,24 +105,28 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
                     </td>
                     {canEdit && (
                       <td className="td text-right whitespace-nowrap">
-                        <details>
-                          <summary className="btn btn-sm cursor-pointer inline-block">Edit</summary>
-                          <form action={editActivityDetailsAction} className="card p-3 mt-2 grid gap-2 text-left" style={{ minWidth: 240 }}>
-                            <input type="hidden" name="projectId" value={id} />
-                            <input type="hidden" name="activityId" value={r.id} />
-                            <Field label="Code"><input name="code" defaultValue={r.code ?? ""} className="input" /></Field>
-                            <Field label="Title"><input name="title" defaultValue={r.title} className="input" /></Field>
-                            <div className="grid grid-cols-2 gap-2">
-                              <Field label="Start"><input type="date" name="startDate" defaultValue={r.startDate ? String(r.startDate).slice(0, 10) : ""} className="input" /></Field>
-                              <Field label="End"><input type="date" name="endDate" defaultValue={r.endDate ? String(r.endDate).slice(0, 10) : ""} className="input" /></Field>
-                            </div>
-                            <button className="btn btn-primary btn-sm" type="submit">Save</button>
-                          </form>
-                          <form action={deleteActivityAction} className="mt-2">
-                            <input type="hidden" name="projectId" value={id} />
-                            <input type="hidden" name="activityId" value={r.id} />
-                            <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete{hasChildren ? " (incl. sub-activities)" : ""}</button>
-                          </form>
+                        <details className="editor inline-block">
+                          <summary className="btn btn-sm inline-block">Edit</summary>
+                          <div className="editor-panel card p-4 text-left">
+                            <div className="font-medium mb-3">Edit activity</div>
+                            <form action={editActivityDetailsAction} className="grid gap-2">
+                              <input type="hidden" name="projectId" value={id} />
+                              <input type="hidden" name="activityId" value={r.id} />
+                              <Field label="Code"><input name="code" defaultValue={r.code ?? ""} className="input" /></Field>
+                              <Field label="Title"><input name="title" defaultValue={r.title} className="input" /></Field>
+                              <div className="grid grid-cols-2 gap-2">
+                                <Field label="Start"><input type="date" name="startDate" defaultValue={r.startDate ? String(r.startDate).slice(0, 10) : ""} className="input" /></Field>
+                                <Field label="End"><input type="date" name="endDate" defaultValue={r.endDate ? String(r.endDate).slice(0, 10) : ""} className="input" /></Field>
+                              </div>
+                              <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
+                            </form>
+                            <form action={deleteActivityAction} className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                              <input type="hidden" name="projectId" value={id} />
+                              <input type="hidden" name="activityId" value={r.id} />
+                              <button className="btn btn-sm w-full" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete{hasChildren ? " (incl. sub-activities)" : ""}</button>
+                            </form>
+                            <div className="text-xs mt-3 text-center" style={{ color: "var(--muted)" }}>Click outside or “Edit” again to close.</div>
+                          </div>
                         </details>
                       </td>
                     )}

@@ -57,6 +57,17 @@ body {
 }
 
 @layer components {
+  /* Inline row editors open as a centered overlay so they're never clipped by
+     a table's horizontal scroll container. */
+  details.editor > summary { list-style: none; cursor: pointer; }
+  details.editor > summary::-webkit-details-marker { display: none; }
+  details.editor[open] > summary::before {
+    content: ""; position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 60;
+  }
+  details.editor > .editor-panel {
+    position: fixed; z-index: 61; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 360px; max-width: 92vw; max-height: 88vh; overflow: auto;
+  }
   .card {
     background: var(--panel);
     border: 1px solid var(--border);

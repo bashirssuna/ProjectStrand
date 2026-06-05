@@ -1,5 +1,5 @@
 import "server-only";
-import { writeFile, mkdir, readFile } from "node:fs/promises";
+import { writeFile, mkdir, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 
 // Local disk storage for development. In production (STORAGE_PROVIDER=s3) this
@@ -19,6 +19,10 @@ export async function saveUpload(docId: string, fileName: string, buf: Buffer): 
 
 export async function readUpload(key: string): Promise<Buffer> {
   return readFile(path.join(DIR, path.basename(key)));
+}
+
+export async function deleteUpload(key: string): Promise<void> {
+  try { await unlink(path.join(DIR, path.basename(key))); } catch { /* already gone */ }
 }
 
 export function mimeFor(fileName: string): string {

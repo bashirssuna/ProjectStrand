@@ -79,26 +79,28 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                     <td className="td"><ProgressBar value={l.burn} tone={l.burn > 100 ? "danger" : l.burn > 90 ? "warn" : "ok"} /></td>
                     {canManage && (
                       <td className="td text-right whitespace-nowrap">
-                        <details>
-                          <summary className="btn btn-sm cursor-pointer inline-block">Edit</summary>
-                          <form action={updateBudgetLineAction} className="card p-3 mt-2 grid gap-2 text-left" style={{ minWidth: 260 }}>
-                            <input type="hidden" name="projectId" value={id} />
-                            <input type="hidden" name="lineId" value={l.id} />
-                            <Field label="Code"><input name="code" defaultValue={l.code} className="input" /></Field>
-                            <Field label="Description"><input name="description" defaultValue={l.description} className="input" /></Field>
-                            <div className="grid grid-cols-2 gap-2">
-                              <Field label="Unit cost"><input name="unitCost" type="number" step="any" defaultValue={l.unitCost} className="input" /></Field>
-                              <Field label="Qty"><input name="quantity" type="number" step="any" defaultValue={l.quantity} className="input" /></Field>
-                            </div>
-                            <div className="flex items-center justify-between gap-2">
-                              <button className="btn btn-primary btn-sm" type="submit">Save</button>
-                            </div>
-                          </form>
-                          <form action={deleteBudgetLineAction} className="mt-2">
-                            <input type="hidden" name="projectId" value={id} />
-                            <input type="hidden" name="lineId" value={l.id} />
-                            <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete this line</button>
-                          </form>
+                        <details className="editor inline-block">
+                          <summary className="btn btn-sm inline-block">Edit</summary>
+                          <div className="editor-panel card p-4 text-left">
+                            <div className="font-medium mb-3">Edit budget line</div>
+                            <form action={updateBudgetLineAction} className="grid gap-2">
+                              <input type="hidden" name="projectId" value={id} />
+                              <input type="hidden" name="lineId" value={l.id} />
+                              <Field label="Code"><input name="code" defaultValue={l.code} className="input" /></Field>
+                              <Field label="Description"><input name="description" defaultValue={l.description} className="input" /></Field>
+                              <div className="grid grid-cols-2 gap-2">
+                                <Field label="Unit cost"><input name="unitCost" type="number" step="any" defaultValue={l.unitCost} className="input" /></Field>
+                                <Field label="Qty"><input name="quantity" type="number" step="any" defaultValue={l.quantity} className="input" /></Field>
+                              </div>
+                              <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
+                            </form>
+                            <form action={deleteBudgetLineAction} className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                              <input type="hidden" name="projectId" value={id} />
+                              <input type="hidden" name="lineId" value={l.id} />
+                              <button className="btn btn-sm w-full" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete this line</button>
+                            </form>
+                            <div className="text-xs mt-3 text-center" style={{ color: "var(--muted)" }}>Click outside or “Edit” again to close.</div>
+                          </div>
                         </details>
                       </td>
                     )}

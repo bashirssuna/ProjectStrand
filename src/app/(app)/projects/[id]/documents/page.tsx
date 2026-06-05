@@ -1,6 +1,6 @@
 import { getProjectAccess } from "@/server/policy";
 import { q } from "@/server/db";
-import { addFolderAction, uploadDocumentAction } from "@/app/actions";
+import { addFolderAction, uploadDocumentAction, deleteDocumentAction } from "@/app/actions";
 import { SectionTitle, Empty, Badge, Field } from "@/components/ui";
 import { fmtDate, num } from "@/lib/format";
 import { label } from "@/lib/enums";
@@ -38,8 +38,17 @@ export default async function DocumentsPage({ params }: { params: Promise<{ id: 
         )}
         <Badge tone="muted">{label(d.docType)}</Badge>
       </div>
-      <div className="text-xs whitespace-nowrap" style={{ color: "var(--muted)" }}>
-        {d.sizeBytes ? `${num(Math.round(d.sizeBytes / 1024))} KB · ` : ""}{fmtDate(d.createdAt)}
+      <div className="flex items-center gap-3 whitespace-nowrap">
+        <span className="text-xs" style={{ color: "var(--muted)" }}>
+          {d.sizeBytes ? `${num(Math.round(d.sizeBytes / 1024))} KB · ` : ""}{fmtDate(d.createdAt)}
+        </span>
+        {canManage && (
+          <form action={deleteDocumentAction}>
+            <input type="hidden" name="projectId" value={id} />
+            <input type="hidden" name="docId" value={d.id} />
+            <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete</button>
+          </form>
+        )}
       </div>
     </div>
   );

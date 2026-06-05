@@ -11,7 +11,7 @@ import { addProjectMemberByEmail, removeProjectMember, createAdminAccount, issue
 import { hashPassword } from "@/lib/password";
 import { createExtractionJob, applySuggestions, parseDocument } from "@/server/services/parsing";
 import { extractFile } from "@/server/services/extract";
-import { saveUpload, mimeFor } from "@/server/services/storage";
+import { saveUpload, mimeFor, deleteUpload } from "@/server/services/storage";
 import {
   createRequisition, submitRequisition, decideRequisition, disburse, recordExpenditureForRequisition,
 } from "@/server/services/requisitions";
@@ -441,6 +441,19 @@ export async function createMeetingAction(formData: FormData) {
 }
 
 /* ---------------- Documents / folders ---------------- */
+export async function deleteDocumentAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "documents.manage");
+  const docId = String(formData.get("docId"));
+  const doc = await one<{ storageKey: string | null; name: string }>(
+    `SELECT storage_key AS "storageKey", name FROM project_document WHERE id=$1 AND project_id=$2`, [docId, projectId]);
+  if (doc?.storageKey) await deleteUpload(doc.storageKey);
+  await q(`DELETE FROM project_document WHERE id=$1 AND project_id=$2`, [docId, projectId]); // versions cascade
+  await writeAudit({ userId: user.id, action: "delete", entity: "project_document", entityId: docId, before: { name: doc?.name } });
+  revalidatePath(`/projects/${projectId}/documents`);
+}
+
 export async function addFolderAction(formData: FormData) {
   await requireUser();
   const projectId = String(formData.get("projectId"));

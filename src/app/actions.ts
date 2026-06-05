@@ -159,6 +159,16 @@ export async function deleteActivityAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const activityId = String(formData.get("activityId"));
   await requirePermission(projectId, "project.edit");
+  // detach any requisitions pointing at this activity or its sub-activities
+  // (the requisition is kept; only its activity link is cleared)
+  await q(
+    `WITH RECURSIVE sub AS (
+       SELECT id FROM activity WHERE id=$1 AND project_id=$2
+       UNION ALL SELECT a.id FROM activity a JOIN sub ON a.parent_id = sub.id
+     )
+     UPDATE requisition SET activity_id=NULL WHERE activity_id IN (SELECT id FROM sub)`,
+    [activityId, projectId]
+  );
   // delete the activity and any sub-activities; tasks & dependencies cascade
   await q(
     `WITH RECURSIVE sub AS (

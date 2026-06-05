@@ -9,7 +9,7 @@ import { requirePermission, getProjectAccess, canCreateProjects } from "@/server
 import { createProject } from "@/server/services/projects";
 import { addProjectMemberByEmail, removeProjectMember, createAdminAccount, issuePasswordToken, consumePasswordToken, markTokenUsed, signupOrganization, getUserOrg, createOrganizationWithAdmin, setOrgState, requestUpgrade } from "@/server/services/accounts";
 import { hashPassword } from "@/lib/password";
-import { createExtractionJob, applySuggestions } from "@/server/services/parsing";
+import { createExtractionJob, applySuggestions, parseDocument } from "@/server/services/parsing";
 import { extractFile } from "@/server/services/extract";
 import { saveUpload, mimeFor } from "@/server/services/storage";
 import {
@@ -138,6 +138,40 @@ export async function addActivityAction(formData: FormData) {
   await writeAudit({ userId: user.id, action: "create", entity: "activity", entityId: projectId });
   await recomputeRollups(projectId);
   revalidatePath(`/projects/${projectId}/workplan`);
+}
+
+export async function editActivityDetailsAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const activityId = String(formData.get("activityId"));
+  await requirePermission(projectId, "project.edit");
+  await q(`UPDATE activity SET code=$3, title=$4, start_date=$5, end_date=$6, updated_at=now() WHERE id=$1 AND project_id=$2`,
+    [activityId, projectId, String(formData.get("code") || ""), String(formData.get("title") || "Untitled activity"),
+     String(formData.get("startDate") || "") || null, String(formData.get("endDate") || "") || null]);
+  await recomputeRollups(projectId);
+  await writeAudit({ userId: user.id, action: "update", entity: "activity", entityId: activityId });
+  revalidatePath(`/projects/${projectId}/workplan`);
+  revalidatePath(`/projects/${projectId}/gantt`);
+}
+
+export async function deleteActivityAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const activityId = String(formData.get("activityId"));
+  await requirePermission(projectId, "project.edit");
+  // delete the activity and any sub-activities; tasks & dependencies cascade
+  await q(
+    `WITH RECURSIVE sub AS (
+       SELECT id FROM activity WHERE id=$1 AND project_id=$2
+       UNION ALL SELECT a.id FROM activity a JOIN sub ON a.parent_id = sub.id
+     )
+     DELETE FROM activity WHERE id IN (SELECT id FROM sub)`,
+    [activityId, projectId]
+  );
+  await recomputeRollups(projectId);
+  await writeAudit({ userId: user.id, action: "delete", entity: "activity", entityId: activityId });
+  revalidatePath(`/projects/${projectId}/workplan`);
+  revalidatePath(`/projects/${projectId}/gantt`);
 }
 
 /* ---------------- Budget ---------------- */
@@ -792,4 +826,91 @@ export async function requestUpgradeAction() {
   const user = await requireUser();
   await requestUpgrade(user.id);
   redirect("/upgrade?sent=1");
+}
+
+/* ---------------- Objectives / Logframe ---------------- */
+export async function addObjectiveAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  const order = (await one<{ m: number }>(`SELECT COALESCE(MAX("order"),0)::int m FROM objective WHERE project_id=$1`, [projectId]))?.m ?? 0;
+  const n = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM objective WHERE project_id=$1`, [projectId]))?.c ?? 0;
+  await q(`INSERT INTO objective (id, project_id, level, code, statement, narrative, "order") VALUES ($1,$2,'objective',$3,$4,$5,$6)`,
+    [id("obj"), projectId, String(formData.get("code") || `OBJ${n + 1}`), String(formData.get("statement") || "Objective"),
+     String(formData.get("narrative") || "") || null, order + 1]);
+  await writeAudit({ userId: user.id, action: "create", entity: "objective", entityId: projectId });
+  revalidatePath(`/projects/${projectId}/logframe`);
+}
+
+export async function deleteObjectiveAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const objectiveId = String(formData.get("objectiveId"));
+  await requirePermission(projectId, "project.edit");
+  await q(`DELETE FROM indicator WHERE output_id IN (SELECT id FROM output WHERE objective_id=$1)`, [objectiveId]);
+  await q(`DELETE FROM output WHERE objective_id=$1`, [objectiveId]);
+  await q(`DELETE FROM objective WHERE id=$1 AND project_id=$2`, [objectiveId, projectId]); // cascades its indicators + actuals
+  await writeAudit({ userId: user.id, action: "delete", entity: "objective", entityId: objectiveId });
+  revalidatePath(`/projects/${projectId}/logframe`);
+}
+
+export async function addIndicatorAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  await q(`INSERT INTO indicator (id, objective_id, name, unit, baseline, target, means_of_verification)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id("ind"), String(formData.get("objectiveId")), String(formData.get("name") || "Indicator"),
+     String(formData.get("unit") || ""), Number(formData.get("baseline") || 0), Number(formData.get("target") || 0),
+     String(formData.get("mov") || "") || null]);
+  await writeAudit({ userId: user.id, action: "create", entity: "indicator", entityId: projectId });
+  revalidatePath(`/projects/${projectId}/logframe`);
+}
+
+export async function deleteIndicatorAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  await q(`DELETE FROM indicator WHERE id=$1`, [String(formData.get("indicatorId"))]); // actuals cascade
+  await writeAudit({ userId: user.id, action: "delete", entity: "indicator", entityId: String(formData.get("indicatorId")) });
+  revalidatePath(`/projects/${projectId}/logframe`);
+}
+
+export async function uploadObjectivesAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) { revalidatePath(`/projects/${projectId}/logframe`); return; }
+
+  const buf = Buffer.from(await file.arrayBuffer());
+  const { text, rows } = await extractFile(file.name, buf);
+  const suggestions = parseDocument("proposal", text, rows);
+
+  let order = (await one<{ m: number }>(`SELECT COALESCE(MAX("order"),0)::int m FROM objective WHERE project_id=$1`, [projectId]))?.m ?? 0;
+  const objByCode = new Map<string, string>();
+  let created = 0;
+
+  for (const s of suggestions.filter((x) => x.kind === "objective")) {
+    const p = s.payload as { code?: string; statement?: string };
+    const oid = id("obj");
+    await q(`INSERT INTO objective (id, project_id, level, code, statement, "order") VALUES ($1,$2,'objective',$3,$4,$5)`,
+      [oid, projectId, p.code || `OBJ${++order}`, (p.statement || "Objective").slice(0, 500), ++order]);
+    if (p.code) objByCode.set(p.code, oid);
+    created++;
+  }
+  for (const s of suggestions.filter((x) => x.kind === "output")) {
+    const p = s.payload as { code?: string; statement?: string; objectiveCode?: string };
+    await q(`INSERT INTO output (id, project_id, objective_id, code, statement, "order") VALUES ($1,$2,$3,$4,$5,$6)`,
+      [id("out"), projectId, p.objectiveCode ? objByCode.get(p.objectiveCode) ?? null : null,
+       p.code || `OUT${created + 1}`, (p.statement || "Output").slice(0, 500), ++order]);
+    created++;
+  }
+
+  const docId = id("doc");
+  const skey = await saveUpload(docId, file.name, buf);
+  await q(`INSERT INTO project_document (id, project_id, name, doc_type, mime_type, storage_key, size_bytes, extracted_text)
+           VALUES ($1,$2,$3,'proposal',$4,$5,$6,$7)`, [docId, projectId, file.name, mimeFor(file.name), skey, buf.length, text.slice(0, 20000)]);
+  await writeAudit({ userId: user.id, action: "import", entity: "objective", entityId: projectId, after: { created } });
+  revalidatePath(`/projects/${projectId}/logframe`);
 }

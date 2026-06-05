@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { getProjectAccess } from "@/server/policy";
-import { one } from "@/server/db";
+import { one, q } from "@/server/db";
 import { budgetLineRollups, budgetSummary } from "@/server/services/budget";
 import { addBudgetLineAction, convertBudgetCurrencyAction, updateBudgetLineAction, deleteBudgetLineAction, clearBudgetLinesAction } from "@/app/actions";
 import { Stat, SectionTitle, Empty, ProgressBar, Field, Badge } from "@/components/ui";
-import { money, pct } from "@/lib/format";
+import { money, pct, fmtDate } from "@/lib/format";
 
 export default async function BudgetPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -18,6 +18,22 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
   );
   const lines = bud ? await budgetLineRollups(bud.id) : [];
   const sum = bud ? await budgetSummary(bud.id) : null;
+
+  // change history per line (previous values, who changed them, when)
+  const revs = await q<{
+    budgetLineId: string; code: string; description: string; unitCost: number;
+    quantity: number; planned: number; action: string; changedByName: string | null; changedAt: string;
+  }>(
+    `SELECT budget_line_id AS "budgetLineId", code, description, unit_cost AS "unitCost",
+            quantity, planned, action, changed_by_name AS "changedByName", changed_at AS "changedAt"
+     FROM budget_line_revision WHERE project_id=$1 ORDER BY changed_at DESC`, [id]
+  );
+  const revsByLine = new Map<string, typeof revs>();
+  for (const r of revs) {
+    const arr = revsByLine.get(r.budgetLineId) ?? [];
+    arr.push(r);
+    revsByLine.set(r.budgetLineId, arr);
+  }
 
   return (
     <div className="space-y-7">
@@ -99,6 +115,25 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                               <input type="hidden" name="lineId" value={l.id} />
                               <button className="btn btn-sm w-full" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete this line</button>
                             </form>
+                            <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                              <div className="text-xs font-medium mb-2" style={{ color: "var(--muted)" }}>Change history</div>
+                              {(revsByLine.get(l.id) ?? []).length === 0 ? (
+                                <div className="text-xs" style={{ color: "var(--muted)" }}>No prior changes — current planned {money(l.planned, c)}.</div>
+                              ) : (
+                                <ul className="space-y-2">
+                                  {(revsByLine.get(l.id) ?? []).map((r, i) => (
+                                    <li key={i} className="text-xs" style={{ color: "var(--muted)" }}>
+                                      <span style={{ color: r.action === "deleted" ? "var(--danger)" : "var(--fg)" }}>
+                                        {r.action === "deleted" ? "Removed" : "Was"}: {money(r.planned, c)}
+                                      </span>{" "}
+                                      ({money(r.unitCost, c)} × {r.quantity})
+                                      <br />
+                                      {r.changedByName ?? "Someone"} · {fmtDate(r.changedAt)}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
                             <div className="text-xs mt-3 text-center" style={{ color: "var(--muted)" }}>Click outside or “Edit” again to close.</div>
                           </div>
                         </details>

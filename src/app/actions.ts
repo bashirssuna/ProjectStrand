@@ -212,9 +212,19 @@ export async function updateBudgetLineAction(formData: FormData) {
   const lineId = String(formData.get("lineId"));
   const unitCost = Number(formData.get("unitCost") || 0);
   const quantity = Number(formData.get("quantity") || 1);
+  // record the pre-change values so the previous figures stay queryable
+  const prev = await one<{ code: string; description: string; unitCost: number; quantity: number; planned: number }>(
+    `SELECT code, description, unit_cost AS "unitCost", quantity, planned FROM budget_line WHERE id=$1`, [lineId]);
+  if (prev) {
+    await q(`INSERT INTO budget_line_revision (id, project_id, budget_line_id, code, description, unit_cost, quantity, planned, action, changed_by, changed_by_name)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'updated',$9,$10)`,
+      [id("blr"), projectId, lineId, prev.code, prev.description, prev.unitCost, prev.quantity, prev.planned, user.id, user.name]);
+  }
   await q(`UPDATE budget_line SET code=$2, description=$3, unit_cost=$4, quantity=$5, planned=$6 WHERE id=$1`,
     [lineId, String(formData.get("code") || "BL"), String(formData.get("description") || "Line"), unitCost, quantity, unitCost * quantity]);
-  await writeAudit({ userId: user.id, action: "update", entity: "budget_line", entityId: lineId });
+  await writeAudit({ userId: user.id, action: "update", entity: "budget_line", entityId: lineId,
+    before: prev ? { planned: prev.planned, unitCost: prev.unitCost, quantity: prev.quantity } : undefined,
+    after: { planned: unitCost * quantity, unitCost, quantity } });
   await evaluateProject(projectId);
   revalidatePath(`/projects/${projectId}/budget`);
 }
@@ -224,6 +234,14 @@ export async function deleteBudgetLineAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "budget.manage");
   const lineId = String(formData.get("lineId"));
+  // preserve the final state in history before removing the line
+  const prev = await one<{ code: string; description: string; unitCost: number; quantity: number; planned: number }>(
+    `SELECT code, description, unit_cost AS "unitCost", quantity, planned FROM budget_line WHERE id=$1`, [lineId]);
+  if (prev) {
+    await q(`INSERT INTO budget_line_revision (id, project_id, budget_line_id, code, description, unit_cost, quantity, planned, action, changed_by, changed_by_name)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'deleted',$9,$10)`,
+      [id("blr"), projectId, lineId, prev.code, prev.description, prev.unitCost, prev.quantity, prev.planned, user.id, user.name]);
+  }
   // unlink records that point at this line so the FK delete can proceed; the
   // requisition itself is preserved (financial record), just detached.
   await q(`UPDATE requisition SET budget_line_id=NULL WHERE budget_line_id=$1`, [lineId]);

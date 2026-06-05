@@ -3,7 +3,7 @@
  * organisations from the Admin Center). Run once after deploying.
  *
  * Render: open the web service → Shell, then:
- *   SUPER_ADMIN_EMAIL=makepistat@gmail.com \
+ *   SUPER_ADMIN_EMAIL=admin@makepistat.org \
  *   SUPER_ADMIN_PASSWORD='choose-a-strong-password' \
  *   SUPER_ADMIN_NAME='Makerere Epidemiology and Statistical Center' \
  *   npm run create-admin

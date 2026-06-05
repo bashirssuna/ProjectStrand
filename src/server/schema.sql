@@ -254,6 +254,26 @@ CREATE TABLE IF NOT EXISTS budget_line (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Append-only history of budget line changes. budget_line_id is plain text (no
+-- FK) so the trail survives even after a line is edited or deleted, letting a PI
+-- see what a line (e.g. "sensitisation") used to be and who changed it.
+CREATE TABLE IF NOT EXISTS budget_line_revision (
+  id text PRIMARY KEY,
+  project_id text NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  budget_line_id text NOT NULL,
+  code text NOT NULL,
+  description text NOT NULL,
+  unit_cost double precision NOT NULL DEFAULT 0,
+  quantity double precision NOT NULL DEFAULT 1,
+  planned double precision NOT NULL DEFAULT 0,
+  action text NOT NULL DEFAULT 'updated',
+  changed_by text,
+  changed_by_name text,
+  changed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_blr_line ON budget_line_revision(budget_line_id);
+CREATE INDEX IF NOT EXISTS idx_blr_project ON budget_line_revision(project_id);
+
 CREATE TABLE IF NOT EXISTS expenditure (
   id text PRIMARY KEY,
   project_id text NOT NULL REFERENCES project(id) ON DELETE CASCADE,

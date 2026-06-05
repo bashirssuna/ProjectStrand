@@ -214,6 +214,10 @@ export async function deleteBudgetLineAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "budget.manage");
   const lineId = String(formData.get("lineId"));
+  // unlink records that point at this line so the FK delete can proceed; the
+  // requisition itself is preserved (financial record), just detached.
+  await q(`UPDATE requisition SET budget_line_id=NULL WHERE budget_line_id=$1`, [lineId]);
+  await q(`UPDATE activity SET budget_line_id=NULL WHERE budget_line_id=$1`, [lineId]);
   await q(`DELETE FROM commitment WHERE budget_line_id=$1`, [lineId]);
   await q(`DELETE FROM expenditure WHERE budget_line_id=$1`, [lineId]);
   await q(`DELETE FROM budget_line WHERE id=$1`, [lineId]);
@@ -226,11 +230,11 @@ export async function clearBudgetLinesAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "budget.manage");
-  const ids = await q<{ id: string }>(`SELECT bl.id FROM budget_line bl JOIN budget b ON b.id=bl.budget_id WHERE b.project_id=$1`, [projectId]);
-  for (const r of ids) {
-    await q(`DELETE FROM commitment WHERE budget_line_id=$1`, [r.id]);
-    await q(`DELETE FROM expenditure WHERE budget_line_id=$1`, [r.id]);
-  }
+  const inProject = `SELECT bl.id FROM budget_line bl JOIN budget b ON b.id=bl.budget_id WHERE b.project_id=$1`;
+  await q(`UPDATE requisition SET budget_line_id=NULL WHERE budget_line_id IN (${inProject})`, [projectId]);
+  await q(`UPDATE activity SET budget_line_id=NULL WHERE budget_line_id IN (${inProject})`, [projectId]);
+  await q(`DELETE FROM commitment WHERE budget_line_id IN (${inProject})`, [projectId]);
+  await q(`DELETE FROM expenditure WHERE budget_line_id IN (${inProject})`, [projectId]);
   await q(`DELETE FROM budget_line WHERE budget_id IN (SELECT id FROM budget WHERE project_id=$1)`, [projectId]);
   await writeAudit({ userId: user.id, action: "delete", entity: "budget_line", entityId: projectId, meta: { clearedAll: true } });
   await evaluateProject(projectId);

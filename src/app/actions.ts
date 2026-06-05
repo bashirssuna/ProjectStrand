@@ -10,6 +10,8 @@ import { createProject } from "@/server/services/projects";
 import { addProjectMemberByEmail, removeProjectMember, createAdminAccount, issuePasswordToken, consumePasswordToken, markTokenUsed, signupOrganization, getUserOrg, createOrganizationWithAdmin, setOrgState, requestUpgrade } from "@/server/services/accounts";
 import { hashPassword, passwordError } from "@/lib/password";
 import { createExtractionJob, applySuggestions, parseDocument } from "@/server/services/parsing";
+import { sendEmail } from "@/server/email";
+import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
 import { extractFile } from "@/server/services/extract";
 import { saveUpload, mimeFor, deleteUpload } from "@/server/services/storage";
 import {
@@ -878,6 +880,20 @@ export async function signupOrganizationAction(formData: FormData) {
 }
 
 /* ---------------- Operator: organisation provisioning & lifecycle ---------------- */
+export async function sendTestEmailAction(formData: FormData) {
+  const user = await requireUser();
+  if (!user.isSuperAdmin) throw new Error("FORBIDDEN — only the platform admin can send test emails");
+  const to = String(formData.get("to") || "").trim() || SYSTEM_ADMIN_EMAIL;
+  const provider = process.env.EMAIL_PROVIDER || "console";
+  const res = await sendEmail({
+    to,
+    subject: "Project Strand — test email",
+    html: `<p>This is a test email from Project Strand.</p><p>If you can read this, outbound email is working.</p>`,
+  });
+  if (res.status === "sent") redirect(`/admin?test=ok&to=${encodeURIComponent(to)}&via=${provider}`);
+  redirect(`/admin?testerror=${encodeURIComponent(res.error || "unknown error")}&via=${provider}`);
+}
+
 export async function createOrganizationAction(formData: FormData) {
   const user = await requireUser();
   if (!user.isSuperAdmin) throw new Error("FORBIDDEN — only the platform admin can create organisations");

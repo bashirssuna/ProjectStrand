@@ -7,7 +7,7 @@ export type EmailMessage = {
   ics?: string;
 };
 
-export async function sendEmail(msg: EmailMessage): Promise<{ status: "sent" | "failed" }> {
+export async function sendEmail(msg: EmailMessage): Promise<{ status: "sent" | "failed"; error?: string }> {
   const provider = process.env.EMAIL_PROVIDER || "console";
 
   if (provider === "resend" && process.env.RESEND_API_KEY) {
@@ -20,9 +20,10 @@ export async function sendEmail(msg: EmailMessage): Promise<{ status: "sent" | "
           to: msg.to, subject: msg.subject, html: msg.html,
         }),
       });
-      return { status: res.ok ? "sent" : "failed" };
-    } catch {
-      return { status: "failed" };
+      if (res.ok) return { status: "sent" };
+      return { status: "failed", error: `Resend HTTP ${res.status}: ${(await res.text()).slice(0, 300)}` };
+    } catch (err) {
+      return { status: "failed", error: (err as Error).message };
     }
   }
 
@@ -50,7 +51,7 @@ export async function sendEmail(msg: EmailMessage): Promise<{ status: "sent" | "
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[email:smtp] send failed:", (err as Error).message);
-      return { status: "failed" };
+      return { status: "failed", error: (err as Error).message };
     }
   }
 

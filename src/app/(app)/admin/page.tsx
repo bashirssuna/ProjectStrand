@@ -3,14 +3,16 @@ import Link from "next/link";
 import { requireUser } from "@/server/auth";
 import { q } from "@/server/db";
 import { PageHeader, Stat, SectionTitle, Badge, StatusBadge, severityTone, Field } from "@/components/ui";
-import { createAdminAction, createOrganizationAction, setOrgStateAction } from "@/app/actions";
+import { createAdminAction, createOrganizationAction, setOrgStateAction, sendTestEmailAction } from "@/app/actions";
+import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
 import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
 
-export default async function AdminPage({ searchParams }: { searchParams: Promise<{ created?: string; error?: string }> }) {
+export default async function AdminPage({ searchParams }: { searchParams: Promise<{ created?: string; error?: string; test?: string; testerror?: string; via?: string; to?: string }> }) {
   const user = await requireUser();
   if (!user.isSuperAdmin) redirect("/dashboard");
-  const { created, error } = await searchParams;
+  const { created, error, test, testerror, via, to } = await searchParams;
+  const emailProvider = process.env.EMAIL_PROVIDER || "console";
 
   const orgs = await q<{ id: string; name: string; plan: string; status: string; trialEndsAt: string | null; adminEmail: string | null; members: number; projects: number }>(
     `SELECT o.id, o.name, o.plan, o.status, o.trial_ends_at AS "trialEndsAt",
@@ -56,6 +58,27 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
         <Stat label="Projects" value={c.projects} />
         <Stat label="Users" value={c.users} />
         <Stat label="Open flags" value={c.flags} tone={c.flags ? "danger" : "ok"} />
+      </div>
+
+      {/* ---------------- Email delivery ---------------- */}
+      <div>
+        <SectionTitle>Email delivery</SectionTitle>
+        <div className="card p-4">
+          <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>
+            Provider: <Badge tone={emailProvider === "console" ? "warn" : "brand"}>{emailProvider}</Badge>{" "}
+            {emailProvider === "console" && "— emails are only written to the server logs, not delivered. Set EMAIL_PROVIDER=smtp (or resend) to send real mail."}
+          </p>
+          {test === "ok" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Test email sent to {to} via {via}. Check that inbox (and spam).</div>}
+          {testerror && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Send failed via {via}: {testerror}</div>}
+          <form action={sendTestEmailAction} className="flex flex-wrap items-end gap-3">
+            <Field label="Send a test to"><input name="to" type="email" className="input" placeholder={SYSTEM_ADMIN_EMAIL} /></Field>
+            <button className="btn btn-primary" type="submit">Send test email</button>
+          </form>
+          <p className="text-xs mt-3" style={{ color: "var(--muted)" }}>
+            Gmail / Google Workspace needs a 16-character <strong>App Password</strong> (not your normal password) as SMTP_PASS,
+            with 2-Step Verification enabled on the sending account.
+          </p>
+        </div>
       </div>
 
       {/* ---------------- Organisations (tenants) ---------------- */}

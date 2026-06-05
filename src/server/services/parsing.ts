@@ -133,6 +133,15 @@ function parseWorkplan(rows: (string | number | Date)[][]): Suggestion[] {
     .map((h, i) => ({ i, isMonth: /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|m\s*\d+|month\s*\d+|q[1-4])/i.test(h) }))
     .filter((x) => x.isMonth).map((x) => x.i);
 
+  // Map each month column to an absolute {year, month} when the header carries
+  // one (e.g. "M1 May 26" / "Aug 2026"). Used to derive dates from Gantt shading.
+  const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  const colDate = new Map<number, { y: number; m: number }>();
+  for (const ci of monthCols) {
+    const mm = String(rows[headerIdx][ci]).toLowerCase().match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*'?\s*(\d{2,4})/);
+    if (mm) { let y = parseInt(mm[2], 10); if (y < 100) y += 2000; colDate.set(ci, { y, m: MONTHS.indexOf(mm[1]) }); }
+  }
+
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const row = rows[i];
     const title = String(cell(row, nameCol >= 0 ? nameCol : 0)).trim();
@@ -149,7 +158,18 @@ function parseWorkplan(rows: (string | number | Date)[][]): Suggestion[] {
       if (e) { payload.endDate = e; confidence = 0.8; }
     } else if (monthCols.length) {
       const filled = monthCols.filter((ci) => { const v = cell(row, ci); return v !== "" && v != null; });
-      if (filled.length) confidence = 0.6; // names captured; dates set later by the user
+      if (filled.length) {
+        const dated = filled.map((ci) => colDate.get(ci)).filter(Boolean) as { y: number; m: number }[];
+        if (dated.length) {
+          dated.sort((a, b) => a.y - b.y || a.m - b.m);
+          const s = dated[0], e = dated[dated.length - 1];
+          payload.startDate = new Date(Date.UTC(s.y, s.m, 1)).toISOString().slice(0, 10);
+          payload.endDate = new Date(Date.UTC(e.y, e.m + 1, 0)).toISOString().slice(0, 10); // month end
+          confidence = 0.78;
+        } else {
+          confidence = 0.6; // names captured; relative columns (M1/Q1) → user sets dates
+        }
+      }
     }
     out.push({ kind: "activity", payload, confidence, sourceRef: `row ${i + 1}` });
   }
@@ -297,6 +317,9 @@ export function parseScheduleRows(rows: (string | number | Date)[][]): ScheduleI
   if (!rows.length) return [];
   let headerIdx = -1;
   let cName = 0, cStart = -1, cEnd = -1, cProg = -1;
+  let monthCols: number[] = [];
+  const colMonth = new Map<number, { y: number; m: number }>();
+  const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
   for (let i = 0; i < Math.min(rows.length, 12); i++) {
     const cells = rows[i].map((c) => String(c ?? "").toLowerCase());
@@ -306,6 +329,13 @@ export function parseScheduleRows(rows: (string | number | Date)[][]): ScheduleI
       cStart = cells.findIndex((c) => /(start|begin|from)/.test(c));
       cEnd = cells.findIndex((c) => /(end|finish|due|to\b|completion)/.test(c));
       cProg = cells.findIndex((c) => /(progress|%|percent|complete|status)/.test(c));
+      monthCols = cells.map((c, ci) => ({ c, ci }))
+        .filter((x) => /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|m\s*\d+|month\s*\d+|q[1-4])/i.test(x.c))
+        .map((x) => x.ci);
+      for (const ci of monthCols) {
+        const mm = cells[ci].match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*'?\s*(\d{2,4})/);
+        if (mm) { let y = parseInt(mm[2], 10); if (y < 100) y += 2000; colMonth.set(ci, { y, m: MONTHS.indexOf(mm[1]) }); }
+      }
       break;
     }
   }
@@ -319,8 +349,20 @@ export function parseScheduleRows(rows: (string | number | Date)[][]): ScheduleI
     const m = raw.match(/^(\d+(?:\.\d+)*)\s+(.+)$/);
     const code = m ? m[1] : null;
     const title = (m ? m[2] : raw).slice(0, 200);
-    const start = cStart >= 0 ? toISO(row[cStart]) : null;
-    const end = cEnd >= 0 ? toISO(row[cEnd]) : null;
+    let start = cStart >= 0 ? toISO(row[cStart]) : null;
+    let end = cEnd >= 0 ? toISO(row[cEnd]) : null;
+
+    // Gantt with no start/end columns: derive the span from shaded month cells.
+    if (!start && !end && monthCols.length) {
+      const filled = monthCols.filter((ci) => { const v = row[ci]; return v !== "" && v != null; });
+      const dated = filled.map((ci) => colMonth.get(ci)).filter(Boolean) as { y: number; m: number }[];
+      if (dated.length) {
+        dated.sort((a, b) => a.y - b.y || a.m - b.m);
+        const s = dated[0], e = dated[dated.length - 1];
+        start = new Date(Date.UTC(s.y, s.m, 1)).toISOString().slice(0, 10);
+        end = new Date(Date.UTC(e.y, e.m + 1, 0)).toISOString().slice(0, 10);
+      }
+    }
     let progress: number | null = null;
     if (cProg >= 0) {
       const pv = row[cProg];

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getProjectAccess } from "@/server/policy";
 import { one } from "@/server/db";
 import { budgetLineRollups, budgetSummary } from "@/server/services/budget";
-import { addBudgetLineAction, convertBudgetCurrencyAction } from "@/app/actions";
+import { addBudgetLineAction, convertBudgetCurrencyAction, updateBudgetLineAction, deleteBudgetLineAction, clearBudgetLinesAction } from "@/app/actions";
 import { Stat, SectionTitle, Empty, ProgressBar, Field, Badge } from "@/components/ui";
 import { money, pct } from "@/lib/format";
 
@@ -32,7 +32,16 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
       )}
 
       <div>
-        <SectionTitle action={canManage ? <Link href={`/projects/${id}/import`} className="btn btn-sm">Import from file</Link> : undefined}>
+        <SectionTitle action={canManage ? (
+          <div className="flex items-center gap-2">
+            {lines.length > 0 && (
+              <form action={clearBudgetLinesAction}><input type="hidden" name="projectId" value={id} />
+                <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Clear all</button>
+              </form>
+            )}
+            <Link href={`/projects/${id}/import`} className="btn btn-sm">Import from file</Link>
+          </div>
+        ) : undefined}>
           Budget lines {bud && <span className="text-sm font-normal" style={{ color: "var(--muted)" }}>· {bud.name}</span>}
         </SectionTitle>
         {lines.length === 0 ? (
@@ -51,6 +60,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                 <th className="th text-right">Spent</th>
                 <th className="th text-right">Remaining</th>
                 <th className="th text-left" style={{ width: 120 }}>Burn</th>
+                {canManage && <th className="th text-right">Edit</th>}
               </tr></thead>
               <tbody>
                 {lines.map((l) => (
@@ -67,6 +77,31 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                     <td className="td text-right tabular-nums">{money(l.actual, c)}</td>
                     <td className="td text-right tabular-nums" style={{ color: l.remaining < 0 ? "var(--danger)" : undefined }}>{money(l.remaining, c)}</td>
                     <td className="td"><ProgressBar value={l.burn} tone={l.burn > 100 ? "danger" : l.burn > 90 ? "warn" : "ok"} /></td>
+                    {canManage && (
+                      <td className="td text-right whitespace-nowrap">
+                        <details>
+                          <summary className="btn btn-sm cursor-pointer inline-block">Edit</summary>
+                          <form action={updateBudgetLineAction} className="card p-3 mt-2 grid gap-2 text-left" style={{ minWidth: 260 }}>
+                            <input type="hidden" name="projectId" value={id} />
+                            <input type="hidden" name="lineId" value={l.id} />
+                            <Field label="Code"><input name="code" defaultValue={l.code} className="input" /></Field>
+                            <Field label="Description"><input name="description" defaultValue={l.description} className="input" /></Field>
+                            <div className="grid grid-cols-2 gap-2">
+                              <Field label="Unit cost"><input name="unitCost" type="number" step="any" defaultValue={l.unitCost} className="input" /></Field>
+                              <Field label="Qty"><input name="quantity" type="number" step="any" defaultValue={l.quantity} className="input" /></Field>
+                            </div>
+                            <div className="flex items-center justify-between gap-2">
+                              <button className="btn btn-primary btn-sm" type="submit">Save</button>
+                            </div>
+                          </form>
+                          <form action={deleteBudgetLineAction} className="mt-2">
+                            <input type="hidden" name="projectId" value={id} />
+                            <input type="hidden" name="lineId" value={l.id} />
+                            <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete this line</button>
+                          </form>
+                        </details>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -79,6 +114,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                     <td className="td text-right tabular-nums">{money(sum.actual, c)}</td>
                     <td className="td text-right tabular-nums" style={{ color: sum.remaining < 0 ? "var(--danger)" : undefined }}>{money(sum.remaining, c)}</td>
                     <td className="td" />
+                    {canManage && <td className="td" />}
                   </tr>
                 </tfoot>
               )}

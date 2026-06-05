@@ -4,8 +4,8 @@ import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
 import { sendEmail } from "@/server/email";
 import { writeAudit, notify } from "@/server/services/audit";
-import { hashPassword } from "@/lib/password";
-import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
+import { hashPassword, passwordError } from "@/lib/password";
+import { SYSTEM_ADMIN_EMAIL, APP_NAME } from "@/lib/config";
 
 const APP_URL = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "http://localhost:3000";
 
@@ -104,10 +104,13 @@ function slugify(name: string): string {
 }
 
 export async function signupOrganization(input: {
-  orgName: string; adminName: string; adminEmail: string; password: string;
+  orgName: string; adminName: string; adminEmail: string; password: string; confirmPassword: string;
 }): Promise<{ userId: string } | { error: string }> {
   const email = input.adminEmail.trim().toLowerCase();
-  if (!email || !input.password || input.password.length < 8) return { error: "A valid email and an 8+ character password are required." };
+  if (!email) return { error: "A valid email is required." };
+  if (input.password !== input.confirmPassword) return { error: "Passwords do not match." };
+  const pe = passwordError(input.password);
+  if (pe) return { error: pe };
   if (await one(`SELECT id FROM app_user WHERE email=$1`, [email])) return { error: "An account with that email already exists." };
 
   // unique slug
@@ -124,15 +127,47 @@ export async function signupOrganization(input: {
   await q(`INSERT INTO role (id, org_id, key, name, is_system, permissions) VALUES ($1,$2,'org_admin','Organization Admin',true,'[]')`,
     [adminRoleId, orgId]);
 
+  // Created as 'invited' (not active) until the email address is confirmed.
   const uid = id("usr");
-  await q(`INSERT INTO app_user (id, email, name, password_hash, status, is_super_admin) VALUES ($1,$2,$3,$4,'active',false)`,
-    [uid, email, input.adminName.trim() || email.split("@")[0], await hashPassword(input.password)]);
+  const name = input.adminName.trim() || email.split("@")[0];
+  await q(`INSERT INTO app_user (id, email, name, password_hash, status, is_super_admin) VALUES ($1,$2,$3,$4,'invited',false)`,
+    [uid, email, name, await hashPassword(input.password)]);
   await q(`INSERT INTO user_profile (id, user_id) VALUES ($1,$2)`, [id("up"), uid]);
   await q(`INSERT INTO org_membership (id, org_id, user_id, role_id, status) VALUES ($1,$2,$3,$4,'active')`,
     [id("om"), orgId, uid, adminRoleId]);
 
+  await sendVerificationEmail(uid, email, name);
   await writeAudit({ orgId, userId: uid, action: "create", entity: "organization", entityId: orgId, after: { name: input.orgName, plan: "trial" } });
   return { userId: uid };
+}
+
+// Sends an email-confirmation link for a newly self-registered account.
+export async function sendVerificationEmail(userId: string, email: string, name: string): Promise<void> {
+  const token = randomBytes(24).toString("hex");
+  const expires = new Date(Date.now() + 1000 * 60 * 60 * 48).toISOString(); // 48h
+  await q(`INSERT INTO password_token (id, user_id, token, purpose, expires_at) VALUES ($1,$2,$3,'verify',$4)`,
+    [id("pt"), userId, token, expires]);
+  const link = `${APP_URL}/verify?token=${token}`;
+  await sendEmail({
+    to: email,
+    subject: `Confirm your ${APP_NAME} account`,
+    html:
+      `<p>Hi ${name || email},</p>` +
+      `<p>Thanks for signing up for ${APP_NAME}. Please confirm your email address to activate your account:</p>` +
+      `<p><a href="${link}">${link}</a></p>` +
+      `<p>This link expires in 48 hours. If you didn't sign up, you can ignore this email.</p>`,
+  });
+}
+
+// Confirms an email-verification token: activates the account and returns the user.
+export async function verifyEmailToken(token: string): Promise<{ userId: string } | null> {
+  const row = await one<{ userId: string; expiresAt: string; used: boolean }>(
+    `SELECT user_id AS "userId", expires_at AS "expiresAt", used FROM password_token WHERE token=$1 AND purpose='verify'`, [token]
+  );
+  if (!row || row.used || new Date(row.expiresAt) < new Date()) return null;
+  await q(`UPDATE app_user SET status='active', updated_at=now() WHERE id=$1`, [row.userId]);
+  await q(`UPDATE password_token SET used=true WHERE token=$1`, [token]);
+  return { userId: row.userId };
 }
 
 // Returns the user's primary organisation + trial state (for banners/guards).

@@ -8,7 +8,7 @@ import { createSession, destroySession, requireUser, verifyPassword } from "@/se
 import { requirePermission, getProjectAccess, canCreateProjects } from "@/server/policy";
 import { createProject } from "@/server/services/projects";
 import { addProjectMemberByEmail, removeProjectMember, createAdminAccount, issuePasswordToken, consumePasswordToken, markTokenUsed, signupOrganization, getUserOrg, createOrganizationWithAdmin, setOrgState, requestUpgrade } from "@/server/services/accounts";
-import { hashPassword } from "@/lib/password";
+import { hashPassword, passwordError } from "@/lib/password";
 import { createExtractionJob, applySuggestions, parseDocument } from "@/server/services/parsing";
 import { extractFile } from "@/server/services/extract";
 import { saveUpload, mimeFor, deleteUpload } from "@/server/services/storage";
@@ -410,12 +410,41 @@ export async function removeMemberAction(formData: FormData) {
 export async function updateProfileAction(formData: FormData) {
   const user = await requireUser();
   await q(`UPDATE app_user SET name=$2, updated_at=now() WHERE id=$1`, [user.id, String(formData.get("name") || user.name)]);
-  await q(`INSERT INTO user_profile (id, user_id, title, phone, bio, avatar_url)
-           VALUES ($1,$2,$3,$4,$5,$6)
-           ON CONFLICT (user_id) DO UPDATE SET title=$3, phone=$4, bio=$5, avatar_url=$6`,
+  await q(`INSERT INTO user_profile (id, user_id, title, phone, bio)
+           VALUES ($1,$2,$3,$4,$5)
+           ON CONFLICT (user_id) DO UPDATE SET title=$3, phone=$4, bio=$5`,
     [id("up"), user.id, String(formData.get("title") || ""), String(formData.get("phone") || ""),
-     String(formData.get("bio") || ""), String(formData.get("avatarUrl") || "")]);
+     String(formData.get("bio") || "")]);
   revalidatePath("/profile");
+}
+
+export async function changePasswordAction(formData: FormData) {
+  const user = await requireUser();
+  const current = String(formData.get("currentPassword") || "");
+  const next = String(formData.get("newPassword") || "");
+  const confirm = String(formData.get("confirmPassword") || "");
+  const row = await one<{ passwordHash: string | null }>(`SELECT password_hash AS "passwordHash" FROM app_user WHERE id=$1`, [user.id]);
+  if (!row || !verifyPassword(current, row.passwordHash)) redirect("/profile?pw=wrong");
+  if (next !== confirm) redirect("/profile?pw=match");
+  const pe = passwordError(next);
+  if (pe) redirect(`/profile?pw=${encodeURIComponent(pe)}`);
+  await q(`UPDATE app_user SET password_hash=$2, updated_at=now() WHERE id=$1`, [user.id, await hashPassword(next)]);
+  await writeAudit({ userId: user.id, action: "update", entity: "app_user", entityId: user.id, meta: { passwordChanged: true } });
+  redirect("/profile?pw=ok");
+}
+
+export async function uploadAvatarAction(formData: FormData) {
+  const user = await requireUser();
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) redirect("/profile");
+  if (!file.type.startsWith("image/")) redirect("/profile?avatar=type");
+  if (file.size > 2_000_000) redirect("/profile?avatar=size"); // 2 MB cap (stored inline)
+  const buf = Buffer.from(await file.arrayBuffer());
+  const dataUrl = `data:${file.type};base64,${buf.toString("base64")}`;
+  await q(`INSERT INTO user_profile (id, user_id, avatar_url) VALUES ($1,$2,$3)
+           ON CONFLICT (user_id) DO UPDATE SET avatar_url=$3`, [id("up"), user.id, dataUrl]);
+  await writeAudit({ userId: user.id, action: "update", entity: "user_profile", entityId: user.id, meta: { avatar: true } });
+  redirect("/profile?avatar=ok");
 }
 
 export async function saveSignatureAction(formData: FormData) {
@@ -750,7 +779,10 @@ export async function requestPasswordResetAction(formData: FormData) {
 export async function setPasswordAction(formData: FormData) {
   const token = String(formData.get("token") || "");
   const password = String(formData.get("password") || "");
-  if (password.length < 8) redirect(`/reset?token=${encodeURIComponent(token)}&error=short`);
+  const confirm = String(formData.get("confirmPassword") || "");
+  if (confirm && password !== confirm) redirect(`/reset?token=${encodeURIComponent(token)}&error=match`);
+  const pe = passwordError(password);
+  if (pe) redirect(`/reset?token=${encodeURIComponent(token)}&error=${encodeURIComponent(pe)}`);
   const valid = await consumePasswordToken(token);
   if (!valid) redirect(`/reset?error=invalid`);
   await q(`UPDATE app_user SET password_hash=$2, status='active', updated_at=now() WHERE id=$1`,
@@ -820,10 +852,11 @@ export async function signupOrganizationAction(formData: FormData) {
     adminName: String(formData.get("adminName") || ""),
     adminEmail: String(formData.get("adminEmail") || ""),
     password: String(formData.get("password") || ""),
+    confirmPassword: String(formData.get("confirmPassword") || ""),
   });
   if ("error" in res) redirect(`/signup?error=${encodeURIComponent(res.error)}`);
-  await createSession(res.userId);
-  redirect("/dashboard");
+  // Account created but not yet active — they must confirm via email first.
+  redirect(`/signup?pending=1`);
 }
 
 /* ---------------- Operator: organisation provisioning & lifecycle ---------------- */

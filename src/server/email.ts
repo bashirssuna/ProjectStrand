@@ -35,6 +35,11 @@ export async function sendEmail(msg: EmailMessage): Promise<{ status: "sent" | "
         port,
         secure: process.env.SMTP_SECURE ? process.env.SMTP_SECURE === "true" : port === 465,
         auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+        // Shared hosts (e.g. HostGator) often present a cert for the server
+        // hostname, not your domain. Set SMTP_TLS_INSECURE=true to accept it.
+        ...(process.env.SMTP_TLS_INSECURE === "true" ? { tls: { rejectUnauthorized: false } } : {}),
+        connectionTimeout: 15000,
+        greetingTimeout: 10000,
       });
       await transport.sendMail({
         from: process.env.EMAIL_FROM || process.env.SMTP_USER,

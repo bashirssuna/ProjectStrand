@@ -79,7 +79,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
                 <div className="text-sm font-medium">{user.name}</div>
                 <div className="text-xs" style={{ color: "var(--muted)" }}>{user.isSuperAdmin ? "Admin" : "Member"}</div>
               </div>
-              <form action={signOut}><button className="btn btn-sm" title="Sign out">⎋</button></form>
+              <form action={signOut}><button className="btn btn-sm" type="submit" title="Sign out">Sign out</button></form>
             </div>
           </div>
         </header>

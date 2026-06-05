@@ -20,12 +20,17 @@ export default async function ResetPage({ searchParams }: { searchParams: Promis
         ) : (
           <>
             <p className="text-sm mt-1" style={{ color: "var(--muted)" }}>Setting a password for <strong>{valid.email}</strong>.</p>
-            {error === "short" && <div className="card p-3 mt-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Password must be at least 8 characters.</div>}
+            {error && <div className="card p-3 mt-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{error === "short" ? "Password must be at least 8 characters." : error === "match" ? "Passwords don't match." : error === "invalid" ? "This link is invalid or has expired." : decodeURIComponent(error)}</div>}
             <form action={setPasswordAction} className="mt-5 space-y-4">
               <input type="hidden" name="token" value={token} />
               <label className="block">
                 <span className="label">New password</span>
-                <input name="password" type="password" required minLength={8} className="input" placeholder="At least 8 characters" />
+                <input name="password" type="password" required minLength={8} className="input" placeholder="Create a password" />
+                <span className="text-xs mt-1 block" style={{ color: "var(--muted)" }}>At least 8 characters, one capital letter and one special character.</span>
+              </label>
+              <label className="block">
+                <span className="label">Confirm password</span>
+                <input name="confirmPassword" type="password" required minLength={8} className="input" placeholder="Re-enter your password" />
               </label>
               <button type="submit" className="btn btn-primary w-full">Set password &amp; sign in</button>
             </form>

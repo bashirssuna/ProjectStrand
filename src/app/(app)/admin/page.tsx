@@ -2,15 +2,15 @@ import { redirect } from "next/navigation";
 import { requireUser } from "@/server/auth";
 import { q } from "@/server/db";
 import { PageHeader, Stat, SectionTitle, Badge, Field } from "@/components/ui";
-import { createAdminAction, createOrganizationAction, setOrgStateAction, sendTestEmailAction } from "@/app/actions";
+import { createAdminAction, createOrganizationAction, setOrgStateAction, sendTestEmailAction, setSuperAdminAction } from "@/app/actions";
 import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
 import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
 
-export default async function AdminPage({ searchParams }: { searchParams: Promise<{ created?: string; error?: string; test?: string; testerror?: string; via?: string; to?: string }> }) {
+export default async function AdminPage({ searchParams }: { searchParams: Promise<{ created?: string; error?: string; test?: string; testerror?: string; via?: string; to?: string; su?: string }> }) {
   const user = await requireUser();
   if (!user.isSuperAdmin) redirect("/dashboard");
-  const { created, error, test, testerror, via, to } = await searchParams;
+  const { created, error, test, testerror, via, to, su } = await searchParams;
   const emailProvider = process.env.EMAIL_PROVIDER || "console";
 
   const orgs = await q<{ id: string; name: string; plan: string; status: string; trialEndsAt: string | null; adminEmail: string | null; members: number; projects: number }>(
@@ -135,22 +135,39 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
 
       <div className="grid lg:grid-cols-2 gap-6">
         <div>
-          <SectionTitle>Users</SectionTitle>
+          <SectionTitle>Platform admins &amp; users</SectionTitle>
+          {su === "ok" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Platform-admin access updated.</div>}
+          {su === "self" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>You can&apos;t change your own platform-admin status.</div>}
           <form action={createAdminAction} className="card p-4 mb-3 flex flex-wrap items-end gap-3">
-            <Field label="New admin email"><input type="email" name="email" required className="input" placeholder="admin@org.org" /></Field>
+            <Field label="New platform-admin email"><input type="email" name="email" required className="input" placeholder="operator@yourco.org" /></Field>
             <Field label="Name"><input name="name" className="input" placeholder="Full name" /></Field>
-            <button className="btn btn-primary" type="submit">Create admin account</button>
-            <span className="text-xs" style={{ color: "var(--muted)" }}>They receive an email link to set their password.</span>
+            <button className="btn btn-primary" type="submit">Create platform admin</button>
+            <span className="text-xs" style={{ color: "var(--danger)" }}>
+              Grants full operator access to this control center. To add an <em>organisation</em> admin instead, use the Organisations section above.
+            </span>
           </form>
           <div className="card overflow-x-auto">
             <table className="w-full text-sm">
-              <thead><tr><th className="th text-left">Name</th><th className="th text-left">Email</th><th className="th text-left">Status</th></tr></thead>
+              <thead><tr><th className="th text-left">Name</th><th className="th text-left">Email</th><th className="th text-left">Status</th><th className="th text-right">Platform access</th></tr></thead>
               <tbody>
                 {users.map((u) => (
                   <tr key={u.id}>
-                    <td className="td">{u.name} {u.isSuper && <Badge tone="brand">admin</Badge>}</td>
+                    <td className="td">{u.name} {u.isSuper && <Badge tone="brand">platform admin</Badge>}</td>
                     <td className="td">{u.email}</td>
                     <td className="td">{u.status === "invited" ? <Badge tone="warn">invited</Badge> : <Badge tone="ok">active</Badge>}</td>
+                    <td className="td text-right">
+                      {u.id === user.id ? (
+                        <span className="text-xs" style={{ color: "var(--muted)" }}>You</span>
+                      ) : (
+                        <form action={setSuperAdminAction}>
+                          <input type="hidden" name="userId" value={u.id} />
+                          <input type="hidden" name="value" value={u.isSuper ? "false" : "true"} />
+                          <button className="btn btn-sm" type="submit" style={u.isSuper ? { color: "var(--danger)", borderColor: "var(--danger)" } : undefined}>
+                            {u.isSuper ? "Revoke admin" : "Make platform admin"}
+                          </button>
+                        </form>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

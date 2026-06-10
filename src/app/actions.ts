@@ -812,6 +812,19 @@ export async function setPasswordAction(formData: FormData) {
   redirect("/dashboard");
 }
 
+export async function setSuperAdminAction(formData: FormData) {
+  const user = await requireUser();
+  if (!user.isSuperAdmin) throw new Error("FORBIDDEN — only platform admins can change platform-admin access");
+  const targetId = String(formData.get("userId"));
+  const makeSuper = String(formData.get("value")) === "true";
+  // You can't change your own platform-admin status (prevents self-lockout).
+  if (targetId === user.id) redirect("/admin?su=self");
+  await q(`UPDATE app_user SET is_super_admin=$2, updated_at=now() WHERE id=$1`, [targetId, makeSuper]);
+  await writeAudit({ userId: user.id, action: "update", entity: "app_user", entityId: targetId, after: { isSuperAdmin: makeSuper } });
+  revalidatePath("/admin");
+  redirect("/admin?su=ok");
+}
+
 export async function createAdminAction(formData: FormData) {
   const user = await requireUser();
   if (!user.isSuperAdmin) throw new Error("FORBIDDEN — only platform admins can create admins");

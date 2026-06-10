@@ -39,9 +39,11 @@ export async function getProjectAccess(projectId: string): Promise<ProjectAccess
   if (pm?.permissions) {
     try { (JSON.parse(pm.permissions) as Permission[]).forEach((p) => permissions.add(p)); } catch {}
   }
-  if (user.isSuperAdmin || orgAdmin) {
-    // Admins oversee everything but, by policy, do NOT create requisitions or
-    // generate reports — those are project-team responsibilities.
+  if (orgAdmin) {
+    // Org admins oversee everything in THEIR organisation but, by policy, do NOT
+    // create requisitions or generate reports — those are project-team work.
+    // The platform super-admin is deliberately NOT escalated here: the operator
+    // manages organisations, not the contents of tenant projects.
     ([
       "project.view", "project.comment", "project.edit", "project.administer",
       "members.manage", "budget.manage", "documents.manage",

@@ -1,8 +1,7 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
 import { requireUser } from "@/server/auth";
 import { q } from "@/server/db";
-import { PageHeader, Stat, SectionTitle, Badge, StatusBadge, severityTone, Field } from "@/components/ui";
+import { PageHeader, Stat, SectionTitle, Badge, Field } from "@/components/ui";
 import { createAdminAction, createOrganizationAction, setOrgStateAction, sendTestEmailAction } from "@/app/actions";
 import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
 import { money, fmtDate, fmtDateTime } from "@/lib/format";
@@ -23,41 +22,35 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
      FROM organization o ORDER BY o.created_at DESC`
   );
 
-  const counts = await q<{ orgs: number; projects: number; users: number; flags: number }>(
+  const counts = await q<{ orgs: number; trial: number; paid: number; users: number }>(
     `SELECT (SELECT COUNT(*)::int FROM organization) AS orgs,
-            (SELECT COUNT(*)::int FROM project) AS projects,
-            (SELECT COUNT(*)::int FROM app_user) AS users,
-            (SELECT COUNT(*)::int FROM anomaly_flag WHERE resolved=false) AS flags`
+            (SELECT COUNT(*)::int FROM organization WHERE plan='trial') AS trial,
+            (SELECT COUNT(*)::int FROM organization WHERE plan!='trial') AS paid,
+            (SELECT COUNT(*)::int FROM app_user) AS users`
   );
   const c = counts[0];
 
-  const projects = await q<{ id: string; code: string; title: string; status: string; org: string; flags: number }>(
-    `SELECT p.id, p.code, p.title, p.status, o.name AS org,
-            (SELECT COUNT(*)::int FROM anomaly_flag WHERE project_id=p.id AND resolved=false) AS flags
-     FROM project p JOIN organization o ON o.id=p.org_id ORDER BY p.created_at DESC`
-  );
   const users = await q<{ id: string; name: string; email: string; status: string; isSuper: boolean }>(
     `SELECT id, name, email, status, is_super_admin AS "isSuper" FROM app_user ORDER BY created_at`
   );
-  const flags = await q<{ id: string; rule: string; severity: string; message: string; projectId: string; code: string }>(
-    `SELECT f.id, f.rule, f.severity, f.message, f.project_id AS "projectId", p.code
-     FROM anomaly_flag f JOIN project p ON p.id=f.project_id
-     WHERE f.resolved=false ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END LIMIT 12`
-  );
+  // Platform-level audit only — the operator does not see tenant project or
+  // financial activity (requisitions, budgets, activities, etc.).
   const audit = await q<{ id: string; action: string; entity: string; createdAt: string; actor: string | null }>(
     `SELECT a.id, a.action, a.entity, a.created_at AS "createdAt", u.name AS actor
-     FROM audit_log a LEFT JOIN app_user u ON u.id=a.user_id ORDER BY a.created_at DESC LIMIT 15`
+     FROM audit_log a LEFT JOIN app_user u ON u.id=a.user_id
+     WHERE a.entity IN ('organization','app_user','role','user_profile')
+     ORDER BY a.created_at DESC LIMIT 15`
   );
 
   return (
     <div className="space-y-7">
-      <PageHeader title="Admin control center" subtitle="Organisation-wide oversight across projects, people, finance and activity." />
+      <PageHeader title="Admin control center" subtitle="Manage organisations, their admins and platform accounts. Tenant project and financial data stays private to each organisation." />
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Stat label="Organisations" value={c.orgs} />
-        <Stat label="Projects" value={c.projects} />
+        <Stat label="On trial" value={c.trial} />
+        <Stat label="Paid" value={c.paid} />
         <Stat label="Users" value={c.users} />
-        <Stat label="Open flags" value={c.flags} tone={c.flags ? "danger" : "ok"} />
       </div>
 
       {/* ---------------- Email delivery ---------------- */}
@@ -68,6 +61,13 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
             Provider: <Badge tone={emailProvider === "console" ? "warn" : "brand"}>{emailProvider}</Badge>{" "}
             {emailProvider === "console" && "— emails are only written to the server logs, not delivered. Set EMAIL_PROVIDER=smtp (or resend) to send real mail."}
           </p>
+          {emailProvider === "smtp" && (
+            <div className="card p-3 mb-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>
+              Heads up: many hosts (including Render) block outbound SMTP ports (25/465/587), which shows up as a
+              &ldquo;Connection timeout&rdquo;. If sends time out, switch to an HTTP API provider — set
+              <strong> EMAIL_PROVIDER=resend</strong> with a <strong>RESEND_API_KEY</strong> (sends over HTTPS, not blocked).
+            </div>
+          )}
           {test === "ok" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Test email sent to {to} via {via}. Check that inbox (and spam).</div>}
           {testerror && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Send failed via {via}: {testerror}</div>}
           <form action={sendTestEmailAction} className="flex flex-wrap items-end gap-3">
@@ -130,43 +130,6 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
               })}
             </tbody>
           </table>
-        </div>
-      </div>
-
-      <div className="grid lg:grid-cols-2 gap-6">
-        <div>
-          <SectionTitle>All projects</SectionTitle>
-          <div className="card overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr><th className="th text-left">Project</th><th className="th text-left">Org</th><th className="th text-left">Status</th><th className="th text-center">Flags</th></tr></thead>
-              <tbody>
-                {projects.map((p) => (
-                  <tr key={p.id} className="hover:bg-[var(--surface)]">
-                    <td className="td"><Link href={`/projects/${p.id}`} className="hover:underline"><span className="font-mono text-xs" style={{ color: "var(--muted)" }}>{p.code}</span> {p.title}</Link></td>
-                    <td className="td text-xs">{p.org}</td>
-                    <td className="td"><StatusBadge status={p.status} /></td>
-                    <td className="td text-center">{p.flags ? <Badge tone="danger">{p.flags}</Badge> : "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div>
-          <SectionTitle>Financial exceptions</SectionTitle>
-          <div className="card p-4">
-            {flags.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No outstanding anomalies.</p> : (
-              <div className="space-y-2">
-                {flags.map((f) => (
-                  <Link key={f.id} href={`/projects/${f.projectId}`} className="flex items-start gap-2 py-1.5 border-b last:border-0 hover:underline" style={{ borderColor: "var(--border)" }}>
-                    <Badge tone={severityTone(f.severity)}>{label(f.rule)}</Badge>
-                    <span className="text-sm min-w-0"><span className="font-mono text-xs" style={{ color: "var(--muted)" }}>{f.code}</span> {f.message}</span>
-                  </Link>
-                ))}
-              </div>
-            )}
-          </div>
         </div>
       </div>
 

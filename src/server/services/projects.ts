@@ -12,17 +12,8 @@ export type ProjectRow = {
 
 // Projects the user can see: explicit membership, or everything for admins.
 export async function listProjectsForUser(userId: string, isSuperAdmin: boolean): Promise<ProjectRow[]> {
-  // Platform operator (super admin) sees every organisation's projects.
-  if (isSuperAdmin) {
-    return q<ProjectRow>(
-      `SELECT p.id, p.code, p.title, p.status, p.mode, p.donor, p.currency,
-              p.start_date AS "startDate", p.end_date AS "endDate",
-              (SELECT role FROM project_member WHERE project_id=p.id AND user_id=$1) AS role
-       FROM project p ORDER BY p.created_at DESC`,
-      [userId]
-    );
-  }
-  // Everyone else is scoped to their organisation:
+  void isSuperAdmin; // the operator is scoped like any other user — no cross-tenant visibility
+  // Scoped to the user's own organisation(s):
   //  - org admins see ALL projects in orgs where they hold the org_admin role;
   //  - other members see only the projects they belong to.
   return q<ProjectRow>(

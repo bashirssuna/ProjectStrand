@@ -27,8 +27,9 @@ export function ColumnChart({ data, height = 140, valueFmt }: {
       <svg viewBox={`0 0 100 ${height / 2.2}`} preserveAspectRatio="none" style={{ width: "100%", height }} role="img">
         {data.map((d, i) => {
           const h = (d.value / max) * (height / 2.2 - 12);
+          const w = Math.min(bw * 0.7, 12);
           return (
-            <rect key={i} x={i * bw + bw * 0.15} y={height / 2.2 - h} width={bw * 0.7} height={h}
+            <rect key={i} x={i * bw + (bw - w) / 2} y={height / 2.2 - h} width={w} height={h}
               rx={1} fill="var(--brand)">
               <title>{d.label}: {valueFmt ? valueFmt(d.value) : d.value}</title>
             </rect>

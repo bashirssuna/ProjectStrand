@@ -119,7 +119,7 @@ export default async function ReportsPage({
       </div>
 
       {/* ---- Financial reports ---- */}
-      <div>
+      <div className="lg:col-span-3">
         <SectionTitle>Financial reports</SectionTitle>
         <div className="grid lg:grid-cols-2 gap-5">
           <div className="card p-4 overflow-x-auto">
@@ -138,10 +138,10 @@ export default async function ReportsPage({
                     const varc = l.planned - l.actual;
                     return (
                       <tr key={l.id}>
-                        <td className="td"><span className="font-mono text-xs" style={{ color: "var(--muted)" }}>{l.code}</span> {l.description}</td>
-                        <td className="td text-right tabular-nums">{money(l.planned, c)}</td>
-                        <td className="td text-right tabular-nums">{money(l.actual, c)}</td>
-                        <td className="td text-right tabular-nums" style={{ color: varc < 0 ? "var(--danger)" : "var(--ok)" }}>{money(varc, c)}</td>
+                        <td className="td"><div className="max-w-[320px] truncate" title={l.description}><span className="font-mono text-xs" style={{ color: "var(--muted)" }}>{l.code}</span> {l.description}</div></td>
+                        <td className="td text-right tabular-nums whitespace-nowrap">{money(l.planned, c)}</td>
+                        <td className="td text-right tabular-nums whitespace-nowrap">{money(l.actual, c)}</td>
+                        <td className="td text-right tabular-nums whitespace-nowrap" style={{ color: varc < 0 ? "var(--danger)" : "var(--ok)" }}>{money(varc, c)}</td>
                         <td className="td text-right tabular-nums">{pct(l.planned ? (l.actual / l.planned) * 100 : 0)}</td>
                       </tr>
                     );
@@ -163,10 +163,10 @@ export default async function ReportsPage({
             {monthly.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No expenditure recorded yet.</p> : (
               <>
                 <ColumnChart data={monthly.map((r) => ({ label: r.m, value: r.v }))} valueFmt={(v) => money(v, c)} />
-                <div className="grid grid-cols-3 gap-3 mt-3 text-sm">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3 text-sm">
                   <div><div className="label">Avg monthly burn</div><div className="font-medium tabular-nums">{money(avgBurn, c)}</div></div>
                   <div><div className="label">Spent / budget</div><div className="font-medium tabular-nums">{pct(totPlanned ? (totActual / totPlanned) * 100 : 0)}</div></div>
-                  <div><div className="label">Runway at this rate</div><div className="font-medium tabular-nums">{runway === null ? "—" : `${runway.toFixed(1)} months`}</div></div>
+                  <div><div className="label">Runway at this rate</div><div className="font-medium tabular-nums">{runway === null ? "—" : runway > 120 ? "120+ months" : `${runway.toFixed(1)} months`}</div></div>
                 </div>
                 <div className="mt-3"><HBar label="Overall utilisation" value={totActual} max={totPlanned} money={`${money(totActual, c)} / ${money(totPlanned, c)}`} /></div>
               </>

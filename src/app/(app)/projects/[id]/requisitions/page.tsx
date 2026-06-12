@@ -72,9 +72,8 @@ export default async function RequisitionsPage({ params }: { params: Promise<{ i
                 {lines.map((l) => <option key={l.id} value={l.id}>{l.code} · {l.description} ({money(l.remaining, c)} left)</option>)}
               </select>
             </Field>
-            <Field label="Activity">
-              <select name="activityId" className="select">
-                <option value="">— none / enter manually below —</option>
+            <Field label="Activities covered (hold Ctrl/Cmd to select several)">
+              <select name="activityIds" multiple size={5} className="select" style={{ height: "auto" }}>
                 {activities.map((a) => <option key={a.id} value={a.id}>{a.code ? a.code + " " : ""}{a.title}</option>)}
               </select>
             </Field>

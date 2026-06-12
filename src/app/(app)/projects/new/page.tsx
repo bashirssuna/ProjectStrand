@@ -55,7 +55,6 @@ export default async function NewProjectPage() {
         <Field label="Mode">
           <select name="mode" className="select" defaultValue="advanced">
             <option value="advanced">Advanced — full grant management (budget, requisitions, logframe)</option>
-            <option value="simple">Simple — just track activities and progress</option>
           </select>
         </Field>
 

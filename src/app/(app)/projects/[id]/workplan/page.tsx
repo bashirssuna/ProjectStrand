@@ -1,6 +1,6 @@
 import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
-import { updateActivityAction, addActivityAction, uploadWorkplanAction, workplanFromBudgetAction, editActivityDetailsAction, deleteActivityAction } from "@/app/actions";
+import { updateActivityAction, addActivityAction, uploadWorkplanAction, workplanFromBudgetAction, editActivityDetailsAction, deleteActivityAction, uploadActivityEvidenceAction } from "@/app/actions";
 import { Gantt, type GanttRow } from "@/components/gantt";
 import { StatusBadge, SectionTitle, Empty, Field, ProgressBar, progressTone } from "@/components/ui";
 import { ACTIVITY_STATUS, label } from "@/lib/enums";
@@ -16,6 +16,16 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
   const budgetLineCount = (await one<{ c: number }>(
     `SELECT COUNT(*)::int c FROM budget_line bl JOIN budget b ON b.id=bl.budget_id WHERE b.project_id=$1`, [id]
   ))?.c ?? 0;
+
+  const evid = await q<{ activityId: string; docId: string; name: string }>(
+    `SELECT ae.activity_id AS "activityId", d.id AS "docId", d.name
+     FROM activity_evidence ae JOIN project_document d ON d.id=ae.document_id
+     WHERE ae.activity_id IN (SELECT id FROM activity WHERE project_id=$1) ORDER BY ae.created_at`, [id]
+  );
+  const evidByAct = new Map<string, { docId: string; name: string }[]>();
+  for (const e of evid) {
+    const arr = evidByAct.get(e.activityId) ?? []; arr.push({ docId: e.docId, name: e.name }); evidByAct.set(e.activityId, arr);
+  }
 
   const rows = await q<Row>(
     `SELECT a.id, a.code, a.title, a.type, a.status, a.progress,
@@ -125,6 +135,24 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
                               <input type="hidden" name="activityId" value={r.id} />
                               <button className="btn btn-sm w-full" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete{hasChildren ? " (incl. sub-activities)" : ""}</button>
                             </form>
+                            <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                              <div className="text-xs font-medium mb-1" style={{ color: "var(--muted)" }}>Completion evidence</div>
+                              {(evidByAct.get(r.id) ?? []).length === 0
+                                ? <div className="text-xs" style={{ color: "var(--muted)" }}>None yet — attach an activity report, photos, attendance list…</div>
+                                : (
+                                  <ul className="text-xs space-y-1 mb-1">
+                                    {(evidByAct.get(r.id) ?? []).map((e) => (
+                                      <li key={e.docId}><a href={`/api/files/${e.docId}`} className="hover:underline" style={{ color: "var(--brand)" }}>📎 {e.name}</a></li>
+                                    ))}
+                                  </ul>
+                                )}
+                              <form action={uploadActivityEvidenceAction} className="flex items-end gap-2 mt-2">
+                                <input type="hidden" name="projectId" value={id} />
+                                <input type="hidden" name="activityId" value={r.id} />
+                                <input type="file" name="file" required className="input" style={{ fontSize: 12 }} />
+                                <button className="btn btn-sm" type="submit">Attach</button>
+                              </form>
+                            </div>
                             <div className="text-xs mt-3 text-center" style={{ color: "var(--muted)" }}>Click outside or “Edit” again to close.</div>
                           </div>
                         </details>

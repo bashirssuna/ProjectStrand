@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
+import { budgetLineRollups } from "@/server/services/budget";
+import { HBar, ColumnChart } from "@/components/charts";
+import { money, pct } from "@/lib/format";
 import { generateReportAction, emailReportAction } from "@/app/actions";
 import { SectionTitle, Empty, Badge, Field, StatusBadge } from "@/components/ui";
 import { fmtDateTime } from "@/lib/format";
@@ -26,6 +29,21 @@ export default async function ReportsPage({
   const sections = selected ? await q<{ id: string; title: string; content: string }>(
     `SELECT id, title, content FROM report_section WHERE report_id=$1 ORDER BY "order"`, [selected.id]
   ) : [];
+
+  // ---- financial statements data ----
+  const proj = await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [id]);
+  const c = proj?.currency ?? "USD";
+  const bud = await one<{ id: string }>(`SELECT id FROM budget WHERE project_id=$1 ORDER BY version DESC LIMIT 1`, [id]);
+  const lines = bud ? await budgetLineRollups(bud.id) : [];
+  const totPlanned = lines.reduce((s, l) => s + l.planned, 0);
+  const totActual = lines.reduce((s, l) => s + l.actual, 0);
+  const monthly = await q<{ m: string; v: number }>(
+    `SELECT to_char(date_trunc('month', date), 'Mon YY') AS m, SUM(amount)::float AS v
+     FROM expenditure WHERE project_id=$1
+     GROUP BY date_trunc('month', date) ORDER BY date_trunc('month', date)`, [id]
+  );
+  const avgBurn = monthly.length ? monthly.reduce((s, r) => s + r.v, 0) / monthly.length : 0;
+  const runway = avgBurn > 0 ? (totPlanned - totActual) / avgBurn : null;
 
   return (
     <div className="grid lg:grid-cols-3 gap-6">
@@ -98,6 +116,66 @@ export default async function ReportsPage({
             </div>
           </div>
         )}
+      </div>
+
+      {/* ---- Financial reports ---- */}
+      <div>
+        <SectionTitle>Financial reports</SectionTitle>
+        <div className="grid lg:grid-cols-2 gap-5">
+          <div className="card p-4 overflow-x-auto">
+            <div className="text-sm font-medium mb-2">Budget vs expenditure (variance)</div>
+            {lines.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No budget lines yet.</p> : (
+              <table className="w-full text-sm">
+                <thead><tr>
+                  <th className="th text-left">Line</th>
+                  <th className="th text-right">Budget</th>
+                  <th className="th text-right">Actual</th>
+                  <th className="th text-right">Variance</th>
+                  <th className="th text-right">%</th>
+                </tr></thead>
+                <tbody>
+                  {lines.map((l) => {
+                    const varc = l.planned - l.actual;
+                    return (
+                      <tr key={l.id}>
+                        <td className="td"><span className="font-mono text-xs" style={{ color: "var(--muted)" }}>{l.code}</span> {l.description}</td>
+                        <td className="td text-right tabular-nums">{money(l.planned, c)}</td>
+                        <td className="td text-right tabular-nums">{money(l.actual, c)}</td>
+                        <td className="td text-right tabular-nums" style={{ color: varc < 0 ? "var(--danger)" : "var(--ok)" }}>{money(varc, c)}</td>
+                        <td className="td text-right tabular-nums">{pct(l.planned ? (l.actual / l.planned) * 100 : 0)}</td>
+                      </tr>
+                    );
+                  })}
+                  <tr>
+                    <td className="td font-medium">Total</td>
+                    <td className="td text-right tabular-nums font-medium">{money(totPlanned, c)}</td>
+                    <td className="td text-right tabular-nums font-medium">{money(totActual, c)}</td>
+                    <td className="td text-right tabular-nums font-medium" style={{ color: totPlanned - totActual < 0 ? "var(--danger)" : "var(--ok)" }}>{money(totPlanned - totActual, c)}</td>
+                    <td className="td text-right tabular-nums font-medium">{pct(totPlanned ? (totActual / totPlanned) * 100 : 0)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="card p-4">
+            <div className="text-sm font-medium mb-2">Burn rate</div>
+            {monthly.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No expenditure recorded yet.</p> : (
+              <>
+                <ColumnChart data={monthly.map((r) => ({ label: r.m, value: r.v }))} valueFmt={(v) => money(v, c)} />
+                <div className="grid grid-cols-3 gap-3 mt-3 text-sm">
+                  <div><div className="label">Avg monthly burn</div><div className="font-medium tabular-nums">{money(avgBurn, c)}</div></div>
+                  <div><div className="label">Spent / budget</div><div className="font-medium tabular-nums">{pct(totPlanned ? (totActual / totPlanned) * 100 : 0)}</div></div>
+                  <div><div className="label">Runway at this rate</div><div className="font-medium tabular-nums">{runway === null ? "—" : `${runway.toFixed(1)} months`}</div></div>
+                </div>
+                <div className="mt-3"><HBar label="Overall utilisation" value={totActual} max={totPlanned} money={`${money(totActual, c)} / ${money(totPlanned, c)}`} /></div>
+              </>
+            )}
+          </div>
+        </div>
+        <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
+          Revenue vs expenditure, balance sheet and cashflow statements require the institutional chart of accounts — planned as the next finance phase.
+        </p>
       </div>
     </div>
   );

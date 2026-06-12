@@ -69,8 +69,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <div className="md:hidden font-display text-lg font-semibold">Strand</div>
           <div className="flex-1" />
           <div className="flex items-center gap-2">
-            <Link href="/dashboard" className="btn btn-sm relative" title="Notifications">
-              ✉ {unread[0]?.c ? <span className="ml-1 text-xs rounded-full px-1.5" style={{ background: "var(--brand)", color: "var(--brand-fg)" }}>{unread[0].c}</span> : null}
+            <Link href="/notifications" className="btn btn-sm relative" title="Notifications">
+              🔔 {unread[0]?.c ? <span className="ml-1 text-xs rounded-full px-1.5" style={{ background: "var(--brand)", color: "var(--brand-fg)" }}>{unread[0].c}</span> : null}
             </Link>
             <ThemeToggle />
             <div className="flex items-center gap-2 pl-2 ml-1 border-l" style={{ borderColor: "var(--border)" }}>

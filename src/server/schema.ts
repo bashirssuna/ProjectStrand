@@ -484,4 +484,57 @@ CREATE INDEX IF NOT EXISTS idx_password_token_token ON password_token(token);
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS plan text NOT NULL DEFAULT 'trial';
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS trial_ends_at timestamptz;
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'active';
+
+-- One requisition can cover several activities (one budget line, many activities).
+CREATE TABLE IF NOT EXISTS requisition_activity (
+  id text PRIMARY KEY,
+  requisition_id text NOT NULL REFERENCES requisition(id) ON DELETE CASCADE,
+  activity_id text NOT NULL REFERENCES activity(id) ON DELETE CASCADE,
+  UNIQUE (requisition_id, activity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reqact_req ON requisition_activity(requisition_id);
+
+-- Supporting documents attached to a requisition (quotes, invoices, approvals).
+CREATE TABLE IF NOT EXISTS requisition_attachment (
+  id text PRIMARY KEY,
+  requisition_id text NOT NULL REFERENCES requisition(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  storage_key text,
+  mime_type text,
+  size_bytes integer,
+  uploaded_by text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Payment vouchers: actual disbursement against an approved requisition.
+-- One voucher per payee, so a requisition can be paid out to several
+-- individuals/institutions, and partial funding is the sum of vouchers.
+CREATE TABLE IF NOT EXISTS payment_voucher (
+  id text PRIMARY KEY,
+  project_id text NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  requisition_id text NOT NULL REFERENCES requisition(id) ON DELETE CASCADE,
+  number text NOT NULL,
+  payee text NOT NULL,
+  amount double precision NOT NULL DEFAULT 0,
+  method text NOT NULL DEFAULT 'bank_transfer',
+  reference text,
+  purpose text,
+  prepared_by text,
+  prepared_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_pv_req ON payment_voucher(requisition_id);
+
+-- Evidence files proving an activity was completed (reports, photos…).
+CREATE TABLE IF NOT EXISTS activity_evidence (
+  id text PRIMARY KEY,
+  activity_id text NOT NULL REFERENCES activity(id) ON DELETE CASCADE,
+  document_id text NOT NULL REFERENCES project_document(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Risk/issue closure evidence + lessons learnt.
+ALTER TABLE risk_issue ADD COLUMN IF NOT EXISTS closed_at timestamptz;
+ALTER TABLE risk_issue ADD COLUMN IF NOT EXISTS lessons text;
+ALTER TABLE risk_issue ADD COLUMN IF NOT EXISTS evidence_document_id text;
 `;

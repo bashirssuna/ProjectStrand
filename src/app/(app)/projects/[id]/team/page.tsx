@@ -4,8 +4,9 @@ import { addMemberAction, updateMemberRoleAction, removeMemberAction } from "@/a
 import { SectionTitle, Badge, Field } from "@/components/ui";
 import { PROJECT_ROLES, ROLE_PERMISSIONS, label } from "@/lib/enums";
 
-export default async function TeamPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function TeamPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ invite?: string; why?: string }> }) {
   const { id } = await params;
+  const sp = await searchParams;
   const access = await getProjectAccess(id);
   const canManage = access.permissions.has("members.manage");
 
@@ -21,6 +22,9 @@ export default async function TeamPage({ params }: { params: Promise<{ id: strin
     <div className="space-y-7">
       <div>
         <SectionTitle>Team members</SectionTitle>
+        {sp.invite === "sent" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Invitation email sent.</div>}
+        {sp.invite === "added" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Member added to the project (they already had an account, so no invite email was needed).</div>}
+        {sp.invite === "emailfailed" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Member was added, but the invitation email failed to send{sp.why ? `: ${sp.why}` : ""}. Fix email in Admin → Email delivery, then ask them to use “Forgot password” with this email to get their link.</div>}
         <div className="card overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr>

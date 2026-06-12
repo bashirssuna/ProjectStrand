@@ -35,7 +35,7 @@ export const PERMISSIONS = [
 export type Permission = (typeof PERMISSIONS)[number];
 
 export const ROLE_PERMISSIONS: Record<ProjectRole, Permission[]> = {
-  pi: [...PERMISSIONS],
+  pi: PERMISSIONS.filter((p) => p !== "requisitions.create"),  // PIs approve/sign but do NOT initiate requisitions (segregation of duties)
   project_manager: [...PERMISSIONS],
   finance_admin: [
     "project.view", "project.comment", "budget.manage", "reports.manage",

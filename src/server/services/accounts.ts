@@ -10,7 +10,7 @@ import { SYSTEM_ADMIN_EMAIL, APP_NAME } from "@/lib/config";
 const APP_URL = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "http://localhost:3000";
 
 // Creates a single-use token and emails the recipient a link to set a password.
-export async function issuePasswordToken(userId: string, purpose: "invite" | "reset", email: string, name: string): Promise<string> {
+export async function issuePasswordToken(userId: string, purpose: "invite" | "reset", email: string, name: string): Promise<{ token: string; emailStatus: "sent" | "failed"; emailError?: string }> {
   const token = randomBytes(24).toString("hex");
   const expires = new Date(Date.now() + 1000 * 60 * 60 * 48).toISOString(); // 48h
   await q(`INSERT INTO password_token (id, user_id, token, purpose, expires_at) VALUES ($1,$2,$3,$4,$5)`,
@@ -19,7 +19,7 @@ export async function issuePasswordToken(userId: string, purpose: "invite" | "re
   const intro = purpose === "invite"
     ? "An account has been created for you on Project Strand. Set your password to sign in:"
     : "We received a request to reset your password. Set a new one here:";
-  await sendEmail({
+  const sent = await sendEmail({
     to: email,
     subject: purpose === "invite" ? "You've been invited to Project Strand" : "Reset your Project Strand password",
     html:
@@ -28,7 +28,7 @@ export async function issuePasswordToken(userId: string, purpose: "invite" | "re
       `<p><a href="${link}">${link}</a></p>` +
       `<p>This link expires in 48 hours. If you didn't expect this, you can ignore it.</p>`,
   });
-  return token;
+  return { token, emailStatus: sent.status, emailError: sent.error };
 }
 
 // Looks up and validates a password token.
@@ -50,9 +50,11 @@ export async function markTokenUsed(token: string): Promise<void> {
 // New users are created in 'invited' status and emailed a set-password link.
 export async function addProjectMemberByEmail(
   projectId: string, email: string, name: string, role: string, actorId: string
-): Promise<void> {
+): Promise<{ emailStatus: "sent" | "failed" | "none"; emailError?: string }> {
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
   let target = await one<{ id: string; status: string }>(`SELECT id, status FROM app_user WHERE email=$1`, [email]);
+  let emailStatus: "sent" | "failed" | "none" = "none";
+  let emailError: string | undefined;
 
   if (!target) {
     const uid = id("usr");
@@ -60,7 +62,8 @@ export async function addProjectMemberByEmail(
     await q(`INSERT INTO app_user (id, email, name, status) VALUES ($1,$2,$3,'invited')`, [uid, email, displayName]);
     await q(`INSERT INTO user_profile (id, user_id) VALUES ($1,$2)`, [id("up"), uid]);
     if (org) await q(`INSERT INTO org_membership (id, org_id, user_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [id("om"), org.orgId, uid]);
-    await issuePasswordToken(uid, "invite", email, displayName);
+    const issued = await issuePasswordToken(uid, "invite", email, displayName);
+    emailStatus = issued.emailStatus; emailError = issued.emailError;
     target = { id: uid, status: "invited" };
   } else if (org) {
     await q(`INSERT INTO org_membership (id, org_id, user_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [id("om"), org.orgId, target.id]);
@@ -73,6 +76,7 @@ export async function addProjectMemberByEmail(
     title: "You've been added to a project", body: `You were added to a project as ${role.replace(/_/g, " ")}.`,
     link: `/projects/${projectId}`, email: true });
   await writeAudit({ orgId: org?.orgId ?? null, userId: actorId, action: "create", entity: "project_member", entityId: projectId, after: { email, role } });
+  return { emailStatus, emailError };
 }
 
 // Super-admin creates another platform admin account (set-password email sent).

@@ -304,6 +304,10 @@ export async function createRequisitionAction(formData: FormData) {
     activityId = aid;
   }
 
+  // multi-select: one requisition can cover several activities
+  const activityIds = (formData.getAll("activityIds") as string[]).filter(Boolean);
+  if (!activityId && activityIds.length) activityId = activityIds[0];
+
   const rid = await createRequisition({
     projectId, userId: user.id,
     title: String(formData.get("title") || "Requisition"),
@@ -314,6 +318,11 @@ export async function createRequisitionAction(formData: FormData) {
     neededBy: String(formData.get("neededBy") || "") || undefined,
     payee: String(formData.get("payee") || "") || undefined,
   });
+  const linked = new Set<string>([...activityIds, ...(activityId ? [activityId] : [])]);
+  for (const aid of linked) {
+    await q(`INSERT INTO requisition_activity (id, requisition_id, activity_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      [id("ra"), rid, aid]);
+  }
   revalidatePath(`/projects/${projectId}/requisitions`);
   redirect(`/projects/${projectId}/requisitions/${rid}`);
 }
@@ -403,8 +412,12 @@ export async function addMemberAction(formData: FormData) {
   if (!email) { revalidatePath(`/projects/${projectId}/team`); return; }
   const role = String(formData.get("role") || "member");
   const name = String(formData.get("name") || "");
-  await addProjectMemberByEmail(projectId, email, name, role, access.user.id);
+  const res = await addProjectMemberByEmail(projectId, email, name, role, access.user.id);
   revalidatePath(`/projects/${projectId}/team`);
+  if (res.emailStatus === "failed") {
+    redirect(`/projects/${projectId}/team?invite=emailfailed&why=${encodeURIComponent((res.emailError || "unknown").slice(0, 180))}`);
+  }
+  redirect(`/projects/${projectId}/team?invite=${res.emailStatus === "sent" ? "sent" : "added"}`);
 }
 
 export async function updateMemberRoleAction(formData: FormData) {
@@ -1020,4 +1033,109 @@ export async function uploadObjectivesAction(formData: FormData) {
            VALUES ($1,$2,$3,'proposal',$4,$5,$6,$7)`, [docId, projectId, file.name, mimeFor(file.name), skey, buf.length, text.slice(0, 20000)]);
   await writeAudit({ userId: user.id, action: "import", entity: "objective", entityId: projectId, after: { created } });
   revalidatePath(`/projects/${projectId}/logframe`);
+}
+
+/* ---------------- Requisition attachments, vouchers ---------------- */
+export async function addRequisitionAttachmentAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const reqId = String(formData.get("requisitionId"));
+  const access = await getProjectAccess(projectId);
+  if (!access.permissions.has("requisitions.create") && !access.permissions.has("requisitions.approve"))
+    throw new Error("FORBIDDEN");
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) redirect(`/projects/${projectId}/requisitions/${reqId}`);
+  const buf = Buffer.from(await file.arrayBuffer());
+  const aid = id("ratt");
+  const key = await saveUpload(aid, file.name, buf);
+  await q(`INSERT INTO requisition_attachment (id, requisition_id, name, storage_key, mime_type, size_bytes, uploaded_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`, [aid, reqId, file.name, key, mimeFor(file.name), buf.length, user.id]);
+  await writeAudit({ userId: user.id, action: "upload", entity: "requisition", entityId: reqId, after: { attachment: file.name } });
+  revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
+}
+
+export async function createVoucherAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const reqId = String(formData.get("requisitionId"));
+  await requirePermission(projectId, "budget.manage");
+  const amount = Number(formData.get("amount") || 0);
+  const payee = String(formData.get("payee") || "").trim();
+  if (!payee || amount <= 0) redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=invalid`);
+
+  const n = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM payment_voucher WHERE project_id=$1`, [projectId]))?.c ?? 0;
+  const vid = id("pv");
+  await q(`INSERT INTO payment_voucher (id, project_id, requisition_id, number, payee, amount, method, reference, purpose, prepared_by, prepared_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [vid, projectId, reqId, `PV-${String(n + 1).padStart(4, "0")}`, payee, amount,
+     String(formData.get("method") || "bank_transfer"), String(formData.get("reference") || "") || null,
+     String(formData.get("purpose") || "") || null, user.id, user.name]);
+
+  // roll the disbursement state up onto the requisition
+  const req = await one<{ amount: number }>(`SELECT amount FROM requisition WHERE id=$1`, [reqId]);
+  const tot = (await one<{ s: number }>(`SELECT COALESCE(SUM(amount),0) s FROM payment_voucher WHERE requisition_id=$1`, [reqId]))?.s ?? 0;
+  await q(`UPDATE requisition SET disbursed_amount=$2, status=$3, updated_at=now() WHERE id=$1`,
+    [reqId, tot, req && tot >= req.amount ? "disbursed" : "partially_funded"]);
+  await writeAudit({ userId: user.id, action: "create", entity: "payment_voucher", entityId: vid, after: { payee, amount } });
+  revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
+  redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=ok`);
+}
+
+/* ---------------- Risk closure with evidence ---------------- */
+export async function closeRiskAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const riskId = String(formData.get("riskId"));
+  await requirePermission(projectId, "project.edit");
+  let evidenceDocId: string | null = null;
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) {
+    const buf = Buffer.from(await file.arrayBuffer());
+    evidenceDocId = id("doc");
+    const key = await saveUpload(evidenceDocId, file.name, buf);
+    await q(`INSERT INTO project_document (id, project_id, name, doc_type, mime_type, storage_key, size_bytes)
+             VALUES ($1,$2,$3,'evidence',$4,$5,$6)`, [evidenceDocId, projectId, file.name, mimeFor(file.name), key, buf.length]);
+  }
+  await q(`UPDATE risk_issue SET status='closed', closed_at=now(), lessons=$3, evidence_document_id=COALESCE($4, evidence_document_id)
+           WHERE id=$1 AND project_id=$2`,
+    [riskId, projectId, String(formData.get("lessons") || "") || null, evidenceDocId]);
+  await writeAudit({ userId: user.id, action: "update", entity: "risk_issue", entityId: riskId, after: { closed: true } });
+  revalidatePath(`/projects/${projectId}/risks`);
+}
+
+/* ---------------- Activity completion evidence ---------------- */
+export async function uploadActivityEvidenceAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const activityId = String(formData.get("activityId"));
+  await requirePermission(projectId, "project.edit");
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) { revalidatePath(`/projects/${projectId}/workplan`); return; }
+  const buf = Buffer.from(await file.arrayBuffer());
+  const docId = id("doc");
+  const key = await saveUpload(docId, file.name, buf);
+  await q(`INSERT INTO project_document (id, project_id, name, doc_type, mime_type, storage_key, size_bytes)
+           VALUES ($1,$2,$3,'evidence',$4,$5,$6)`, [docId, projectId, file.name, mimeFor(file.name), key, buf.length]);
+  await q(`INSERT INTO activity_evidence (id, activity_id, document_id) VALUES ($1,$2,$3)`, [id("ae"), activityId, docId]);
+  await writeAudit({ userId: user.id, action: "upload", entity: "activity", entityId: activityId, after: { evidence: file.name } });
+  revalidatePath(`/projects/${projectId}/workplan`);
+}
+
+/* ---------------- Project abstract ---------------- */
+export async function saveAbstractAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  await q(`UPDATE project SET summary=$2, updated_at=now() WHERE id=$1`,
+    [projectId, String(formData.get("summary") || "") || null]);
+  await writeAudit({ userId: user.id, action: "update", entity: "project", entityId: projectId, after: { summary: true } });
+  revalidatePath(`/projects/${projectId}/sow`);
+  revalidatePath(`/projects/${projectId}`);
+}
+
+/* ---------------- Notifications ---------------- */
+export async function markNotificationsReadAction() {
+  const user = await requireUser();
+  await q(`UPDATE notification SET read=true WHERE user_id=$1 AND read=false`, [user.id]);
+  revalidatePath("/notifications");
 }

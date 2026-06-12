@@ -1,16 +1,12 @@
 import { getProjectAccess } from "@/server/policy";
 import { q } from "@/server/db";
-import { addFolderAction, uploadDocumentAction, deleteDocumentAction } from "@/app/actions";
-import { SectionTitle, Empty, Badge, Field } from "@/components/ui";
+import { SectionTitle, Empty, Badge} from "@/components/ui";
 import { fmtDate, num } from "@/lib/format";
 import { label } from "@/lib/enums";
-
-const CATEGORIES = ["proposals", "sows", "budgets", "reports", "approvals", "contracts", "meeting", "evidence", "admin", "general"];
 
 export default async function DocumentsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const access = await getProjectAccess(id);
-  const canManage = access.permissions.has("documents.manage");
 
   const folders = await q<{ id: string; name: string; category: string }>(
     `SELECT id, name, category FROM folder WHERE project_id=$1 ORDER BY name`, [id]
@@ -42,13 +38,6 @@ export default async function DocumentsPage({ params }: { params: Promise<{ id: 
         <span className="text-xs" style={{ color: "var(--muted)" }}>
           {d.sizeBytes ? `${num(Math.round(d.sizeBytes / 1024))} KB · ` : ""}{fmtDate(d.createdAt)}
         </span>
-        {canManage && (
-          <form action={deleteDocumentAction}>
-            <input type="hidden" name="projectId" value={id} />
-            <input type="hidden" name="docId" value={d.id} />
-            <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete</button>
-          </form>
-        )}
       </div>
     </div>
   );
@@ -58,7 +47,7 @@ export default async function DocumentsPage({ params }: { params: Promise<{ id: 
       <div>
         <SectionTitle>Repository</SectionTitle>
         {folders.length === 0 && docs.length === 0 ? (
-          <Empty title="No documents" hint={canManage ? "Create folders and add documents below." : "No documents uploaded."} />
+          <Empty title="No documents" hint="Documents added in the project sections will appear here." />
         ) : (
           <div className="space-y-4">
             {folders.map((f) => (
@@ -83,40 +72,7 @@ export default async function DocumentsPage({ params }: { params: Promise<{ id: 
         )}
       </div>
 
-      {canManage && (
-        <div className="grid sm:grid-cols-2 gap-5">
-          <form action={addFolderAction} className="card p-4 space-y-3">
-            <SectionTitle>New folder</SectionTitle>
-            <input type="hidden" name="projectId" value={id} />
-            <Field label="Name"><input name="name" required className="input" placeholder="Donor reports" /></Field>
-            <Field label="Category">
-              <select name="category" className="select">{CATEGORIES.map((c) => <option key={c} value={c}>{label(c)}</option>)}</select>
-            </Field>
-            <button className="btn btn-primary" type="submit">Create folder</button>
-          </form>
-
-          <form action={uploadDocumentAction} className="card p-4 space-y-3">
-            <SectionTitle>Upload document</SectionTitle>
-            <input type="hidden" name="projectId" value={id} />
-            <Field label="File">
-              <input type="file" name="file" required accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg" className="input" />
-            </Field>
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Type">
-                <select name="docType" className="select">{CATEGORIES.map((c) => <option key={c} value={c}>{label(c)}</option>)}</select>
-              </Field>
-              <Field label="Folder">
-                <select name="folderId" className="select">
-                  <option value="">Unfiled</option>
-                  {folders.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-                </select>
-              </Field>
-            </div>
-            <button className="btn btn-primary" type="submit">Upload from my computer</button>
-            <p className="text-xs" style={{ color: "var(--muted)" }}>Stored locally in dev; production uses signed S3 uploads. Text is auto-extracted for search.</p>
-          </form>
-        </div>
-      )}
+      <p className="text-xs" style={{ color: "var(--muted)" }}>This repository is read-only: documents are added from their own sections — SOW &amp; project documents, Work-plan evidence, Requisition attachments, Risk closure evidence and Objectives uploads — and collected here for viewing and download.</p>
     </div>
   );
 }

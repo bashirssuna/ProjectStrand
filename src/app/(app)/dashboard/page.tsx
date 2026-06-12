@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { requireUser } from "@/server/auth";
 import { listProjectsForUser, getProjectSummary, healthScore } from "@/server/services/projects";
+import { HBar } from "@/components/charts";
 import { q } from "@/server/db";
 import { getUserOrg } from "@/server/services/accounts";
 import { PageHeader, Stat, Badge, StatusBadge, ProgressBar, Empty } from "@/components/ui";
@@ -68,6 +69,18 @@ export default async function DashboardPage() {
           {org?.isOrgAdmin && (
             <a href="/upgrade" target="_blank" rel="noopener" className="btn btn-primary">Upgrade plan</a>
           )}
+        </div>
+      )}
+
+      {totalPlanned > 0 && (
+        <div className="card p-4 mb-7">
+          <div className="text-sm font-medium mb-1">Budget utilisation by project</div>
+          {projects.map((p, i) => {
+            const b = summaries[i]?.budget;
+            if (!b || !b.planned) return null;
+            return <HBar key={p.id} label={`${p.code} ${p.title}`} value={b.actual} max={b.planned}
+              money={`${money(b.actual, p.currency)} / ${money(b.planned, p.currency)}`} />;
+          })}
         </div>
       )}
 

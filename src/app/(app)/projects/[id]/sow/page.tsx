@@ -1,7 +1,7 @@
 import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
-import { ensureSowAction, updateSowSectionAction, approveSowAction, uploadSowAction } from "@/app/actions";
-import { SectionTitle, Empty, StatusBadge, Badge } from "@/components/ui";
+import { ensureSowAction, updateSowSectionAction, approveSowAction, uploadSowAction, saveAbstractAction, uploadDocumentAction } from "@/app/actions";
+import { SectionTitle, Empty, StatusBadge, Badge, Field } from "@/components/ui";
 import { fmtDate } from "@/lib/format";
 
 export default async function SowPage({ params }: { params: Promise<{ id: string }> }) {
@@ -9,9 +9,10 @@ export default async function SowPage({ params }: { params: Promise<{ id: string
   const access = await getProjectAccess(id);
   const canEdit = access.permissions.has("project.edit");
   const canApprove = access.permissions.has("project.administer");
+  const canUploadDocs = access.permissions.has("documents.manage");
 
-  const project = await one<{ title: string; donor: string | null; grantNumber: string | null; startDate: string | null; endDate: string | null }>(
-    `SELECT title, donor, grant_number AS "grantNumber", start_date AS "startDate", end_date AS "endDate" FROM project WHERE id=$1`, [id]
+  const project = await one<{ title: string; donor: string | null; grantNumber: string | null; startDate: string | null; endDate: string | null; summary: string | null }>(
+    `SELECT title, donor, grant_number AS "grantNumber", start_date AS "startDate", end_date AS "endDate", summary FROM project WHERE id=$1`, [id]
   );
   const sow = await one<{ id: string; status: string; approvedAt: string | null }>(
     `SELECT id, status, approved_at AS "approvedAt" FROM sow WHERE project_id=$1`, [id]
@@ -55,6 +56,46 @@ export default async function SowPage({ params }: { params: Promise<{ id: string
           <form action={approveSowAction}>
             <input type="hidden" name="projectId" value={id} />
             <button className="btn btn-primary btn-sm" type="submit">Approve SOW</button>
+          </form>
+        )}
+      </div>
+
+      {/* Project summary / abstract */}
+      <div className="card p-5">
+        <SectionTitle>Project summary / abstract</SectionTitle>
+        {canEdit ? (
+          <form action={saveAbstractAction} className="space-y-2">
+            <input type="hidden" name="projectId" value={id} />
+            <textarea name="summary" rows={4} className="textarea" defaultValue={project?.summary ?? ""}
+              placeholder="A short abstract of the project — population, intervention, expected outcomes…" />
+            <div className="flex justify-end"><button className="btn btn-primary btn-sm" type="submit">Save summary</button></div>
+          </form>
+        ) : (
+          <p className="text-sm whitespace-pre-line">{project?.summary ?? "—"}</p>
+        )}
+      </div>
+
+      {/* Key project documents */}
+      <div className="card p-5">
+        <SectionTitle>Project documents</SectionTitle>
+        <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
+          Attach the documents that define this project — Grant Agreement, Proposal, Protocol, IRB approval… They are filed in the Documents repository.
+        </p>
+        {canUploadDocs && (
+          <form action={uploadDocumentAction} className="flex flex-wrap items-end gap-3">
+            <input type="hidden" name="projectId" value={id} />
+            <Field label="File"><input type="file" name="file" required className="input" /></Field>
+            <Field label="Type">
+              <select name="docType" className="select">
+                <option value="grant_agreement">Grant agreement</option>
+                <option value="proposals">Proposal</option>
+                <option value="protocol">Protocol</option>
+                <option value="irb_approval">IRB approval</option>
+                <option value="contracts">Contract</option>
+                <option value="general">Other</option>
+              </select>
+            </Field>
+            <button className="btn btn-primary" type="submit">Upload</button>
           </form>
         )}
       </div>

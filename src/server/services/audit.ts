@@ -3,6 +3,8 @@ import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
 import { sendEmail } from "@/server/email";
 
+const APP_URL = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "http://localhost:3000";
+
 export async function writeAudit(input: {
   orgId?: string | null;
   userId?: string | null;
@@ -43,7 +45,7 @@ export async function notify(input: {
       const r = await sendEmail({
         to: u.email,
         subject: input.title,
-        html: `<p>${input.body ?? input.title}</p>${input.link ? `<p><a href="${process.env.APP_URL ?? ""}${input.link}">Open in Project Strand</a></p>` : ""}`,
+        html: `<p>${input.body ?? input.title}</p>${input.link ? `<p><a href="${APP_URL}${input.link}">Open in Project Strand</a></p>` : ""}`,
       });
       emailStatus = r.status;
     }

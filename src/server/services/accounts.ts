@@ -56,17 +56,20 @@ export async function addProjectMemberByEmail(
   let emailStatus: "sent" | "failed" | "none" = "none";
   let emailError: string | undefined;
 
+  const displayName = name || email.split("@")[0];
   if (!target) {
     const uid = id("usr");
-    const displayName = name || email.split("@")[0];
     await q(`INSERT INTO app_user (id, email, name, status) VALUES ($1,$2,$3,'invited')`, [uid, email, displayName]);
     await q(`INSERT INTO user_profile (id, user_id) VALUES ($1,$2)`, [id("up"), uid]);
-    if (org) await q(`INSERT INTO org_membership (id, org_id, user_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [id("om"), org.orgId, uid]);
-    const issued = await issuePasswordToken(uid, "invite", email, displayName);
-    emailStatus = issued.emailStatus; emailError = issued.emailError;
     target = { id: uid, status: "invited" };
-  } else if (org) {
-    await q(`INSERT INTO org_membership (id, org_id, user_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [id("om"), org.orgId, target.id]);
+  }
+  if (org) await q(`INSERT INTO org_membership (id, org_id, user_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [id("om"), org.orgId, target.id]);
+
+  // Anyone who has never activated their account gets a (fresh) set-password
+  // invite — covers both brand-new users and members added before email worked.
+  if (target.status === "invited") {
+    const issued = await issuePasswordToken(target.id, "invite", email, displayName);
+    emailStatus = issued.emailStatus; emailError = issued.emailError;
   }
 
   await q(`INSERT INTO project_member (id, project_id, user_id, role) VALUES ($1,$2,$3,$4)
@@ -74,7 +77,7 @@ export async function addProjectMemberByEmail(
     [id("pm"), projectId, target.id, role]);
   await notify({ orgId: org?.orgId ?? null, userId: target.id, type: "invite",
     title: "You've been added to a project", body: `You were added to a project as ${role.replace(/_/g, " ")}.`,
-    link: `/projects/${projectId}`, email: true });
+    link: `/projects/${projectId}`, email: target.status !== "invited" });
   await writeAudit({ orgId: org?.orgId ?? null, userId: actorId, action: "create", entity: "project_member", entityId: projectId, after: { email, role } });
   return { emailStatus, emailError };
 }

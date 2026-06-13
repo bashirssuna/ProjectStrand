@@ -40,6 +40,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         <nav className="p-3 space-y-1">
           <NavLink href="/dashboard">▣ Dashboard</NavLink>
           <NavLink href="/projects">❏ Projects</NavLink>
+          {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/finance">₿ Institution Finance</NavLink>}
           {user.isSuperAdmin && <NavLink href="/admin">⚙ Admin Center</NavLink>}
           <NavLink href="/profile">◔ My Profile</NavLink>
         </nav>

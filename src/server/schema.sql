@@ -546,3 +546,87 @@ ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS checked_at timestamptz;
 ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approved_by text;
 ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approved_by_name text;
 ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approved_at timestamptz;
+
+-- ===========================================================================
+-- GENERAL LEDGER (institutional accounting foundation)
+-- Double-entry: every financial event posts a balanced journal entry whose
+-- lines sum to zero (sum of debits = sum of credits). Entries are append-only;
+-- corrections are made by posting a reversing entry, never by editing/deleting.
+-- This is the backbone for institution-wide financial statements that roll up
+-- across all projects.
+-- ===========================================================================
+
+-- Chart of accounts: the master list of accounts an institution posts against.
+-- account_type drives which financial statement a balance lands on.
+CREATE TABLE IF NOT EXISTS ledger_account (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  code text NOT NULL,                  -- e.g. '1000', '4100', '5200'
+  name text NOT NULL,                  -- e.g. 'Cash at bank', 'Grant income — NIH'
+  account_type text NOT NULL,          -- asset | liability | equity | income | expense
+  normal_side text NOT NULL,           -- debit | credit (which side increases it)
+  parent_code text,                    -- for grouping/subtotals (nullable)
+  is_active boolean NOT NULL DEFAULT true,
+  description text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_account_org ON ledger_account(org_id);
+
+-- Fiscal periods: months can be locked so nothing posts to a closed period.
+CREATE TABLE IF NOT EXISTS fiscal_period (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  label text NOT NULL,                 -- 'YYYY-MM'
+  starts_on date NOT NULL,
+  ends_on date NOT NULL,
+  status text NOT NULL DEFAULT 'open', -- open | closed
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, label)
+);
+
+-- Journal entry header. One per financial event. source_type/source_id give
+-- traceability back to the originating record (expenditure, voucher, manual…).
+CREATE TABLE IF NOT EXISTS journal_entry (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  entry_no text NOT NULL,              -- 'JE-000001' per org
+  entry_date date NOT NULL,
+  memo text,
+  source_type text NOT NULL DEFAULT 'manual', -- manual | expenditure | voucher | reversal
+  source_id text,                      -- id of the originating record
+  project_id text,                     -- optional project attribution
+  reverses_entry_id text,              -- if this entry reverses another
+  posted_by text,
+  posted_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, entry_no)
+);
+CREATE INDEX IF NOT EXISTS idx_journal_entry_org ON journal_entry(org_id);
+CREATE INDEX IF NOT EXISTS idx_journal_entry_source ON journal_entry(source_type, source_id);
+
+-- Journal lines: the debits and credits. Per entry these MUST sum to zero.
+-- Amounts are stored in minor units would be ideal, but to stay consistent with
+-- the existing schema we use numeric for exactness (not floating point).
+CREATE TABLE IF NOT EXISTS journal_line (
+  id text PRIMARY KEY,
+  entry_id text NOT NULL REFERENCES journal_entry(id) ON DELETE CASCADE,
+  account_id text NOT NULL REFERENCES ledger_account(id),
+  project_id text,                     -- cost attribution per line
+  debit numeric(18,2) NOT NULL DEFAULT 0,
+  credit numeric(18,2) NOT NULL DEFAULT 0,
+  description text
+);
+CREATE INDEX IF NOT EXISTS idx_journal_line_entry ON journal_line(entry_id);
+CREATE INDEX IF NOT EXISTS idx_journal_line_account ON journal_line(account_id);
+
+-- Maps project expenditure/voucher postings to the right ledger accounts.
+-- When set, expenditures debit the expense account and credit cash/payables.
+CREATE TABLE IF NOT EXISTS gl_posting_rule (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  rule_key text NOT NULL,              -- 'expenditure' | 'voucher_cash' | 'voucher_bank'
+  debit_account_id text,
+  credit_account_id text,
+  UNIQUE (org_id, rule_key)
+);

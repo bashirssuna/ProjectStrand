@@ -1,5 +1,6 @@
 import "server-only";
 import { q, one } from "@/server/db";
+import { postExpenditureToLedger } from "@/server/services/ledger";
 import { id } from "@/lib/ids";
 import { writeAudit, notify } from "@/server/services/audit";
 import { evaluateProject } from "@/server/services/anomaly";
@@ -182,6 +183,9 @@ export async function recordExpenditureForRequisition(input: {
   // release the commitment now that money is actually spent
   await q(`DELETE FROM commitment WHERE budget_line_id=$1 AND note LIKE $2`,
     [req.budgetLineId, `Commitment for ${req.number}%`]);
+  // Post the expenditure to the general ledger (no-op if GL not enabled).
+  const exOrg = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
+  if (exOrg) await postExpenditureToLedger({ orgId: exOrg.orgId, projectId: req.projectId, expenditureId: eid, amount: input.amount, date: (input.date ?? new Date().toISOString()), reference: input.reference, payee: input.payee ?? null, postedBy: input.userId });
   await q(`UPDATE requisition SET status='retired', updated_at=now() WHERE id=$1`, [input.reqId]);
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
   await writeAudit({ orgId: org?.orgId, userId: input.userId, action: "create", entity: "expenditure", entityId: eid, after: { amount: input.amount, reference: input.reference } });

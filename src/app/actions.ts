@@ -276,12 +276,18 @@ export async function addExpenditureAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "budget.manage");
   const amount = Number(formData.get("amount") || 0);
+  const expId = id("exp");
+  const expDate = String(formData.get("date") || new Date().toISOString());
+  const expRef = String(formData.get("reference") || "");
+  const expPayee = String(formData.get("payee") || "");
   await q(`INSERT INTO expenditure (id, project_id, budget_line_id, amount, date, reference, payee, approved, created_by_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-    [id("exp"), projectId, String(formData.get("budgetLineId")), amount,
-     String(formData.get("date") || new Date().toISOString()), String(formData.get("reference") || ""),
-     String(formData.get("payee") || ""), formData.get("approved") === "on", user.id]);
+    [expId, projectId, String(formData.get("budgetLineId")), amount,
+     expDate, expRef, expPayee, formData.get("approved") === "on", user.id]);
   await writeAudit({ userId: user.id, action: "create", entity: "expenditure", entityId: projectId, after: { amount } });
+  // Post to the general ledger (no-op if the org hasn't enabled it yet).
+  const expOrg = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
+  if (expOrg) await postExpenditureToLedger({ orgId: expOrg.orgId, projectId, expenditureId: expId, amount, date: expDate, reference: expRef, payee: expPayee, postedBy: user.id, postedByName: user.name });
   await evaluateProject(projectId);
   revalidatePath(`/projects/${projectId}/spending`);
   revalidatePath(`/projects/${projectId}/budget`);
@@ -1251,4 +1257,95 @@ export async function retractRequisitionAction(formData: FormData) {
   await q(`UPDATE requisition SET status='draft', updated_at=now() WHERE id=$1`, [reqId]);
   await writeAudit({ userId: user.id, action: "update", entity: "requisition", entityId: reqId, before: { status: req.status }, after: { status: "draft", retracted: true } });
   redirect(`/projects/${projectId}/requisitions/${reqId}?retract=ok`);
+}
+
+/* ============================ GENERAL LEDGER ============================ */
+import {
+  ensureChartOfAccounts, postJournal, reverseJournal,
+  institutionalStatements, accountBalances, postExpenditureToLedger,
+} from "@/server/services/ledger";
+
+// Institution-level finance is restricted to organisation admins. Returns the
+// caller's org id (or throws/redirects if they aren't entitled).
+async function requireInstitutionFinance(): Promise<{ orgId: string; userId: string; userName: string }> {
+  const user = await requireUser();
+  const org = await getUserOrg(user.id);
+  if (!org) redirect("/dashboard");
+  if (!org.isOrgAdmin && !user.isSuperAdmin) redirect("/dashboard");
+  return { orgId: org.id, userId: user.id, userName: user.name };
+}
+
+export async function initLedgerAction() {
+  const { orgId } = await requireInstitutionFinance();
+  await ensureChartOfAccounts(orgId);
+  revalidatePath("/finance");
+  revalidatePath("/finance/accounts");
+  redirect("/finance/accounts?init=ok");
+}
+
+export async function addLedgerAccountAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const code = String(formData.get("code") || "").trim();
+  const name = String(formData.get("name") || "").trim();
+  const type = String(formData.get("accountType") || "expense");
+  if (!code || !name) redirect("/finance/accounts?err=missing");
+  const side = type === "asset" || type === "expense" ? "debit" : "credit";
+  const dup = await one<{ id: string }>(`SELECT id FROM ledger_account WHERE org_id=$1 AND code=$2`, [orgId, code]);
+  if (dup) redirect("/finance/accounts?err=dup");
+  await q(`INSERT INTO ledger_account (id, org_id, code, name, account_type, normal_side, description)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id("acc"), orgId, code, name, type, side, String(formData.get("description") || "") || null]);
+  await writeAudit({ orgId, userId, action: "create", entity: "ledger_account", entityId: code, after: { code, name, type } });
+  redirect("/finance/accounts?added=1");
+}
+
+export async function toggleLedgerAccountAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const accId = String(formData.get("accountId"));
+  await q(`UPDATE ledger_account SET is_active = NOT is_active WHERE id=$1 AND org_id=$2`, [accId, orgId]);
+  revalidatePath("/finance/accounts");
+}
+
+export async function setPostingRuleAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const debit = String(formData.get("debitAccountId") || "") || null;
+  const credit = String(formData.get("creditAccountId") || "") || null;
+  await q(`INSERT INTO gl_posting_rule (id, org_id, rule_key, debit_account_id, credit_account_id)
+           VALUES ($1,$2,'expenditure',$3,$4)
+           ON CONFLICT (org_id, rule_key) DO UPDATE SET debit_account_id=$3, credit_account_id=$4`,
+    [id("glr"), orgId, debit, credit]);
+  revalidatePath("/finance/accounts");
+  redirect("/finance/accounts?rule=ok");
+}
+
+export async function postManualJournalAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const debitAcc = String(formData.get("debitAccountId") || "");
+  const creditAcc = String(formData.get("creditAccountId") || "");
+  const amount = Number(formData.get("amount") || 0);
+  const date = String(formData.get("entryDate") || new Date().toISOString().slice(0, 10));
+  if (!debitAcc || !creditAcc || debitAcc === creditAcc || amount <= 0)
+    redirect("/finance/journal?err=invalid");
+  try {
+    await postJournal({
+      orgId, entryDate: date, memo: String(formData.get("memo") || "") || undefined,
+      sourceType: "manual", postedBy: userId, postedByName: userName,
+      projectId: String(formData.get("projectId") || "") || null,
+      lines: [
+        { accountId: debitAcc, debit: amount, description: String(formData.get("memo") || "") || undefined },
+        { accountId: creditAcc, credit: amount, description: String(formData.get("memo") || "") || undefined },
+      ],
+    });
+  } catch (e) {
+    redirect(`/finance/journal?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`);
+  }
+  redirect("/finance/journal?posted=1");
+}
+
+export async function reverseJournalAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const entryId = String(formData.get("entryId"));
+  await reverseJournal(orgId, entryId, { id: userId, name: userName });
+  revalidatePath("/finance/journal");
+  redirect("/finance/journal?reversed=1");
 }

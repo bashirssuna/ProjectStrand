@@ -7,13 +7,15 @@ import { label } from "@/lib/enums";
 import {
   submitRequisitionAction, decideRequisitionAction,
   addRequisitionAttachmentAction, createVoucherAction, recordReqExpenditureAction,
+  editRequisitionAction, retractRequisitionAction,
 } from "@/app/actions";
+import { budgetLineRollups } from "@/server/services/budget";
 
 const ROLE_LABEL: Record<string, string> = { finance_admin: "Finance review", pm: "PM / PI approval", admin: "Admin approval" };
 
 export default async function RequisitionDetailPage({ params, searchParams }: {
   params: Promise<{ id: string; reqId: string }>;
-  searchParams: Promise<{ voucher?: string }>;
+  searchParams: Promise<{ voucher?: string; edit?: string; retract?: string }>;
 }) {
   const { id, reqId } = await params;
   const sp = await searchParams;
@@ -22,13 +24,14 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
   const req = await one<{
     id: string; number: string; title: string; amount: number; status: string;
     justification: string | null; neededBy: string | null; payee: string | null;
-    disbursedAmount: number; budgetLine: string | null; requester: string | null; createdAt: string;
+    disbursedAmount: number; budgetLine: string | null; requester: string | null; createdAt: string; requesterId: string | null; budgetLineId: string | null;
   }>(
     `SELECT r.id, r.number, r.title, r.amount, r.status, r.justification,
             r.needed_by AS "neededBy", r.payee, r.disbursed_amount AS "disbursedAmount",
+            r.budget_line_id AS "budgetLineId",
             (SELECT code || ' · ' || description FROM budget_line WHERE id=r.budget_line_id) AS "budgetLine",
             (SELECT name FROM app_user WHERE id=r.requested_by_id) AS requester,
-            r.created_at AS "createdAt"
+            r.created_at AS "createdAt", r.requested_by_id AS "requesterId"
      FROM requisition r WHERE r.id=$1 AND r.project_id=$2`, [reqId, id]
   );
   if (!req) return <Empty title="Requisition not found" hint="It may have been removed." />;
@@ -66,6 +69,21 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
 
   const canCreate = access.permissions.has("requisitions.create");
   const myHasSignature = await one<{ id: string }>(`SELECT id FROM signature_asset WHERE user_id=$1 LIMIT 1`, [access.user.id]);
+
+  // editing/retracting is for the requester (or an approver acting on their behalf)
+  const isRequester = req.requesterId === access.user.id || access.permissions.has("requisitions.approve");
+  const anyDecided = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM requisition_approval WHERE requisition_id=$1 AND decision<>'pending'`, [reqId]))?.c ?? 0;
+  const inFlight = ["submitted", "finance_review", "pm_approval", "admin_approval"].includes(req.status);
+  const canRetract = canCreate && isRequester && inFlight && anyDecided === 0;
+  const canEdit = canCreate && isRequester && req.status === "draft";
+
+  // data for the inline edit form (only queried when needed)
+  const budForEdit = canEdit ? await one<{ id: string }>(`SELECT id FROM budget WHERE project_id=$1 ORDER BY version DESC LIMIT 1`, [id]) : null;
+  const editLines = budForEdit ? await budgetLineRollups(budForEdit.id) : [];
+  const editActivities = canEdit ? await q<{ id: string; title: string; code: string | null }>(
+    `SELECT id, title, code FROM activity WHERE project_id=$1 AND type<>'milestone' ORDER BY "order"`, [id]
+  ) : [];
+  const linkedActivityIds = new Set(reqActivities.map((a) => a.id));
   const canApprove = access.permissions.has("requisitions.approve");
   const canDisburse = access.permissions.has("budget.manage");
   const approved = ["approved", "partially_funded", "disbursed", "retired", "closed"].includes(req.status);
@@ -73,6 +91,10 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
 
   return (
     <div className="space-y-6 max-w-4xl">
+      {sp.edit === "ok" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Requisition updated.</div>}
+      {sp.edit === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This requisition can no longer be edited — it has already been submitted.</div>}
+      {sp.retract === "ok" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Requisition retracted — it's back to draft and you can edit or re-submit it.</div>}
+      {sp.retract === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Too late to retract — an approver has already acted on this requisition.</div>}
       <div className="card p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -117,6 +139,13 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
               <button className="btn btn-primary btn-sm" type="submit">Submit for approval</button>
             </form>
           )}
+          {canRetract && (
+            <form action={retractRequisitionAction}>
+              <input type="hidden" name="projectId" value={id} />
+              <input type="hidden" name="reqId" value={req.id} />
+              <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Retract to draft</button>
+            </form>
+          )}
           {approved && (
             <a href={`/print/requisition/${req.id}`} target="_blank" rel="noopener" className="btn btn-sm">
               🖨 Print / Save PDF (letterhead)
@@ -125,6 +154,36 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
           <Link href={`/projects/${id}/requisitions`} className="btn btn-sm">← All requisitions</Link>
         </div>
       </div>
+
+      {/* Edit (drafts only) */}
+      {canEdit && (
+        <details>
+          <summary className="btn btn-sm cursor-pointer inline-block">✏️ Edit this requisition</summary>
+          <form action={editRequisitionAction} className="card p-4 mt-2 grid sm:grid-cols-2 gap-4">
+            <input type="hidden" name="projectId" value={id} />
+            <input type="hidden" name="reqId" value={req.id} />
+            <Field label="Title"><input name="title" required defaultValue={req.title} className="input" /></Field>
+            <Field label="Amount"><input type="number" step="0.01" name="amount" required defaultValue={req.amount} className="input" /></Field>
+            <Field label="Budget line">
+              <select name="budgetLineId" defaultValue={req.budgetLineId ?? ""} className="select">
+                <option value="">— none —</option>
+                {editLines.map((l) => <option key={l.id} value={l.id}>{l.code} · {l.description} ({money(l.remaining, c)} left)</option>)}
+              </select>
+            </Field>
+            <Field label="Activities covered (hold Ctrl/Cmd to select several)">
+              <select name="activityIds" multiple size={5} defaultValue={[...linkedActivityIds]} className="select" style={{ height: "auto" }}>
+                {editActivities.map((a) => <option key={a.id} value={a.id}>{a.code ? a.code + " " : ""}{a.title}</option>)}
+              </select>
+            </Field>
+            <Field label="Needed by"><input type="date" name="neededBy" defaultValue={req.neededBy ? req.neededBy.slice(0, 10) : ""} className="input" /></Field>
+            <Field label="Payee"><input name="payee" defaultValue={req.payee ?? ""} className="input" /></Field>
+            <div className="sm:col-span-2"><Field label="Justification"><textarea name="justification" rows={2} defaultValue={req.justification ?? ""} className="textarea" /></Field></div>
+            <div className="sm:col-span-2 flex justify-end gap-2">
+              <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
+            </div>
+          </form>
+        </details>
+      )}
 
       {/* Approval chain */}
       <div>

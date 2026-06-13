@@ -1139,3 +1139,69 @@ export async function markNotificationsReadAction() {
   await q(`UPDATE notification SET read=true WHERE user_id=$1 AND read=false`, [user.id]);
   revalidatePath("/notifications");
 }
+
+/* ---------------- Edit / retract a requisition (by the requester) ---------------- */
+// The requester can edit a requisition while it is still a draft, and can
+// retract a submitted one back to draft — but only before any approver has
+// acted on it. Once a step is approved/rejected, it is locked.
+export async function editRequisitionAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const reqId = String(formData.get("reqId"));
+  await requirePermission(projectId, "requisitions.create");
+
+  const req = await one<{ status: string; requestedBy: string | null }>(
+    `SELECT status, requested_by_id AS "requestedBy" FROM requisition WHERE id=$1 AND project_id=$2`, [reqId, projectId]
+  );
+  if (!req) redirect(`/projects/${projectId}/requisitions`);
+  if (req.status !== "draft") redirect(`/projects/${projectId}/requisitions/${reqId}?edit=locked`);
+  // only the person who raised it (or an org admin who can approve) may edit
+  if (req.requestedBy && req.requestedBy !== user.id && !(await getProjectAccess(projectId)).permissions.has("requisitions.approve"))
+    redirect(`/projects/${projectId}/requisitions/${reqId}?edit=forbidden`);
+
+  const amount = Number(formData.get("amount") || 0);
+  await q(`UPDATE requisition SET title=$2, amount=$3, budget_line_id=$4, justification=$5, needed_by=$6, payee=$7, updated_at=now()
+           WHERE id=$1`,
+    [reqId, String(formData.get("title") || "Requisition"), amount,
+     String(formData.get("budgetLineId") || "") || null,
+     String(formData.get("justification") || "") || null,
+     String(formData.get("neededBy") || "") || null,
+     String(formData.get("payee") || "") || null]);
+
+  // refresh activity links
+  const activityIds = (formData.getAll("activityIds") as string[]).filter(Boolean);
+  await q(`DELETE FROM requisition_activity WHERE requisition_id=$1`, [reqId]);
+  for (const aid of activityIds) {
+    await q(`INSERT INTO requisition_activity (id, requisition_id, activity_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [id("ra"), reqId, aid]);
+  }
+  await q(`UPDATE requisition SET activity_id=$2 WHERE id=$1`, [reqId, activityIds[0] ?? null]);
+
+  await writeAudit({ userId: user.id, action: "update", entity: "requisition", entityId: reqId, after: { edited: true } });
+  redirect(`/projects/${projectId}/requisitions/${reqId}?edit=ok`);
+}
+
+export async function retractRequisitionAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const reqId = String(formData.get("reqId"));
+  await requirePermission(projectId, "requisitions.create");
+
+  const req = await one<{ status: string; requestedBy: string | null; number: string }>(
+    `SELECT status, requested_by_id AS "requestedBy", number FROM requisition WHERE id=$1 AND project_id=$2`, [reqId, projectId]
+  );
+  if (!req) redirect(`/projects/${projectId}/requisitions`);
+  if (req.requestedBy && req.requestedBy !== user.id && !(await getProjectAccess(projectId)).permissions.has("requisitions.approve"))
+    redirect(`/projects/${projectId}/requisitions/${reqId}?retract=forbidden`);
+
+  // Can only retract if it's awaiting approval and NOTHING has been decided yet.
+  const decided = await one<{ c: number }>(
+    `SELECT COUNT(*)::int c FROM requisition_approval WHERE requisition_id=$1 AND decision<>'pending'`, [reqId]
+  );
+  const inFlight = ["submitted", "finance_review", "pm_approval", "admin_approval"].includes(req.status);
+  if (!inFlight || (decided?.c ?? 0) > 0) redirect(`/projects/${projectId}/requisitions/${reqId}?retract=locked`);
+
+  await q(`DELETE FROM requisition_approval WHERE requisition_id=$1`, [reqId]);
+  await q(`UPDATE requisition SET status='draft', updated_at=now() WHERE id=$1`, [reqId]);
+  await writeAudit({ userId: user.id, action: "update", entity: "requisition", entityId: reqId, before: { status: req.status }, after: { status: "draft", retracted: true } });
+  redirect(`/projects/${projectId}/requisitions/${reqId}?retract=ok`);
+}

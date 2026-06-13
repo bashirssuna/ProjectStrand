@@ -20,7 +20,7 @@ export default async function ResetPage({ searchParams }: { searchParams: Promis
         ) : (
           <>
             <p className="text-sm mt-1" style={{ color: "var(--muted)" }}>Setting a password for <strong>{valid.email}</strong>.</p>
-            {error && <div className="card p-3 mt-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{error === "short" ? "Password must be at least 8 characters." : error === "match" ? "Passwords don't match." : error === "invalid" ? "This link is invalid or has expired." : decodeURIComponent(error)}</div>}
+            {error && <div className="card p-3 mt-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{error === "short" ? "Password must be at least 8 characters." : error === "match" ? "Passwords don't match." : error === "invalid" ? "This link is invalid or has expired." : error === "policy" ? "Password must be at least 8 characters and include one capital letter and one special character." : "Please check your password and try again."}</div>}
             <form action={setPasswordAction} className="mt-5 space-y-4">
               <input type="hidden" name="token" value={token} />
               <label className="block">

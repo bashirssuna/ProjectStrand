@@ -815,7 +815,7 @@ export async function setPasswordAction(formData: FormData) {
   const confirm = String(formData.get("confirmPassword") || "");
   if (confirm && password !== confirm) redirect(`/reset?token=${encodeURIComponent(token)}&error=match`);
   const pe = passwordError(password);
-  if (pe) redirect(`/reset?token=${encodeURIComponent(token)}&error=${encodeURIComponent(pe)}`);
+  if (pe) redirect(`/reset?token=${encodeURIComponent(token)}&error=policy`);
   const valid = await consumePasswordToken(token);
   if (!valid) redirect(`/reset?error=invalid`);
   await q(`UPDATE app_user SET password_hash=$2, status='active', updated_at=now() WHERE id=$1`,

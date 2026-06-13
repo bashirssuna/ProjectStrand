@@ -1,5 +1,6 @@
 import "server-only";
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { createHmac } from "node:crypto";
 import { one } from "@/server/db";
 import { hashPassword, verifyPassword } from "@/lib/password";
@@ -46,6 +47,8 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
 
 export async function requireUser(): Promise<SessionUser> {
   const u = await getCurrentUser();
-  if (!u) throw new Error("UNAUTHENTICATED");
+  // Not logged in (or session expired): send them to the login page rather than
+  // throwing a server error. This also covers invited users whose link expired.
+  if (!u) redirect("/login");
   return u;
 }

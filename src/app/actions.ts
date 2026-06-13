@@ -1065,20 +1065,67 @@ export async function createVoucherAction(formData: FormData) {
 
   const n = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM payment_voucher WHERE project_id=$1`, [projectId]))?.c ?? 0;
   const vid = id("pv");
-  await q(`INSERT INTO payment_voucher (id, project_id, requisition_id, number, payee, amount, method, reference, purpose, prepared_by, prepared_by_name)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+  // A new voucher starts at the 'prepared' stage — no payment is made yet.
+  await q(`INSERT INTO payment_voucher (id, project_id, requisition_id, number, payee, amount, method, reference, purpose, prepared_by, prepared_by_name, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'prepared')`,
     [vid, projectId, reqId, `PV-${String(n + 1).padStart(4, "0")}`, payee, amount,
      String(formData.get("method") || "bank_transfer"), String(formData.get("reference") || "") || null,
      String(formData.get("purpose") || "") || null, user.id, user.name]);
 
-  // roll the disbursement state up onto the requisition
-  const req = await one<{ amount: number }>(`SELECT amount FROM requisition WHERE id=$1`, [reqId]);
-  const tot = (await one<{ s: number }>(`SELECT COALESCE(SUM(amount),0) s FROM payment_voucher WHERE requisition_id=$1`, [reqId]))?.s ?? 0;
-  await q(`UPDATE requisition SET disbursed_amount=$2, status=$3, updated_at=now() WHERE id=$1`,
-    [reqId, tot, req && tot >= req.amount ? "disbursed" : "partially_funded"]);
-  await writeAudit({ userId: user.id, action: "create", entity: "payment_voucher", entityId: vid, after: { payee, amount } });
+  await writeAudit({ userId: user.id, action: "create", entity: "payment_voucher", entityId: vid, after: { payee, amount, status: "prepared" } });
   revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
   redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=ok`);
+}
+
+// Recomputes a requisition's disbursed amount + status from APPROVED vouchers only.
+async function recomputeDisbursement(reqId: string) {
+  const req = await one<{ amount: number }>(`SELECT amount FROM requisition WHERE id=$1`, [reqId]);
+  const tot = (await one<{ s: number }>(`SELECT COALESCE(SUM(amount),0) s FROM payment_voucher WHERE requisition_id=$1 AND status='approved'`, [reqId]))?.s ?? 0;
+  const status = tot <= 0 ? "approved" : req && tot >= req.amount ? "disbursed" : "partially_funded";
+  await q(`UPDATE requisition SET disbursed_amount=$2, status=$3, updated_at=now() WHERE id=$1`, [reqId, tot, status]);
+}
+
+export async function checkVoucherAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const reqId = String(formData.get("requisitionId"));
+  const vid = String(formData.get("voucherId"));
+  await requirePermission(projectId, "budget.manage");
+  const v = await one<{ status: string; preparedBy: string | null }>(
+    `SELECT status, prepared_by AS "preparedBy" FROM payment_voucher WHERE id=$1 AND project_id=$2`, [vid, projectId]
+  );
+  if (!v || v.status !== "prepared") redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=stage`);
+  // Separation of duties: the preparer cannot also check their own voucher.
+  if (v.preparedBy === user.id) redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=sameprep`);
+  await q(`UPDATE payment_voucher SET status='checked', checked_by=$2, checked_by_name=$3, checked_at=now() WHERE id=$1`,
+    [vid, user.id, user.name]);
+  await writeAudit({ userId: user.id, action: "update", entity: "payment_voucher", entityId: vid, after: { status: "checked" } });
+  revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
+  redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=checked`);
+}
+
+export async function approveVoucherAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const reqId = String(formData.get("requisitionId"));
+  const vid = String(formData.get("voucherId"));
+  // Approving a voucher releases the payment — requires sign-off authority.
+  const access = await getProjectAccess(projectId);
+  if (!access.permissions.has("requisitions.sign") && !access.permissions.has("requisitions.approve"))
+    throw new Error("FORBIDDEN — only an authorised signatory can approve a payment voucher");
+  const v = await one<{ status: string; checkedBy: string | null }>(
+    `SELECT status, checked_by AS "checkedBy" FROM payment_voucher WHERE id=$1 AND project_id=$2`, [vid, projectId]
+  );
+  if (!v || v.status !== "checked") redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=stage`);
+  // The checker cannot also approve their own check.
+  if (v.checkedBy === user.id) redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=samecheck`);
+  await q(`UPDATE payment_voucher SET status='approved', approved_by=$2, approved_by_name=$3, approved_at=now() WHERE id=$1`,
+    [vid, user.id, user.name]);
+  // payment is now made — recompute the requisition's disbursed total
+  await recomputeDisbursement(reqId);
+  await writeAudit({ userId: user.id, action: "update", entity: "payment_voucher", entityId: vid, after: { status: "approved", paymentMade: true } });
+  revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
+  redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=approved`);
 }
 
 /* ---------------- Risk closure with evidence ---------------- */

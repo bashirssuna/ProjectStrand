@@ -7,7 +7,7 @@ import { label } from "@/lib/enums";
 import {
   submitRequisitionAction, decideRequisitionAction,
   addRequisitionAttachmentAction, createVoucherAction, recordReqExpenditureAction,
-  editRequisitionAction, retractRequisitionAction,
+  editRequisitionAction, retractRequisitionAction, checkVoucherAction, approveVoucherAction,
 } from "@/app/actions";
 import { budgetLineRollups } from "@/server/services/budget";
 
@@ -60,11 +60,19 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
     `SELECT id, name, size_bytes AS "sizeBytes", created_at AS "createdAt"
      FROM requisition_attachment WHERE requisition_id=$1 ORDER BY created_at`, [reqId]
   );
-  const vouchers = await q<{ id: string; number: string; payee: string; amount: number; method: string; reference: string | null; createdAt: string }>(
-    `SELECT id, number, payee, amount, method, reference, created_at AS "createdAt"
+  const vouchers = await q<{
+    id: string; number: string; payee: string; amount: number; method: string; reference: string | null;
+    status: string; preparedByName: string | null; preparedBy: string | null;
+    checkedByName: string | null; checkedBy: string | null; approvedByName: string | null;
+  }>(
+    `SELECT id, number, payee, amount, method, reference, status,
+            prepared_by_name AS "preparedByName", prepared_by AS "preparedBy",
+            checked_by_name AS "checkedByName", checked_by AS "checkedBy",
+            approved_by_name AS "approvedByName"
      FROM payment_voucher WHERE requisition_id=$1 ORDER BY created_at`, [reqId]
   );
-  const disbursed = vouchers.reduce((s, v) => s + v.amount, 0);
+  // Only APPROVED vouchers represent money actually paid out.
+  const disbursed = vouchers.filter((v) => v.status === "approved").reduce((s, v) => s + v.amount, 0);
   const remaining = Math.max(0, req.amount - disbursed);
 
   const canCreate = access.permissions.has("requisitions.create");
@@ -86,6 +94,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
   const linkedActivityIds = new Set(reqActivities.map((a) => a.id));
   const canApprove = access.permissions.has("requisitions.approve");
   const canDisburse = access.permissions.has("budget.manage");
+  const canApproveVoucher = access.permissions.has("requisitions.sign") || access.permissions.has("requisitions.approve");
   const approved = ["approved", "partially_funded", "disbursed", "retired", "closed"].includes(req.status);
   const myPending = approvals.find((a) => a.decision === "pending");
 
@@ -253,27 +262,59 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
       <div>
         <SectionTitle>Disbursement — payment vouchers</SectionTitle>
         <div className="card p-4">
-          {sp.voucher === "ok" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Voucher created.</p>}
+          {sp.voucher === "ok" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Voucher prepared. It now needs to be checked, then approved before payment is made.</p>}
+          {sp.voucher === "checked" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Voucher checked. It now awaits final approval to release payment.</p>}
+          {sp.voucher === "approved" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Voucher approved — payment released and recorded against the requisition.</p>}
           {sp.voucher === "invalid" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>A payee and a positive amount are required.</p>}
+          {sp.voucher === "stage" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>That voucher is not at the right stage for this action.</p>}
+          {sp.voucher === "sameprep" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>The person who prepared a voucher can't also check it — ask another finance user.</p>}
+          {sp.voucher === "samecheck" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>The person who checked a voucher can't also approve it — ask an authorised signatory.</p>}
           {vouchers.length === 0
-            ? <p className="text-sm" style={{ color: "var(--muted)" }}>No funds disbursed yet. Disbursement is recorded as one voucher per payee — the requested amount can be split across several payees or paid partially.</p>
+            ? <p className="text-sm" style={{ color: "var(--muted)" }}>No vouchers yet. A voucher is prepared per payee, then goes through <strong>Prepared → Checked → Approved</strong>; payment is made (cash or bank) only on approval. The requested amount can be split across several payees or paid partially.</p>
             : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead><tr><th className="th text-left">Voucher</th><th className="th text-left">Payee</th><th className="th text-left">Method</th><th className="th text-left">Reference</th><th className="th text-right">Amount</th><th className="th" /></tr></thead>
+                  <thead><tr><th className="th text-left">Voucher</th><th className="th text-left">Payee</th><th className="th text-left">Method</th><th className="th text-left">Stage</th><th className="th text-right">Amount</th><th className="th" /></tr></thead>
                   <tbody>
                     {vouchers.map((v) => (
                       <tr key={v.id}>
                         <td className="td font-mono text-xs">{v.number}</td>
                         <td className="td">{v.payee}</td>
                         <td className="td">{label(v.method)}</td>
-                        <td className="td text-xs">{v.reference ?? "—"}</td>
+                        <td className="td">
+                          <Badge tone={v.status === "approved" ? "ok" : v.status === "checked" ? "info" : "warn"}>{label(v.status)}</Badge>
+                          <div className="text-[11px] mt-1" style={{ color: "var(--muted)" }}>
+                            Prepared: {v.preparedByName ?? "—"}
+                            {v.checkedByName ? <> · Checked: {v.checkedByName}</> : null}
+                            {v.approvedByName ? <> · Approved: {v.approvedByName}</> : null}
+                          </div>
+                        </td>
                         <td className="td text-right tabular-nums">{money(v.amount, c)}</td>
-                        <td className="td text-right"><a href={`/print/voucher/${v.id}`} target="_blank" rel="noopener" className="btn btn-sm">🖨 Print</a></td>
+                        <td className="td text-right whitespace-nowrap">
+                          <div className="flex gap-1 justify-end">
+                            {v.status === "prepared" && canDisburse && v.preparedBy !== access.user.id && (
+                              <form action={checkVoucherAction}>
+                                <input type="hidden" name="projectId" value={id} />
+                                <input type="hidden" name="requisitionId" value={req.id} />
+                                <input type="hidden" name="voucherId" value={v.id} />
+                                <button className="btn btn-sm" type="submit">Check</button>
+                              </form>
+                            )}
+                            {v.status === "checked" && canApproveVoucher && v.checkedBy !== access.user.id && (
+                              <form action={approveVoucherAction}>
+                                <input type="hidden" name="projectId" value={id} />
+                                <input type="hidden" name="requisitionId" value={req.id} />
+                                <input type="hidden" name="voucherId" value={v.id} />
+                                <button className="btn btn-primary btn-sm" type="submit">Approve &amp; pay</button>
+                              </form>
+                            )}
+                            <a href={`/print/voucher/${v.id}`} target="_blank" rel="noopener" className="btn btn-sm">🖨 Print</a>
+                          </div>
+                        </td>
                       </tr>
                     ))}
                     <tr>
-                      <td className="td font-medium" colSpan={4}>Total disbursed</td>
+                      <td className="td font-medium" colSpan={4}>Total paid (approved vouchers)</td>
                       <td className="td text-right tabular-nums font-medium">{money(disbursed, c)}</td>
                       <td className="td" />
                     </tr>

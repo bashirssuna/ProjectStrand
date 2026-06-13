@@ -536,3 +536,13 @@ CREATE TABLE IF NOT EXISTS activity_evidence (
 ALTER TABLE risk_issue ADD COLUMN IF NOT EXISTS closed_at timestamptz;
 ALTER TABLE risk_issue ADD COLUMN IF NOT EXISTS lessons text;
 ALTER TABLE risk_issue ADD COLUMN IF NOT EXISTS evidence_document_id text;
+
+-- Voucher approval workflow: Prepared by → Checked by → Approved by.
+-- Payment is only "made" (counts toward disbursement) once status='approved'.
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'prepared';
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS checked_by text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS checked_by_name text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS checked_at timestamptz;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approved_by text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approved_by_name text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approved_at timestamptz;

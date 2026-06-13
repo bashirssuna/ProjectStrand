@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
 import { SectionTitle, Empty, Badge, StatusBadge, Field } from "@/components/ui";
-import { money, fmtDate, fmtDateTime } from "@/lib/format";
+import { money, fmtDate, fmtDateTime, dateInput } from "@/lib/format";
 import { label } from "@/lib/enums";
 import {
   submitRequisitionAction, decideRequisitionAction,
@@ -175,7 +175,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
                 {editActivities.map((a) => <option key={a.id} value={a.id}>{a.code ? a.code + " " : ""}{a.title}</option>)}
               </select>
             </Field>
-            <Field label="Needed by"><input type="date" name="neededBy" defaultValue={req.neededBy ? req.neededBy.slice(0, 10) : ""} className="input" /></Field>
+            <Field label="Needed by"><input type="date" name="neededBy" defaultValue={dateInput(req.neededBy)} className="input" /></Field>
             <Field label="Payee"><input name="payee" defaultValue={req.payee ?? ""} className="input" /></Field>
             <div className="sm:col-span-2"><Field label="Justification"><textarea name="justification" rows={2} defaultValue={req.justification ?? ""} className="textarea" /></Field></div>
             <div className="sm:col-span-2 flex justify-end gap-2">

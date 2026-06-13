@@ -4,7 +4,7 @@ import { updateActivityAction, addActivityAction, uploadWorkplanAction, workplan
 import { Gantt, type GanttRow } from "@/components/gantt";
 import { StatusBadge, SectionTitle, Empty, Field, ProgressBar, progressTone } from "@/components/ui";
 import { ACTIVITY_STATUS, label } from "@/lib/enums";
-import { fmtDate } from "@/lib/format";
+import { fmtDate, dateInput } from "@/lib/format";
 
 type Row = GanttRow & { parentId: string | null; ownerName: string | null };
 
@@ -125,8 +125,8 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
                               <Field label="Code"><input name="code" defaultValue={r.code ?? ""} className="input" /></Field>
                               <Field label="Title"><input name="title" defaultValue={r.title} className="input" /></Field>
                               <div className="grid grid-cols-2 gap-2">
-                                <Field label="Start"><input type="date" name="startDate" defaultValue={r.startDate ? String(r.startDate).slice(0, 10) : ""} className="input" /></Field>
-                                <Field label="End"><input type="date" name="endDate" defaultValue={r.endDate ? String(r.endDate).slice(0, 10) : ""} className="input" /></Field>
+                                <Field label="Start"><input type="date" name="startDate" defaultValue={dateInput(r.startDate)} className="input" /></Field>
+                                <Field label="End"><input type="date" name="endDate" defaultValue={dateInput(r.endDate)} className="input" /></Field>
                               </div>
                               <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
                             </form>

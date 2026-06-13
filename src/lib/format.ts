@@ -31,3 +31,12 @@ export function fmtDateTime(d: Date | string | null | undefined): string {
 export function daysBetween(a: Date, b: Date): number {
   return Math.round((b.getTime() - a.getTime()) / 86400000);
 }
+
+// Formats a DB timestamp (string in PGlite, Date in node-postgres) as YYYY-MM-DD
+// for an <input type="date"> value, safely across both drivers.
+export function dateInput(d: Date | string | null | undefined): string {
+  if (!d) return "";
+  const date = d instanceof Date ? d : new Date(d);
+  if (isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}

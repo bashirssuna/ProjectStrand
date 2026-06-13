@@ -17,7 +17,7 @@ export type JournalLineInput = {
   projectId?: string | null;
 };
 
-const round2 = (n: number) => Math.round((n + Number.EPSILON) * 100) / 100;
+const round2 = (n: number | string) => { const x = Number(n) || 0; return Math.round((x + Number.EPSILON) * 100) / 100; };
 
 // Posts a balanced journal entry. Throws if it doesn't balance or has no lines.
 export async function postJournal(input: {
@@ -32,11 +32,11 @@ export async function postJournal(input: {
   postedByName?: string | null;
   lines: JournalLineInput[];
 }): Promise<{ entryId: string; entryNo: string }> {
-  const lines = input.lines.filter((l) => (l.debit ?? 0) !== 0 || (l.credit ?? 0) !== 0);
+  const lines = input.lines.filter((l) => (Number(l.debit) || 0) !== 0 || (Number(l.credit) || 0) !== 0);
   if (lines.length < 2) throw new Error("A journal entry needs at least two lines.");
 
-  const totalDebit = round2(lines.reduce((s, l) => s + (l.debit ?? 0), 0));
-  const totalCredit = round2(lines.reduce((s, l) => s + (l.credit ?? 0), 0));
+  const totalDebit = round2(lines.reduce((s, l) => s + (Number(l.debit) || 0), 0));
+  const totalCredit = round2(lines.reduce((s, l) => s + (Number(l.credit) || 0), 0));
   if (totalDebit !== totalCredit)
     throw new Error(`Journal does not balance: debits ${totalDebit} ≠ credits ${totalCredit}.`);
   if (totalDebit <= 0) throw new Error("Journal entry total must be positive.");
@@ -251,4 +251,71 @@ export async function postExpenditureToLedger(input: {
       { accountId: creditAcc, credit: input.amount, description: "Cash/bank", projectId: input.projectId },
     ],
   });
+}
+
+// ---------------------------------------------------------------------------
+// Multi-currency: convert a foreign amount into the org's base/reporting
+// currency using the latest exchange rate on or before the given date.
+// Returns the amount unchanged when currency == base or no rate is found.
+// ---------------------------------------------------------------------------
+export async function orgBaseCurrency(orgId: string): Promise<string> {
+  const o = await one<{ base: string }>(`SELECT base_currency AS base FROM organization WHERE id=$1`, [orgId]);
+  return o?.base ?? "USD";
+}
+
+export async function convertToBase(orgId: string, amount: number, currency: string, asOf: string): Promise<{ base: number; rate: number; baseCurrency: string }> {
+  const baseCurrency = await orgBaseCurrency(orgId);
+  if (!currency || currency === baseCurrency) return { base: round2(amount), rate: 1, baseCurrency };
+  const r = await one<{ rate: number }>(
+    `SELECT rate FROM exchange_rate WHERE org_id=$1 AND currency=$2 AND base_currency=$3 AND as_of <= $4::date
+     ORDER BY as_of DESC LIMIT 1`, [orgId, currency, baseCurrency, asOf]
+  );
+  const rate = Number(r?.rate ?? 1) || 1;
+  return { base: round2(Number(amount) * rate), rate, baseCurrency };
+}
+
+// Cash Flow Statement (direct method, simplified): movements on cash/bank
+// accounts, split into operating inflows/outflows, with opening/closing cash.
+export type CashFlow = {
+  baseCurrency: string;
+  opening: number; closing: number;
+  inflows: { date: string; memo: string | null; amount: number }[];
+  outflows: { date: string; memo: string | null; amount: number }[];
+  totalIn: number; totalOut: number; netChange: number;
+};
+
+export async function cashFlowStatement(orgId: string, opts?: { from?: string; to?: string }): Promise<CashFlow> {
+  const baseCurrency = await orgBaseCurrency(orgId);
+  // cash & bank accounts = asset accounts coded 10xx by convention, but be robust:
+  const cashAccts = await q<{ id: string }>(
+    `SELECT id FROM ledger_account WHERE org_id=$1 AND account_type='asset' AND (code LIKE '10%' OR name ILIKE '%cash%' OR name ILIKE '%bank%')`, [orgId]
+  );
+  if (cashAccts.length === 0) return { baseCurrency, opening: 0, closing: 0, inflows: [], outflows: [], totalIn: 0, totalOut: 0, netChange: 0 };
+  const ids = cashAccts.map((a) => a.id);
+
+  const from = opts?.from ?? "1900-01-01";
+  const to = opts?.to ?? new Date().toISOString().slice(0, 10);
+
+  // opening = net cash movement strictly before `from`
+  const open = await one<{ s: number }>(
+    `SELECT COALESCE(SUM(jl.debit - jl.credit),0)::float s
+     FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
+     WHERE jl.account_id = ANY($1::text[]) AND je.entry_date < $2::date`, [ids, from]
+  );
+  // movements in the window, grouped by entry (so each row is one transaction)
+  const moves = await q<{ date: string; memo: string | null; net: number }>(
+    `SELECT je.entry_date AS date, je.memo,
+            SUM(jl.debit - jl.credit)::float AS net
+     FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
+     WHERE jl.account_id = ANY($1::text[]) AND je.entry_date BETWEEN $2::date AND $3::date
+     GROUP BY je.id, je.entry_date, je.memo
+     HAVING SUM(jl.debit - jl.credit) <> 0
+     ORDER BY je.entry_date`, [ids, from, to]
+  );
+  const inflows = moves.filter((m) => m.net > 0).map((m) => ({ date: m.date, memo: m.memo, amount: round2(m.net) }));
+  const outflows = moves.filter((m) => m.net < 0).map((m) => ({ date: m.date, memo: m.memo, amount: round2(-m.net) }));
+  const totalIn = round2(inflows.reduce((s, m) => s + m.amount, 0));
+  const totalOut = round2(outflows.reduce((s, m) => s + m.amount, 0));
+  const opening = round2(open?.s ?? 0);
+  return { baseCurrency, opening, closing: round2(opening + totalIn - totalOut), inflows, outflows, totalIn, totalOut, netChange: round2(totalIn - totalOut) };
 }

@@ -630,3 +630,127 @@ CREATE TABLE IF NOT EXISTS gl_posting_rule (
   credit_account_id text,
   UNIQUE (org_id, rule_key)
 );
+
+-- ===========================================================================
+-- FINANCE MODULE EXPANSION: invoicing, receipts, assets, bank rec, FX
+-- All money events post to the general ledger (journal_entry/journal_line).
+-- ===========================================================================
+
+-- Exchange rates: 1 unit of the foreign currency equals 'rate' units of base.
+CREATE TABLE IF NOT EXISTS exchange_rate (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  currency text NOT NULL,              -- e.g. 'USD', 'EUR'
+  base_currency text NOT NULL,         -- the org's reporting currency, e.g. 'UGX'
+  rate numeric(18,6) NOT NULL,         -- multiply foreign amount by this to get base
+  as_of date NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_fx_org ON exchange_rate(org_id, currency, as_of);
+
+-- Org-level base/reporting currency.
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS base_currency text NOT NULL DEFAULT 'USD';
+
+-- Customers / funders we invoice.
+CREATE TABLE IF NOT EXISTS finance_customer (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  email text, phone text, address text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Sales/grant invoices (income we expect to receive).
+CREATE TABLE IF NOT EXISTS invoice (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text,
+  customer_id text REFERENCES finance_customer(id),
+  number text NOT NULL,                -- 'INV-0001' per org
+  invoice_date date NOT NULL,
+  due_date date,
+  currency text NOT NULL DEFAULT 'USD',
+  income_account_id text REFERENCES ledger_account(id),
+  description text,
+  status text NOT NULL DEFAULT 'draft', -- draft | issued | part_paid | paid | void
+  total numeric(18,2) NOT NULL DEFAULT 0,
+  amount_paid numeric(18,2) NOT NULL DEFAULT 0,
+  journal_entry_id text,               -- the AR posting when issued
+  created_by text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, number)
+);
+CREATE TABLE IF NOT EXISTS invoice_line (
+  id text PRIMARY KEY,
+  invoice_id text NOT NULL REFERENCES invoice(id) ON DELETE CASCADE,
+  description text NOT NULL,
+  quantity numeric(18,2) NOT NULL DEFAULT 1,
+  unit_price numeric(18,2) NOT NULL DEFAULT 0,
+  amount numeric(18,2) NOT NULL DEFAULT 0
+);
+
+-- Receipts: money actually received (clears an invoice / posts income).
+CREATE TABLE IF NOT EXISTS receipt (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text,
+  invoice_id text REFERENCES invoice(id),
+  customer_id text REFERENCES finance_customer(id),
+  number text NOT NULL,                -- 'RCT-0001' per org
+  receipt_date date NOT NULL,
+  amount numeric(18,2) NOT NULL,
+  currency text NOT NULL DEFAULT 'USD',
+  method text NOT NULL DEFAULT 'bank_transfer',
+  reference text, note text,
+  deposit_account_id text REFERENCES ledger_account(id), -- cash/bank debited
+  income_account_id text REFERENCES ledger_account(id),  -- used for direct (no-invoice) receipts
+  journal_entry_id text,
+  reconciled boolean NOT NULL DEFAULT false,
+  created_by text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, number)
+);
+
+-- Fixed-asset register, with straight-line depreciation.
+CREATE TABLE IF NOT EXISTS fixed_asset (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text,
+  tag text,                            -- asset tag / serial
+  name text NOT NULL,
+  category text,
+  acquired_on date NOT NULL,
+  cost numeric(18,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'USD',
+  useful_life_months integer NOT NULL DEFAULT 36,
+  salvage_value numeric(18,2) NOT NULL DEFAULT 0,
+  asset_account_id text REFERENCES ledger_account(id),
+  expense_account_id text REFERENCES ledger_account(id), -- depreciation expense
+  accumulated_depreciation numeric(18,2) NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'active', -- active | disposed
+  location text, custodian text, note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS depreciation_run (
+  id text PRIMARY KEY,
+  asset_id text NOT NULL REFERENCES fixed_asset(id) ON DELETE CASCADE,
+  period_label text NOT NULL,          -- 'YYYY-MM'
+  amount numeric(18,2) NOT NULL,
+  journal_entry_id text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (asset_id, period_label)
+);
+
+-- Bank statement lines for reconciliation against a cash/bank ledger account.
+CREATE TABLE IF NOT EXISTS bank_statement_line (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  account_id text NOT NULL REFERENCES ledger_account(id), -- the bank GL account
+  txn_date date NOT NULL,
+  description text,
+  amount numeric(18,2) NOT NULL,       -- +receipts / -payments as on the statement
+  matched_entry_id text,               -- the journal_entry it reconciles to
+  reconciled boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_bank_line_acct ON bank_statement_line(account_id);

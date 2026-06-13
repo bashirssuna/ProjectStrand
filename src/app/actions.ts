@@ -1349,3 +1349,166 @@ export async function reverseJournalAction(formData: FormData) {
   revalidatePath("/finance/journal");
   redirect("/finance/journal?reversed=1");
 }
+
+/* ===================== FINANCE OPS: invoices, receipts, assets, bank, FX ===================== */
+import {
+  issueInvoice, voidInvoice, recordReceipt,
+  postAssetAcquisition, runDepreciation, reconciliationView,
+} from "@/server/services/finance_ops";
+
+// ---- Exchange rates ----
+export async function setBaseCurrencyAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const base = String(formData.get("baseCurrency") || "USD").trim().toUpperCase().slice(0, 3);
+  await q(`UPDATE organization SET base_currency=$2 WHERE id=$1`, [orgId, base]);
+  revalidatePath("/finance/currency");
+  redirect("/finance/currency?saved=1");
+}
+export async function addExchangeRateAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const currency = String(formData.get("currency") || "").trim().toUpperCase().slice(0, 3);
+  const rate = Number(formData.get("rate") || 0);
+  const base = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+  if (!currency || rate <= 0 || currency === base) redirect("/finance/currency?err=1");
+  await q(`INSERT INTO exchange_rate (id, org_id, currency, base_currency, rate, as_of) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id("fx"), orgId, currency, base, rate, String(formData.get("asOf") || new Date().toISOString().slice(0, 10))]);
+  redirect("/finance/currency?added=1");
+}
+
+// ---- Customers ----
+export async function addCustomerAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/finance/invoices?err=cust");
+  await q(`INSERT INTO finance_customer (id, org_id, name, email, phone, address) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id("cust"), orgId, name, String(formData.get("email") || "") || null, String(formData.get("phone") || "") || null, String(formData.get("address") || "") || null]);
+  redirect("/finance/invoices?cust=ok");
+}
+
+// ---- Invoices ----
+export async function createInvoiceAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const desc = String(formData.get("description") || "").trim();
+  const qty = Number(formData.get("quantity") || 1);
+  const unit = Number(formData.get("unitPrice") || 0);
+  const total = round2cents(qty * unit);
+  if (total <= 0) redirect("/finance/invoices?err=amount");
+  const num = await nextNum(orgId, "invoice", "INV");
+  const invId = id("inv");
+  await q(`INSERT INTO invoice (id, org_id, project_id, customer_id, number, invoice_date, due_date, currency, income_account_id, description, total, created_by, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [invId, orgId, String(formData.get("projectId") || "") || null, String(formData.get("customerId") || "") || null,
+     num, String(formData.get("invoiceDate") || new Date().toISOString().slice(0, 10)),
+     String(formData.get("dueDate") || "") || null, String(formData.get("currency") || "USD"),
+     String(formData.get("incomeAccountId") || "") || null, desc || "Invoice", total, userId, userName]);
+  await q(`INSERT INTO invoice_line (id, invoice_id, description, quantity, unit_price, amount) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id("invl"), invId, desc || "Services", qty, unit, total]);
+  await writeAudit({ orgId, userId, action: "create", entity: "invoice", entityId: num, after: { total } });
+  redirect(`/finance/invoices?created=${num}`);
+}
+export async function issueInvoiceAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const invId = String(formData.get("invoiceId"));
+  try { await issueInvoice(invId, { id: userId, name: userName }); }
+  catch (e) { redirect(`/finance/invoices?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  revalidatePath("/finance/invoices");
+  redirect("/finance/invoices?issued=1");
+}
+export async function voidInvoiceAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const invId = String(formData.get("invoiceId"));
+  try { await voidInvoice(invId, { id: userId, name: userName }); }
+  catch (e) { redirect(`/finance/invoices?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  revalidatePath("/finance/invoices");
+  redirect("/finance/invoices?voided=1");
+}
+
+// ---- Receipts ----
+export async function createReceiptAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const amount = Number(formData.get("amount") || 0);
+  if (amount <= 0) redirect("/finance/receipts?err=amount");
+  const num = await nextNum(orgId, "receipt", "RCT");
+  const rid = id("rct");
+  const invoiceId = String(formData.get("invoiceId") || "") || null;
+  // derive project + customer from the invoice if one was chosen
+  let projectId = String(formData.get("projectId") || "") || null;
+  let customerId = String(formData.get("customerId") || "") || null;
+  if (invoiceId) {
+    const inv = await one<{ p: string | null; c: string | null }>(`SELECT project_id p, customer_id c FROM invoice WHERE id=$1`, [invoiceId]);
+    if (inv) { projectId = projectId ?? inv.p; customerId = customerId ?? inv.c; }
+  }
+  await q(`INSERT INTO receipt (id, org_id, project_id, invoice_id, customer_id, number, receipt_date, amount, currency, method, reference, note, deposit_account_id, income_account_id, created_by, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+    [rid, orgId, projectId, invoiceId, customerId, num,
+     String(formData.get("receiptDate") || new Date().toISOString().slice(0, 10)), amount,
+     String(formData.get("currency") || "USD"), String(formData.get("method") || "bank_transfer"),
+     String(formData.get("reference") || "") || null, String(formData.get("note") || "") || null,
+     String(formData.get("depositAccountId") || "") || null, String(formData.get("incomeAccountId") || "") || null, userId, userName]);
+  try { await recordReceipt(rid, { id: userId, name: userName }); }
+  catch (e) { redirect(`/finance/receipts?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  await writeAudit({ orgId, userId, action: "create", entity: "receipt", entityId: num, after: { amount } });
+  redirect(`/finance/receipts?created=${num}`);
+}
+
+// ---- Fixed assets ----
+export async function createAssetAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  const cost = Number(formData.get("cost") || 0);
+  if (!name || cost <= 0) redirect("/finance/assets?err=1");
+  const aid = id("fa");
+  await q(`INSERT INTO fixed_asset (id, org_id, project_id, tag, name, category, acquired_on, cost, currency, useful_life_months, salvage_value, location, custodian, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    [aid, orgId, String(formData.get("projectId") || "") || null, String(formData.get("tag") || "") || null, name,
+     String(formData.get("category") || "") || null, String(formData.get("acquiredOn") || new Date().toISOString().slice(0, 10)),
+     cost, String(formData.get("currency") || "USD"), Number(formData.get("usefulLifeMonths") || 36),
+     Number(formData.get("salvageValue") || 0), String(formData.get("location") || "") || null,
+     String(formData.get("custodian") || "") || null, String(formData.get("note") || "") || null]);
+  if (formData.get("postAcquisition") === "on") await postAssetAcquisition(aid, { id: userId, name: userName });
+  await writeAudit({ orgId, userId, action: "create", entity: "fixed_asset", entityId: aid, after: { name, cost } });
+  redirect("/finance/assets?created=1");
+}
+export async function depreciateAssetAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const aid = String(formData.get("assetId"));
+  const period = String(formData.get("period") || new Date().toISOString().slice(0, 7));
+  const res = await runDepreciation(aid, period, { id: userId, name: userName });
+  revalidatePath("/finance/assets");
+  redirect(`/finance/assets?dep=${res ? "ok" : "none"}`);
+}
+export async function disposeAssetAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const aid = String(formData.get("assetId"));
+  await q(`UPDATE fixed_asset SET status='disposed' WHERE id=$1 AND org_id=$2`, [aid, orgId]);
+  revalidatePath("/finance/assets");
+}
+
+// ---- Bank reconciliation ----
+export async function addBankLineAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const accountId = String(formData.get("accountId"));
+  const amount = Number(formData.get("amount") || 0);
+  if (!accountId || amount === 0) redirect(`/finance/reconcile?account=${accountId}&err=1`);
+  await q(`INSERT INTO bank_statement_line (id, org_id, account_id, txn_date, description, amount) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id("bsl"), orgId, accountId, String(formData.get("txnDate") || new Date().toISOString().slice(0, 10)),
+     String(formData.get("description") || "") || null, amount]);
+  redirect(`/finance/reconcile?account=${accountId}&added=1`);
+}
+export async function toggleBankLineAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const lineId = String(formData.get("lineId"));
+  const accountId = String(formData.get("accountId"));
+  await q(`UPDATE bank_statement_line SET reconciled = NOT reconciled WHERE id=$1 AND org_id=$2`, [lineId, orgId]);
+  revalidatePath(`/finance/reconcile`);
+  redirect(`/finance/reconcile?account=${accountId}`);
+}
+
+// small local helpers (avoid clobbering existing ones)
+function round2cents(n: number): number { return Math.round((n + Number.EPSILON) * 100) / 100; }
+async function nextNum(orgId: string, table: string, prefix: string): Promise<string> {
+  const map: Record<string, string> = { invoice: "invoice", receipt: "receipt" };
+  const t = map[table] ?? table;
+  const n = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ${t} WHERE org_id=$1`, [orgId]))?.c ?? 0;
+  return `${prefix}-${String(n + 1).padStart(4, "0")}`;
+}

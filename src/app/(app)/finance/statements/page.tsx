@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireFinanceOrg } from "../_guard";
 import { one } from "@/server/db";
-import { institutionalStatements } from "@/server/services/ledger";
+import { institutionalStatements, cashFlowStatement } from "@/server/services/ledger";
 import { PageHeader, SectionTitle, Badge } from "@/components/ui";
 import { money } from "@/lib/format";
 
@@ -9,6 +9,7 @@ export default async function StatementsPage() {
   const { orgId } = await requireFinanceOrg();
   const c = (await one<{ currency: string }>(`SELECT currency FROM project WHERE org_id=$1 ORDER BY created_at LIMIT 1`, [orgId]))?.currency ?? "USD";
   const fs = await institutionalStatements(orgId);
+  const cf = await cashFlowStatement(orgId);
 
   const Row = ({ code, name, amount, bold }: { code?: string; name: string; amount: number; bold?: boolean }) => (
     <tr style={bold ? { fontWeight: 600 } : undefined}>
@@ -76,6 +77,29 @@ export default async function StatementsPage() {
       <p className="text-xs mb-6" style={{ color: fs.balanceSheet.balanced ? "var(--muted)" : "var(--danger)" }}>
         {fs.balanceSheet.balanced ? "Assets equal Liabilities plus Funds — the balance sheet balances." : "Note: assets do not yet equal liabilities plus funds — check for unbalanced opening entries."}
       </p>
+
+      {/* Cash flow */}
+      <SectionTitle>Cash Flow Statement</SectionTitle>
+      <div className="card overflow-x-auto mb-6">
+        <table className="w-full text-sm">
+          <tbody>
+            <Row name="Opening cash & bank balance" amount={cf.opening} bold />
+            <tr><td className="td font-medium" colSpan={2} style={{ background: "var(--surface)" }}>Cash inflows</td></tr>
+            {cf.inflows.length === 0 ? <tr><td className="td" colSpan={2} style={{ color: "var(--muted)" }}>None in period</td></tr>
+              : cf.inflows.map((m, i) => <tr key={i}><td className="td">{m.date} · {m.memo ?? "Receipt"}</td><td className="td text-right tabular-nums">{money(m.amount, c)}</td></tr>)}
+            <Row name="Total inflows" amount={cf.totalIn} bold />
+            <tr><td className="td font-medium" colSpan={2} style={{ background: "var(--surface)" }}>Cash outflows</td></tr>
+            {cf.outflows.length === 0 ? <tr><td className="td" colSpan={2} style={{ color: "var(--muted)" }}>None in period</td></tr>
+              : cf.outflows.map((m, i) => <tr key={i}><td className="td">{m.date} · {m.memo ?? "Payment"}</td><td className="td text-right tabular-nums">({money(m.amount, c)})</td></tr>)}
+            <Row name="Total outflows" amount={cf.totalOut} bold />
+            <tr style={{ fontWeight: 700 }}>
+              <td className="td">Net change in cash</td>
+              <td className="td text-right tabular-nums" style={{ color: cf.netChange < 0 ? "var(--danger)" : "var(--ok)" }}>{money(cf.netChange, c)}</td>
+            </tr>
+            <Row name="Closing cash & bank balance" amount={cf.closing} bold />
+          </tbody>
+        </table>
+      </div>
 
       {/* Trial balance */}
       <SectionTitle>Trial Balance</SectionTitle>

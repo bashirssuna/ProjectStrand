@@ -52,7 +52,27 @@ export default async function FinanceHome() {
         </Link>
         <Link href="/finance/statements" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
           <div className="font-display font-semibold">Financial statements</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Trial balance, income statement and balance sheet — institution-wide.</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Trial balance, income statement, balance sheet &amp; cash flow.</div>
+        </Link>
+        <Link href="/finance/invoices" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Invoices &amp; income</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Raise invoices to funders; track receivables; print.</div>
+        </Link>
+        <Link href="/finance/receipts" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Receipts</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Record money received; settle invoices; print receipts.</div>
+        </Link>
+        <Link href="/finance/assets" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Asset register</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Fixed assets with straight-line depreciation posting.</div>
+        </Link>
+        <Link href="/finance/reconcile" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Bank reconciliation</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Match the bank statement against the ledger balance.</div>
+        </Link>
+        <Link href="/finance/currency" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Currency &amp; FX rates</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Set the base currency and exchange rates for conversion.</div>
         </Link>
       </div>
     </div>

@@ -96,7 +96,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
                 : <>Your free trial has ended. {org?.isOrgAdmin ? <a href="/upgrade" target="_blank" rel="noopener" className="underline">Upgrade to continue</a> : "Contact your organisation admin to upgrade."}</>}
             </div>
           )}
-          <div className="max-w-6xl mx-auto px-5 py-7">{children}</div>
+          <div className="max-w-[1600px] mx-auto px-6 py-7">{children}</div>
         </main>
       </div>
     </div>

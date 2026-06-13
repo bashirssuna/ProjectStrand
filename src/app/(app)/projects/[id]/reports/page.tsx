@@ -3,7 +3,8 @@ import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
 import { budgetLineRollups } from "@/server/services/budget";
 import { HBar, ColumnChart } from "@/components/charts";
-import { money, pct } from "@/lib/format";
+import { money, pct, fmtDate } from "@/lib/format";
+import { getFinancialStatements } from "@/server/services/financials";
 import { generateReportAction, emailReportAction } from "@/app/actions";
 import { SectionTitle, Empty, Badge, Field, StatusBadge } from "@/components/ui";
 import { fmtDateTime } from "@/lib/format";
@@ -11,9 +12,10 @@ import { label } from "@/lib/enums";
 
 export default async function ReportsPage({
   params, searchParams,
-}: { params: Promise<{ id: string }>; searchParams: Promise<{ r?: string }> }) {
+}: { params: Promise<{ id: string }>; searchParams: Promise<{ r?: string; fin?: string }> }) {
   const { id } = await params;
-  const { r } = await searchParams;
+  const { r, fin } = await searchParams;
+  const detailed = fin === "detailed";
   const access = await getProjectAccess(id);
   const canManage = access.permissions.has("reports.manage");
 
@@ -44,6 +46,7 @@ export default async function ReportsPage({
   );
   const avgBurn = monthly.length ? monthly.reduce((s, r) => s + r.v, 0) / monthly.length : 0;
   const runway = avgBurn > 0 ? (totPlanned - totActual) / avgBurn : null;
+  const fs = await getFinancialStatements(id);
 
   return (
     <div className="grid lg:grid-cols-3 gap-6">
@@ -118,63 +121,150 @@ export default async function ReportsPage({
         )}
       </div>
 
-      {/* ---- Financial reports ---- */}
-      <div className="lg:col-span-3">
-        <SectionTitle>Financial reports</SectionTitle>
-        <div className="grid lg:grid-cols-2 gap-5">
-          <div className="card p-4 overflow-x-auto">
-            <div className="text-sm font-medium mb-2">Budget vs expenditure (variance)</div>
-            {lines.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No budget lines yet.</p> : (
-              <table className="w-full text-sm">
-                <thead><tr>
-                  <th className="th text-left">Line</th>
-                  <th className="th text-right">Budget</th>
-                  <th className="th text-right">Actual</th>
-                  <th className="th text-right">Variance</th>
-                  <th className="th text-right">%</th>
-                </tr></thead>
-                <tbody>
-                  {lines.map((l) => {
-                    const varc = l.planned - l.actual;
-                    return (
-                      <tr key={l.id}>
-                        <td className="td"><div className="max-w-[320px] truncate" title={l.description}><span className="font-mono text-xs" style={{ color: "var(--muted)" }}>{l.code}</span> {l.description}</div></td>
-                        <td className="td text-right tabular-nums whitespace-nowrap">{money(l.planned, c)}</td>
-                        <td className="td text-right tabular-nums whitespace-nowrap">{money(l.actual, c)}</td>
-                        <td className="td text-right tabular-nums whitespace-nowrap" style={{ color: varc < 0 ? "var(--danger)" : "var(--ok)" }}>{money(varc, c)}</td>
-                        <td className="td text-right tabular-nums">{pct(l.planned ? (l.actual / l.planned) * 100 : 0)}</td>
-                      </tr>
-                    );
-                  })}
-                  <tr>
-                    <td className="td font-medium">Total</td>
-                    <td className="td text-right tabular-nums font-medium">{money(totPlanned, c)}</td>
-                    <td className="td text-right tabular-nums font-medium">{money(totActual, c)}</td>
-                    <td className="td text-right tabular-nums font-medium" style={{ color: totPlanned - totActual < 0 ? "var(--danger)" : "var(--ok)" }}>{money(totPlanned - totActual, c)}</td>
-                    <td className="td text-right tabular-nums font-medium">{pct(totPlanned ? (totActual / totPlanned) * 100 : 0)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          <div className="card p-4">
-            <div className="text-sm font-medium mb-2">Burn rate</div>
-            {monthly.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No expenditure recorded yet.</p> : (
-              <>
-                <ColumnChart data={monthly.map((r) => ({ label: r.m, value: r.v }))} valueFmt={(v) => money(v, c)} />
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3 text-sm">
-                  <div><div className="label">Avg monthly burn</div><div className="font-medium tabular-nums">{money(avgBurn, c)}</div></div>
-                  <div><div className="label">Spent / budget</div><div className="font-medium tabular-nums">{pct(totPlanned ? (totActual / totPlanned) * 100 : 0)}</div></div>
-                  <div><div className="label">Runway at this rate</div><div className="font-medium tabular-nums">{runway === null ? "—" : runway > 120 ? "120+ months" : `${runway.toFixed(1)} months`}</div></div>
-                </div>
-                <div className="mt-3"><HBar label="Overall utilisation" value={totActual} max={totPlanned} money={`${money(totActual, c)} / ${money(totPlanned, c)}`} /></div>
-              </>
-            )}
+      {/* ---- Financial statements ---- */}
+      <div className="lg:col-span-3 space-y-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SectionTitle>Financial statements</SectionTitle>
+          <div className="flex items-center gap-2">
+            <div className="flex rounded-md overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+              <Link href={`/projects/${id}/reports?fin=summary`} className="btn btn-sm" style={{ borderRadius: 0, background: detailed ? "transparent" : "var(--surface)" }}>Summary</Link>
+              <Link href={`/projects/${id}/reports?fin=detailed`} className="btn btn-sm" style={{ borderRadius: 0, background: detailed ? "var(--surface)" : "transparent" }}>Detailed</Link>
+            </div>
+            <a href={`/print/financials/${id}`} target="_blank" rel="noopener" className="btn btn-sm">🖨 Print all / PDF</a>
           </div>
         </div>
-        <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>
-          Revenue vs expenditure, balance sheet and cashflow statements require the institutional chart of accounts — planned as the next finance phase.
+
+        {/* 1. Budget vs Expenditure (variance) */}
+        <div className="card p-4 overflow-x-auto">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-medium">1. Budget vs Expenditure (variance)</div>
+            <a href={`/api/financials/${id}?statement=variance`} className="btn btn-sm">⬇ CSV</a>
+          </div>
+          {fs.variance.lines.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No budget lines yet.</p> : detailed ? (
+            <table className="w-full text-sm">
+              <thead><tr>
+                <th className="th text-left">Line</th><th className="th text-left">Category</th>
+                <th className="th text-right">Budget</th><th className="th text-right">Committed</th>
+                <th className="th text-right">Actual</th><th className="th text-right">Variance</th><th className="th text-right">% used</th>
+              </tr></thead>
+              <tbody>
+                {fs.variance.lines.map((l) => (
+                  <tr key={l.code}>
+                    <td className="td"><div className="max-w-[300px] truncate" title={l.description}><span className="font-mono text-xs" style={{ color: "var(--muted)" }}>{l.code}</span> {l.description}</div></td>
+                    <td className="td text-xs">{l.category}</td>
+                    <td className="td text-right tabular-nums whitespace-nowrap">{money(l.planned, c)}</td>
+                    <td className="td text-right tabular-nums whitespace-nowrap">{money(l.committed, c)}</td>
+                    <td className="td text-right tabular-nums whitespace-nowrap">{money(l.actual, c)}</td>
+                    <td className="td text-right tabular-nums whitespace-nowrap" style={{ color: l.variance < 0 ? "var(--danger)" : "var(--ok)" }}>{money(l.variance, c)}</td>
+                    <td className="td text-right tabular-nums">{l.pctUsed.toFixed(0)}%</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td className="td font-medium" colSpan={2}>Total</td>
+                  <td className="td text-right tabular-nums font-medium">{money(fs.variance.totals.planned, c)}</td>
+                  <td className="td text-right tabular-nums font-medium">{money(fs.variance.totals.committed, c)}</td>
+                  <td className="td text-right tabular-nums font-medium">{money(fs.variance.totals.actual, c)}</td>
+                  <td className="td text-right tabular-nums font-medium" style={{ color: fs.variance.totals.variance < 0 ? "var(--danger)" : "var(--ok)" }}>{money(fs.variance.totals.variance, c)}</td>
+                  <td className="td text-right tabular-nums font-medium">{fs.variance.totals.pctUsed.toFixed(0)}%</td>
+                </tr>
+              </tbody>
+            </table>
+          ) : (
+            <table className="w-full text-sm">
+              <thead><tr><th className="th text-left">Category</th><th className="th text-right">Budget</th><th className="th text-right">Actual</th><th className="th text-right">Variance</th></tr></thead>
+              <tbody>
+                {fs.variance.byCategory.map((c2) => (
+                  <tr key={c2.category}>
+                    <td className="td">{c2.category}</td>
+                    <td className="td text-right tabular-nums whitespace-nowrap">{money(c2.planned, c)}</td>
+                    <td className="td text-right tabular-nums whitespace-nowrap">{money(c2.actual, c)}</td>
+                    <td className="td text-right tabular-nums whitespace-nowrap" style={{ color: c2.variance < 0 ? "var(--danger)" : "var(--ok)" }}>{money(c2.variance, c)}</td>
+                  </tr>
+                ))}
+                <tr>
+                  <td className="td font-medium">Total</td>
+                  <td className="td text-right tabular-nums font-medium">{money(fs.variance.totals.planned, c)}</td>
+                  <td className="td text-right tabular-nums font-medium">{money(fs.variance.totals.actual, c)}</td>
+                  <td className="td text-right tabular-nums font-medium" style={{ color: fs.variance.totals.variance < 0 ? "var(--danger)" : "var(--ok)" }}>{money(fs.variance.totals.variance, c)}</td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="grid lg:grid-cols-2 gap-5">
+          {/* 2. Revenue vs Expenditure */}
+          <div className="card p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-medium">2. Revenue vs Expenditure</div>
+              <a href={`/api/financials/${id}?statement=revexp`} className="btn btn-sm">⬇ CSV</a>
+            </div>
+            <table className="w-full text-sm">
+              <thead><tr><th className="th text-left">Basis</th><th className="th text-right">Revenue</th><th className="th text-right">Expenditure</th><th className="th text-right">Surplus</th></tr></thead>
+              <tbody>
+                <tr><td className="td">Cash</td><td className="td text-right tabular-nums">{money(fs.revVsExp.cash.revenue, c)}</td><td className="td text-right tabular-nums">{money(fs.revVsExp.cash.expenditure, c)}</td><td className="td text-right tabular-nums" style={{ color: fs.revVsExp.cash.surplus < 0 ? "var(--danger)" : "var(--ok)" }}>{money(fs.revVsExp.cash.surplus, c)}</td></tr>
+                <tr><td className="td">Accrual</td><td className="td text-right tabular-nums">{money(fs.revVsExp.accrual.revenue, c)}</td><td className="td text-right tabular-nums">{money(fs.revVsExp.accrual.expenditure, c)}</td><td className="td text-right tabular-nums" style={{ color: fs.revVsExp.accrual.surplus < 0 ? "var(--danger)" : "var(--ok)" }}>{money(fs.revVsExp.accrual.surplus, c)}</td></tr>
+              </tbody>
+            </table>
+            {detailed && <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>Cash basis recognises revenue and expenditure as funds are actually spent; accrual basis recognises the full award and includes outstanding commitments.</p>}
+          </div>
+
+          {/* 3. Balance Sheet */}
+          <div className="card p-4">
+            <div className="flex items-center justify-between mb-2">
+              <div className="text-sm font-medium">3. Balance Sheet</div>
+              <a href={`/api/financials/${id}?statement=balance`} className="btn btn-sm">⬇ CSV</a>
+            </div>
+            <table className="w-full text-sm">
+              <tbody>
+                <tr><td className="td">Cash and bank</td><td className="td text-right tabular-nums">{money(fs.balanceSheet.cashAndBank, c)}</td></tr>
+                <tr><td className="td">Grant receivable</td><td className="td text-right tabular-nums">{money(fs.balanceSheet.receivables, c)}</td></tr>
+                <tr><td className="td font-medium">Total assets</td><td className="td text-right tabular-nums font-medium">{money(fs.balanceSheet.totalAssets, c)}</td></tr>
+                <tr><td className="td">Payables (commitments)</td><td className="td text-right tabular-nums">{money(fs.balanceSheet.payables, c)}</td></tr>
+                <tr><td className="td font-medium">Total liabilities</td><td className="td text-right tabular-nums font-medium">{money(fs.balanceSheet.totalLiabilities, c)}</td></tr>
+                <tr><td className="td font-medium">Fund balance</td><td className="td text-right tabular-nums font-medium">{money(fs.balanceSheet.fundBalance, c)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* 4. Cashflow */}
+        <div className="card p-4 overflow-x-auto">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-sm font-medium">4. Cashflow Statement</div>
+            <a href={`/api/financials/${id}?statement=cashflow`} className="btn btn-sm">⬇ CSV</a>
+          </div>
+          {fs.cashflow.months.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No cash movements recorded yet.</p> : (
+            <table className="w-full text-sm">
+              <thead><tr><th className="th text-left">Month</th><th className="th text-right">Receipts</th><th className="th text-right">Payments</th><th className="th text-right">Net</th></tr></thead>
+              <tbody>
+                {fs.cashflow.months.map((m) => (
+                  <tr key={m.month}><td className="td">{m.month}</td><td className="td text-right tabular-nums">{money(m.receipts, c)}</td><td className="td text-right tabular-nums">{money(m.payments, c)}</td><td className="td text-right tabular-nums" style={{ color: m.net < 0 ? "var(--danger)" : "var(--ok)" }}>{money(m.net, c)}</td></tr>
+                ))}
+                <tr><td className="td font-medium">Total</td><td className="td text-right tabular-nums font-medium">{money(fs.cashflow.totalReceipts, c)}</td><td className="td text-right tabular-nums font-medium">{money(fs.cashflow.totalPayments, c)}</td><td className="td text-right tabular-nums font-medium">{money(fs.cashflow.netCashflow, c)}</td></tr>
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Burn rate (chart only — not part of the formal statements) */}
+        <div className="card p-4">
+          <div className="text-sm font-medium mb-2">Burn rate</div>
+          {monthly.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No expenditure recorded yet.</p> : (
+            <>
+              <ColumnChart data={monthly.map((row) => ({ label: row.m, value: row.v }))} valueFmt={(v) => money(v, c)} />
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3 text-sm">
+                <div><div className="label">Avg monthly burn</div><div className="font-medium tabular-nums">{money(avgBurn, c)}</div></div>
+                <div><div className="label">Spent / budget</div><div className="font-medium tabular-nums">{pct(totPlanned ? (totActual / totPlanned) * 100 : 0)}</div></div>
+                <div><div className="label">Runway at this rate</div><div className="font-medium tabular-nums">{runway === null ? "—" : runway > 120 ? "120+ months" : `${runway.toFixed(1)} months`}</div></div>
+              </div>
+              <div className="mt-3"><HBar label="Overall utilisation" value={totActual} max={totPlanned} money={`${money(totActual, c)} / ${money(totPlanned, c)}`} /></div>
+            </>
+          )}
+        </div>
+
+        <p className="text-xs" style={{ color: "var(--muted)" }}>
+          Fund-accounting basis · figures derive from the project budget, recorded expenditures, commitments and disbursement vouchers · as at {fmtDate(fs.asOf)}.
         </p>
       </div>
     </div>

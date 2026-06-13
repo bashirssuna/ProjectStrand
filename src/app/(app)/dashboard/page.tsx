@@ -6,7 +6,6 @@ import { q } from "@/server/db";
 import { getUserOrg } from "@/server/services/accounts";
 import { PageHeader, Stat, Badge, StatusBadge, ProgressBar, Empty } from "@/components/ui";
 import { money, pct, fmtDateTime, fmtDate } from "@/lib/format";
-import { label } from "@/lib/enums";
 
 export default async function DashboardPage() {
   const user = await requireUser();
@@ -19,11 +18,6 @@ export default async function DashboardPage() {
   const totalPlanned = summaries.reduce((s, x) => s + (x?.budget?.planned ?? 0), 0);
   const totalSpent = summaries.reduce((s, x) => s + (x?.budget?.actual ?? 0), 0);
   const totalFlags = summaries.reduce((s, x) => s + (x?.counts.openFlags ?? 0), 0);
-
-  const notifications = await q<{ id: string; type: string; title: string; body: string | null; link: string | null; createdAt: string; read: boolean }>(
-    `SELECT id, type, title, body, link, created_at AS "createdAt", read FROM notification
-     WHERE user_id=$1 ORDER BY created_at DESC LIMIT 8`, [user.id]
-  );
 
   const pendingSignatures = await q<{ id: string; number: string; title: string; projectId: string; amount: number }>(
     `SELECT r.id, r.number, r.title, r.project_id AS "projectId", r.amount
@@ -168,23 +162,6 @@ export default async function DashboardPage() {
                     <div className="font-medium">{m.title}</div>
                     <div className="text-xs" style={{ color: "var(--muted)" }}>{fmtDateTime(m.startsAt)}</div>
                     {m.url && <a href={m.url} className="text-xs hover:underline" style={{ color: "var(--info)" }}>Join link</a>}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="card p-4">
-            <h3 className="font-display font-semibold mb-3">Recent notifications</h3>
-            {notifications.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>You're all caught up.</p> : (
-              <div className="space-y-3">
-                {notifications.map((n) => (
-                  <div key={n.id} className="text-sm">
-                    <div className="flex items-center gap-2">
-                      {!n.read && <span className="h-1.5 w-1.5 rounded-full" style={{ background: "var(--brand)" }} />}
-                      <span className="font-medium">{n.title}</span>
-                    </div>
-                    <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>{label(n.type)} · {fmtDate(n.createdAt)}</div>
                   </div>
                 ))}
               </div>

@@ -59,7 +59,7 @@ export default async function RequisitionsPage({ params }: { params: Promise<{ i
         )}
       </div>
 
-      {canCreate && (
+      {canCreate ? (
         <div>
           <SectionTitle>Raise a requisition</SectionTitle>
           <form action={createRequisitionAction} className="card p-4 grid sm:grid-cols-2 gap-4">
@@ -87,6 +87,15 @@ export default async function RequisitionsPage({ params }: { params: Promise<{ i
               <button className="btn btn-primary" type="submit">Create draft</button>
             </div>
           </form>
+        </div>
+      ) : (
+        <div className="card p-4">
+          <SectionTitle>Raise a requisition</SectionTitle>
+          <p className="text-sm" style={{ color: "var(--muted)" }}>
+            Your current role (<strong>{(access.role ?? "viewer").replace(/_/g, " ")}</strong>) cannot initiate requisitions. This is a deliberate financial control —
+            requisitions are raised by the <strong>Coordinator</strong> or <strong>Finance Admin</strong>, then routed to the PI for approval and signature,
+            so the same person never both requests and approves the same funds. To raise one yourself, ask an org admin to assign you a coordinator or finance role on this project.
+          </p>
         </div>
       )}
     </div>

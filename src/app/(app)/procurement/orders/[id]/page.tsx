@@ -1,0 +1,111 @@
+import Link from "next/link";
+import { requireProcOrg } from "../../_guard";
+import { q, one } from "@/server/db";
+import { PageHeader, SectionTitle, Field, StatusBadge, Badge, Empty } from "@/components/ui";
+import { money, fmtDate } from "@/lib/format";
+import { createGRNAction, createBillAction } from "@/app/actions";
+
+export default async function PODetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ grn?: string; err?: string }> }) {
+  const { id } = await params;
+  const { orgId } = await requireProcOrg();
+  const sp = await searchParams;
+  const po = await one<{ id: string; number: string; orderDate: string; currency: string; total: number; status: string; vendor: string | null; project: string | null }>(
+    `SELECT po.id, po.number, po.order_date AS "orderDate", po.currency, po.total::float, po.status,
+            v.name AS vendor, p.code AS project
+     FROM purchase_order po LEFT JOIN vendor v ON v.id=po.vendor_id LEFT JOIN project p ON p.id=po.project_id
+     WHERE po.id=$1 AND po.org_id=$2`, [id, orgId]
+  );
+  if (!po) return <Empty title="Purchase order not found" hint="It may have been removed." />;
+  const items = await q<{ id: string; description: string; quantity: number; unit: string | null; unitCost: number; amount: number; qtyReceived: number }>(
+    `SELECT id, description, quantity::float, unit, unit_cost::float AS "unitCost", amount::float, qty_received::float AS "qtyReceived" FROM purchase_order_item WHERE po_id=$1`, [id]
+  );
+  const grns = await q<{ id: string; number: string; receivedDate: string; receivedByName: string | null }>(
+    `SELECT id, number, received_date AS "receivedDate", received_by_name AS "receivedByName" FROM goods_received_note WHERE po_id=$1 ORDER BY received_date`, [id]
+  );
+  const incomeAccts = await q<{ id: string; code: string; name: string }>(`SELECT id, code, name FROM ledger_account WHERE org_id=$1 AND account_type='expense' AND is_active ORDER BY code`, [orgId]);
+  const fullyReceived = items.every((i) => i.qtyReceived >= i.quantity);
+  const existingBill = await one<{ id: string; number: string }>(`SELECT id, number FROM vendor_bill WHERE po_id=$1 LIMIT 1`, [id]);
+
+  return (
+    <div className="max-w-4xl">
+      <PageHeader title={`Purchase order ${po.number}`} subtitle={`${po.vendor ?? "—"}${po.project ? ` · ${po.project}` : ""}`} actions={<Link href="/procurement/requests" className="btn btn-sm">← Requests</Link>} />
+      {sp.grn && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Goods received note recorded.</div>}
+      {sp.err === "noqty" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Enter at least one received quantity.</div>}
+      {sp.err && sp.err !== "noqty" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{decodeURIComponent(sp.err)}</div>}
+
+      <div className="card p-4 mb-5 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2"><StatusBadge status={po.status} /><span className="text-sm" style={{ color: "var(--muted)" }}>Ordered {fmtDate(po.orderDate)}</span></div>
+        <div className="text-xl font-semibold tabular-nums">{money(po.total, po.currency)}</div>
+      </div>
+
+      <SectionTitle>Order items</SectionTitle>
+      <div className="card overflow-x-auto mb-6">
+        <table className="w-full text-sm">
+          <thead><tr><th className="th text-left">Description</th><th className="th text-right">Qty</th><th className="th text-right">Unit cost</th><th className="th text-right">Amount</th><th className="th text-right">Received</th></tr></thead>
+          <tbody>
+            {items.map((i) => (
+              <tr key={i.id}>
+                <td className="td">{i.description}</td>
+                <td className="td text-right tabular-nums">{i.quantity}{i.unit ? ` ${i.unit}` : ""}</td>
+                <td className="td text-right tabular-nums">{money(i.unitCost, po.currency)}</td>
+                <td className="td text-right tabular-nums">{money(i.amount, po.currency)}</td>
+                <td className="td text-right tabular-nums">{i.qtyReceived >= i.quantity ? <Badge tone="ok">{i.qtyReceived}</Badge> : <span>{i.qtyReceived} / {i.quantity}</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* GRN */}
+      {po.status !== "received" && po.status !== "billed" && po.status !== "cancelled" && (
+        <>
+          <SectionTitle>Record a goods received note</SectionTitle>
+          <form action={createGRNAction} className="card p-4 mb-6">
+            <input type="hidden" name="poId" value={po.id} />
+            <div className="mb-3" style={{ maxWidth: 220 }}><Field label="Received date"><input type="date" name="receivedDate" defaultValue={new Date().toISOString().slice(0, 10)} className="input" /></Field></div>
+            <table className="w-full text-sm mb-3">
+              <thead><tr><th className="th text-left">Item</th><th className="th text-right">Outstanding</th><th className="th text-right">Receiving now</th></tr></thead>
+              <tbody>
+                {items.map((i) => (
+                  <tr key={i.id}>
+                    <td className="td">{i.description}</td>
+                    <td className="td text-right tabular-nums">{Math.max(0, i.quantity - i.qtyReceived)}</td>
+                    <td className="td text-right"><input type="number" step="0.01" min={0} max={Math.max(0, i.quantity - i.qtyReceived)} name={`qty_${i.id}`} defaultValue={0} className="input" style={{ width: 100, textAlign: "right" }} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="flex justify-end"><button className="btn btn-primary" type="submit">Record GRN</button></div>
+          </form>
+        </>
+      )}
+
+      {grns.length > 0 && (
+        <>
+          <SectionTitle>Goods received notes</SectionTitle>
+          <div className="card overflow-x-auto mb-6">
+            <table className="w-full text-sm">
+              <thead><tr><th className="th text-left">GRN</th><th className="th text-left">Date</th><th className="th text-left">Received by</th></tr></thead>
+              <tbody>{grns.map((g) => (<tr key={g.id}><td className="td font-mono text-xs">{g.number}</td><td className="td">{fmtDate(g.receivedDate)}</td><td className="td">{g.receivedByName ?? "—"}</td></tr>))}</tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {/* Bill */}
+      <SectionTitle>Vendor bill</SectionTitle>
+      {existingBill ? (
+        <div className="card p-4"><span className="text-sm">Bill <span className="font-mono">{existingBill.number}</span> has been raised for this order. </span><Link href="/procurement/bills" className="btn btn-sm">View bills</Link></div>
+      ) : fullyReceived || po.status === "partially_received" ? (
+        <form action={createBillAction} className="card p-4 flex flex-wrap items-end gap-3">
+          <input type="hidden" name="poId" value={po.id} />
+          <Field label="Due date"><input type="date" name="dueDate" className="input" /></Field>
+          <Field label="Expense account (optional)"><select name="expenseAccountId" className="select"><option value="">— none —</option>{incomeAccts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}</select></Field>
+          <button className="btn btn-primary" type="submit">Raise vendor bill</button>
+        </form>
+      ) : (
+        <p className="text-sm" style={{ color: "var(--muted)" }}>Receive goods against this order before raising a bill.</p>
+      )}
+    </div>
+  );
+}

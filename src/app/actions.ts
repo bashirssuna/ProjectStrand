@@ -1512,3 +1512,226 @@ async function nextNum(orgId: string, table: string, prefix: string): Promise<st
   const n = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ${t} WHERE org_id=$1`, [orgId]))?.c ?? 0;
   return `${prefix}-${String(n + 1).padStart(4, "0")}`;
 }
+
+/* ============================ HUMAN RESOURCES ============================ */
+import { leaveBalance, computePay, buildPayrollRun, finalisePayrollRun } from "@/server/services/hr";
+
+// HR is institution-level (org admins / super admins), same gate as finance.
+export async function addEmployeeAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const first = String(formData.get("firstName") || "").trim();
+  const last = String(formData.get("lastName") || "").trim();
+  if (!first || !last) redirect("/hr/employees?err=name");
+  const eid = id("emp");
+  await q(`INSERT INTO employee (id, org_id, user_id, staff_no, first_name, last_name, email, phone, job_title, department,
+             contract_type, start_date, end_date, basic_salary, currency, pay_frequency, bank_name, bank_account, bank_branch, mobile_money, annual_leave_days, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+    [eid, orgId, String(formData.get("userId") || "") || null, String(formData.get("staffNo") || "") || null,
+     first, last, String(formData.get("email") || "") || null, String(formData.get("phone") || "") || null,
+     String(formData.get("jobTitle") || "") || null, String(formData.get("department") || "") || null,
+     String(formData.get("contractType") || "permanent"),
+     String(formData.get("startDate") || "") || null, String(formData.get("endDate") || "") || null,
+     Number(formData.get("basicSalary") || 0), String(formData.get("currency") || "USD"),
+     String(formData.get("payFrequency") || "monthly"),
+     String(formData.get("bankName") || "") || null, String(formData.get("bankAccount") || "") || null,
+     String(formData.get("bankBranch") || "") || null, String(formData.get("mobileMoney") || "") || null,
+     Number(formData.get("annualLeaveDays") || 21), String(formData.get("note") || "") || null]);
+  await writeAudit({ orgId, userId, action: "create", entity: "employee", entityId: eid, after: { name: `${first} ${last}` } });
+  redirect("/hr/employees?created=1");
+}
+
+export async function updateEmployeeAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const eid = String(formData.get("employeeId"));
+  await q(`UPDATE employee SET job_title=$2, department=$3, contract_type=$4, basic_salary=$5, currency=$6,
+             bank_name=$7, bank_account=$8, bank_branch=$9, mobile_money=$10, annual_leave_days=$11, status=$12,
+             start_date=$13, end_date=$14, phone=$15, email=$16 WHERE id=$1 AND org_id=$17`,
+    [eid, String(formData.get("jobTitle") || "") || null, String(formData.get("department") || "") || null,
+     String(formData.get("contractType") || "permanent"), Number(formData.get("basicSalary") || 0),
+     String(formData.get("currency") || "USD"), String(formData.get("bankName") || "") || null,
+     String(formData.get("bankAccount") || "") || null, String(formData.get("bankBranch") || "") || null,
+     String(formData.get("mobileMoney") || "") || null, Number(formData.get("annualLeaveDays") || 21),
+     String(formData.get("status") || "active"), String(formData.get("startDate") || "") || null,
+     String(formData.get("endDate") || "") || null, String(formData.get("phone") || "") || null,
+     String(formData.get("email") || "") || null, orgId]);
+  revalidatePath(`/hr/employees/${eid}`);
+  redirect(`/hr/employees/${eid}?saved=1`);
+}
+
+// Pay components (the configurable deduction/allowance rules)
+export async function addPayComponentAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/hr/payroll?err=comp");
+  await q(`INSERT INTO pay_component (id, org_id, name, kind, amount_type, rate, basis, applies_default)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("pcmp"), orgId, name, String(formData.get("kind") || "deduction"),
+     String(formData.get("amountType") || "flat"), Number(formData.get("rate") || 0),
+     String(formData.get("basis") || "basic"), formData.get("appliesDefault") === "on"]);
+  redirect("/hr/payroll?comp=ok");
+}
+export async function togglePayComponentAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`UPDATE pay_component SET active = NOT active WHERE id=$1 AND org_id=$2`, [String(formData.get("componentId")), orgId]);
+  revalidatePath("/hr/payroll");
+}
+
+// Leave
+export async function requestLeaveAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const empId = String(formData.get("employeeId"));
+  const start = String(formData.get("startDate") || "");
+  const end = String(formData.get("endDate") || "");
+  const days = Number(formData.get("days") || 0);
+  if (!start || !end || days <= 0) redirect(`/hr/leave?err=1`);
+  await q(`INSERT INTO leave_request (id, org_id, employee_id, leave_type, start_date, end_date, days, reason)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("lv"), orgId, empId, String(formData.get("leaveType") || "annual"), start, end, days, String(formData.get("reason") || "") || null]);
+  redirect("/hr/leave?requested=1");
+}
+export async function decideLeaveAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const lvId = String(formData.get("leaveId"));
+  const decision = String(formData.get("decision")) as "approved" | "rejected";
+  await q(`UPDATE leave_request SET status=$2, decided_by=$3, decided_by_name=$4, decided_at=now() WHERE id=$1 AND org_id=$5`,
+    [lvId, decision, userId, userName, orgId]);
+  revalidatePath("/hr/leave");
+  redirect("/hr/leave?decided=1");
+}
+
+// Timesheets
+export async function addTimesheetAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const empId = String(formData.get("employeeId"));
+  const hours = Number(formData.get("hours") || 0);
+  if (!empId || hours <= 0) redirect("/hr/timesheets?err=1");
+  await q(`INSERT INTO timesheet (id, org_id, employee_id, project_id, work_date, hours, description)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id("ts"), orgId, empId, String(formData.get("projectId") || "") || null,
+     String(formData.get("workDate") || new Date().toISOString().slice(0, 10)), hours, String(formData.get("description") || "") || null]);
+  redirect("/hr/timesheets?added=1");
+}
+export async function decideTimesheetAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const tsId = String(formData.get("timesheetId"));
+  const decision = String(formData.get("decision")) as "approved" | "rejected";
+  await q(`UPDATE timesheet SET status=$2, approved_by=$3, approved_by_name=$4 WHERE id=$1 AND org_id=$5`,
+    [tsId, decision, userId, userName, orgId]);
+  revalidatePath("/hr/timesheets");
+}
+
+// Payroll
+export async function buildPayrollAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const period = String(formData.get("period") || new Date().toISOString().slice(0, 7));
+  try { await buildPayrollRun(orgId, period, { id: userId, name: userName }); }
+  catch (e) { redirect(`/hr/payroll?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  redirect(`/hr/payroll?run=${period}`);
+}
+export async function finalisePayrollAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const runId = String(formData.get("runId"));
+  await finalisePayrollRun(orgId, runId);
+  revalidatePath("/hr/payroll");
+  redirect("/hr/payroll?finalised=1");
+}
+
+/* ============================ PROCUREMENT ============================ */
+import { decidePurchaseRequest, createPOFromRequest, createGRN, createBillFromPO } from "@/server/services/procurement";
+
+// Vendors
+export async function addVendorAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/procurement/vendors?err=1");
+  await q(`INSERT INTO vendor (id, org_id, name, contact_person, email, phone, address, tax_id, bank_account)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [id("ven"), orgId, name, String(formData.get("contactPerson") || "") || null, String(formData.get("email") || "") || null,
+     String(formData.get("phone") || "") || null, String(formData.get("address") || "") || null,
+     String(formData.get("taxId") || "") || null, String(formData.get("bankAccount") || "") || null]);
+  redirect("/procurement/vendors?created=1");
+}
+
+// Purchase requests
+export async function createPurchaseRequestAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const title = String(formData.get("title") || "").trim();
+  const desc = String(formData.get("itemDescription") || "").trim();
+  const qty = Number(formData.get("quantity") || 1);
+  const unitCost = Number(formData.get("unitCost") || 0);
+  if (!title || !desc) redirect("/procurement/requests?err=1");
+  const prId = id("pr");
+  const number = await nextNumProc(orgId, "purchase_request", "PR");
+  const amount = Math.round((qty * unitCost + Number.EPSILON) * 100) / 100;
+  await q(`INSERT INTO purchase_request (id, org_id, project_id, number, title, justification, needed_by, currency, estimated_total, status, requested_by, requested_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'submitted',$10,$11)`,
+    [prId, orgId, String(formData.get("projectId") || "") || null, number, title,
+     String(formData.get("justification") || "") || null, String(formData.get("neededBy") || "") || null,
+     String(formData.get("currency") || "USD"), amount, userId, userName]);
+  await q(`INSERT INTO purchase_request_item (id, request_id, description, quantity, unit, estimated_unit_cost, amount)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id("pri"), prId, desc, qty, String(formData.get("unit") || "") || null, unitCost, amount]);
+  await writeAudit({ orgId, userId, action: "create", entity: "purchase_request", entityId: number, after: { title, amount } });
+  redirect("/procurement/requests?created=1");
+}
+export async function decidePurchaseRequestAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const prId = String(formData.get("requestId"));
+  const decision = String(formData.get("decision")) as "approved" | "rejected";
+  try { await decidePurchaseRequest(orgId, prId, decision, { id: userId, name: userName }, String(formData.get("note") || "") || undefined); }
+  catch (e) { redirect(`/procurement/requests?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  revalidatePath("/procurement/requests");
+  redirect("/procurement/requests?decided=1");
+}
+
+// Purchase orders
+export async function createPOAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const prId = String(formData.get("requestId"));
+  const vendorId = String(formData.get("vendorId"));
+  if (!vendorId) redirect("/procurement/requests?err=vendor");
+  let poId = "";
+  try { poId = await createPOFromRequest(orgId, prId, vendorId, { id: userId, name: userName }); }
+  catch (e) { redirect(`/procurement/requests?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  redirect(`/procurement/orders/${poId}`);
+}
+
+// Goods received notes
+export async function createGRNAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const poId = String(formData.get("poId"));
+  // collect qty inputs named qty_<poItemId>
+  const receipts: { poItemId: string; qty: number; note?: string }[] = [];
+  for (const [k, v] of formData.entries()) {
+    if (k.startsWith("qty_")) {
+      const qty = Number(v || 0);
+      if (qty > 0) receipts.push({ poItemId: k.slice(4), qty });
+    }
+  }
+  if (receipts.length === 0) redirect(`/procurement/orders/${poId}?err=noqty`);
+  try { await createGRN(orgId, poId, receipts, { id: userId, name: userName }, String(formData.get("receivedDate") || "") || undefined); }
+  catch (e) { redirect(`/procurement/orders/${poId}?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  redirect(`/procurement/orders/${poId}?grn=ok`);
+}
+
+// Vendor bills
+export async function createBillAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const poId = String(formData.get("poId"));
+  let billId = "";
+  try {
+    billId = await createBillFromPO(orgId, poId, { id: userId, name: userName }, {
+      dueDate: String(formData.get("dueDate") || "") || undefined,
+      expenseAccountId: String(formData.get("expenseAccountId") || "") || undefined,
+    });
+  } catch (e) { redirect(`/procurement/orders/${poId}?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  redirect(`/procurement/bills?created=1`);
+}
+
+// proc-local sequential numbering (distinct name to avoid collisions)
+async function nextNumProc(orgId: string, table: string, prefix: string): Promise<string> {
+  const allowed: Record<string, string> = { purchase_request: "purchase_request", purchase_order: "purchase_order", vendor_bill: "vendor_bill" };
+  const t = allowed[table] ?? table;
+  const n = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ${t} WHERE org_id=$1`, [orgId]))?.c ?? 0;
+  return `${prefix}-${String(n + 1).padStart(4, "0")}`;
+}

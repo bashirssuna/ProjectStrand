@@ -755,4 +755,235 @@ CREATE TABLE IF NOT EXISTS bank_statement_line (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_bank_line_acct ON bank_statement_line(account_id);
+
+-- ===========================================================================
+-- HUMAN RESOURCES MODULE
+-- Employees are standalone records, optionally linked to a login (app_user).
+-- Payroll deductions are configurable rules (flat or % of basic/gross), so no
+-- tax rates are hard-coded — the institution defines PAYE/NSSF/etc. themselves.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS employee (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  user_id text REFERENCES app_user(id) ON DELETE SET NULL, -- optional login link
+  staff_no text,
+  first_name text NOT NULL,
+  last_name text NOT NULL,
+  email text, phone text,
+  job_title text, department text,
+  -- employment details
+  contract_type text NOT NULL DEFAULT 'permanent', -- permanent | fixed_term | casual | consultant | intern
+  start_date date, end_date date,
+  basic_salary numeric(18,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'USD',
+  pay_frequency text NOT NULL DEFAULT 'monthly', -- monthly | weekly | daily
+  -- bank / payment
+  bank_name text, bank_account text, bank_branch text, mobile_money text,
+  -- leave
+  annual_leave_days numeric(6,1) NOT NULL DEFAULT 21,
+  status text NOT NULL DEFAULT 'active', -- active | on_leave | terminated
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_employee_org ON employee(org_id);
+
+-- Recurring salary components (allowances that add, deductions that subtract).
+-- amount_type: 'flat' = fixed amount; 'percent' = % of basis.
+CREATE TABLE IF NOT EXISTS pay_component (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,                  -- 'PAYE', 'NSSF (employee)', 'Housing allowance'
+  kind text NOT NULL,                  -- earning | deduction
+  amount_type text NOT NULL DEFAULT 'flat', -- flat | percent
+  rate numeric(18,4) NOT NULL DEFAULT 0,    -- flat amount OR percentage (e.g. 5 = 5%)
+  basis text NOT NULL DEFAULT 'basic',      -- basic | gross  (what percent is applied to)
+  applies_default boolean NOT NULL DEFAULT true, -- auto-apply to all employees on a run
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Per-employee overrides/assignments of components (optional; defaults used if absent).
+CREATE TABLE IF NOT EXISTS employee_pay_component (
+  id text PRIMARY KEY,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  component_id text NOT NULL REFERENCES pay_component(id) ON DELETE CASCADE,
+  override_rate numeric(18,4),
+  UNIQUE (employee_id, component_id)
+);
+
+-- Leave requests with balance tracking.
+CREATE TABLE IF NOT EXISTS leave_request (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  leave_type text NOT NULL DEFAULT 'annual', -- annual | sick | unpaid | maternity | other
+  start_date date NOT NULL,
+  end_date date NOT NULL,
+  days numeric(6,1) NOT NULL DEFAULT 0,
+  reason text,
+  status text NOT NULL DEFAULT 'pending', -- pending | approved | rejected | cancelled
+  decided_by text, decided_by_name text, decided_at timestamptz, decision_note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Timesheets: hours/days an employee logs, optionally against a project.
+CREATE TABLE IF NOT EXISTS timesheet (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  project_id text,
+  work_date date NOT NULL,
+  hours numeric(6,2) NOT NULL DEFAULT 0,
+  description text,
+  status text NOT NULL DEFAULT 'submitted', -- submitted | approved | rejected
+  approved_by text, approved_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Payroll runs (a batch for a period) and the resulting payslips.
+CREATE TABLE IF NOT EXISTS payroll_run (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  period_label text NOT NULL,          -- 'YYYY-MM'
+  run_date date NOT NULL,
+  status text NOT NULL DEFAULT 'draft', -- draft | finalised
+  note text,
+  total_gross numeric(18,2) NOT NULL DEFAULT 0,
+  total_deductions numeric(18,2) NOT NULL DEFAULT 0,
+  total_net numeric(18,2) NOT NULL DEFAULT 0,
+  journal_entry_id text,
+  created_by text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, period_label)
+);
+CREATE TABLE IF NOT EXISTS payslip (
+  id text PRIMARY KEY,
+  run_id text NOT NULL REFERENCES payroll_run(id) ON DELETE CASCADE,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  basic numeric(18,2) NOT NULL DEFAULT 0,
+  earnings numeric(18,2) NOT NULL DEFAULT 0,   -- sum of allowances
+  gross numeric(18,2) NOT NULL DEFAULT 0,
+  deductions numeric(18,2) NOT NULL DEFAULT 0,
+  net numeric(18,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'USD',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Line-level breakdown on each payslip (for the slip + statutory reporting).
+CREATE TABLE IF NOT EXISTS payslip_line (
+  id text PRIMARY KEY,
+  payslip_id text NOT NULL REFERENCES payslip(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  kind text NOT NULL,                  -- earning | deduction
+  amount numeric(18,2) NOT NULL DEFAULT 0
+);
+
+-- ===========================================================================
+-- PROCUREMENT MODULE (its own flow: vendors → PR → PO → GRN → bill)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS vendor (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  contact_person text, email text, phone text, address text,
+  tax_id text, bank_account text,
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Purchase requests: what someone wants to buy, with its own approval.
+CREATE TABLE IF NOT EXISTS purchase_request (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text,
+  number text NOT NULL,                -- 'PR-0001'
+  title text NOT NULL,
+  justification text,
+  needed_by date,
+  currency text NOT NULL DEFAULT 'USD',
+  estimated_total numeric(18,2) NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'draft', -- draft | submitted | approved | rejected | ordered | closed
+  requested_by text, requested_by_name text,
+  decided_by text, decided_by_name text, decided_at timestamptz, decision_note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, number)
+);
+CREATE TABLE IF NOT EXISTS purchase_request_item (
+  id text PRIMARY KEY,
+  request_id text NOT NULL REFERENCES purchase_request(id) ON DELETE CASCADE,
+  description text NOT NULL,
+  quantity numeric(18,2) NOT NULL DEFAULT 1,
+  unit text,
+  estimated_unit_cost numeric(18,2) NOT NULL DEFAULT 0,
+  amount numeric(18,2) NOT NULL DEFAULT 0
+);
+
+-- Purchase orders: an approved order placed with a vendor.
+CREATE TABLE IF NOT EXISTS purchase_order (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text,
+  request_id text REFERENCES purchase_request(id),
+  vendor_id text REFERENCES vendor(id),
+  number text NOT NULL,                -- 'PO-0001'
+  order_date date NOT NULL,
+  currency text NOT NULL DEFAULT 'USD',
+  total numeric(18,2) NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'open', -- open | partially_received | received | billed | cancelled
+  note text,
+  created_by text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, number)
+);
+CREATE TABLE IF NOT EXISTS purchase_order_item (
+  id text PRIMARY KEY,
+  po_id text NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
+  description text NOT NULL,
+  quantity numeric(18,2) NOT NULL DEFAULT 1,
+  unit text,
+  unit_cost numeric(18,2) NOT NULL DEFAULT 0,
+  amount numeric(18,2) NOT NULL DEFAULT 0,
+  qty_received numeric(18,2) NOT NULL DEFAULT 0
+);
+
+-- Goods Received Notes: records receipt of items against a PO.
+CREATE TABLE IF NOT EXISTS goods_received_note (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  po_id text NOT NULL REFERENCES purchase_order(id) ON DELETE CASCADE,
+  number text NOT NULL,                -- 'GRN-0001'
+  received_date date NOT NULL,
+  received_by text, received_by_name text,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, number)
+);
+CREATE TABLE IF NOT EXISTS grn_item (
+  id text PRIMARY KEY,
+  grn_id text NOT NULL REFERENCES goods_received_note(id) ON DELETE CASCADE,
+  po_item_id text NOT NULL REFERENCES purchase_order_item(id) ON DELETE CASCADE,
+  qty_received numeric(18,2) NOT NULL DEFAULT 0,
+  condition_note text
+);
+
+-- Vendor bills (the payable raised from a PO / GRN).
+CREATE TABLE IF NOT EXISTS vendor_bill (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text,
+  po_id text REFERENCES purchase_order(id),
+  vendor_id text REFERENCES vendor(id),
+  number text NOT NULL,                -- 'BILL-0001'
+  bill_date date NOT NULL,
+  due_date date,
+  currency text NOT NULL DEFAULT 'USD',
+  total numeric(18,2) NOT NULL DEFAULT 0,
+  amount_paid numeric(18,2) NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'unpaid', -- unpaid | part_paid | paid | void
+  expense_account_id text REFERENCES ledger_account(id),
+  journal_entry_id text,
+  note text,
+  created_by text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, number)
+);
 `;

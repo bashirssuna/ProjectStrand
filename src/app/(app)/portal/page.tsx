@@ -11,11 +11,19 @@ export default async function PortalHome() {
   const lb = await leaveBalance(employeeId);
   const pendingLeave = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM leave_request WHERE employee_id=$1 AND status='pending'`, [employeeId]))?.c ?? 0;
   const tsThisMonth = (await one<{ s: number }>(`SELECT COALESCE(SUM(hours),0)::float s FROM timesheet WHERE employee_id=$1 AND date_trunc('month', work_date)=date_trunc('month', CURRENT_DATE)`, [employeeId]))?.s ?? 0;
-  // projects this employee can see (assigned via project_member through their user)
-  const projects = await q<{ id: string; code: string; title: string }>(
-    `SELECT p.id, p.code, p.title FROM project p
-     JOIN project_member pm ON pm.project_id=p.id
-     JOIN employee e ON e.user_id=pm.user_id WHERE e.id=$1 ORDER BY p.created_at DESC`, [employeeId]
+  // Projects this employee can see: either their login is a project_member, OR
+  // they've been assigned to the project in HR (employee_project). Both surface
+  // the same limited self-service view.
+  const projects = await q<{ id: string; code: string; title: string; role: string | null }>(
+    `SELECT DISTINCT p.id, p.code, p.title, ep.role
+     FROM project p
+     LEFT JOIN employee_project ep ON ep.project_id = p.id AND ep.employee_id = $1
+     WHERE p.id IN (
+       SELECT pm.project_id FROM project_member pm JOIN employee e ON e.user_id = pm.user_id WHERE e.id = $1
+       UNION
+       SELECT ep2.project_id FROM employee_project ep2 WHERE ep2.employee_id = $1
+     )
+     ORDER BY p.code`, [employeeId]
   );
 
   return (
@@ -50,6 +58,7 @@ export default async function PortalHome() {
             <Link key={p.id} href={`/projects/${p.id}`} className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
               <div className="font-mono text-xs" style={{ color: "var(--brand)" }}>{p.code}</div>
               <div className="font-medium mt-1">{p.title}</div>
+              {p.role && <div className="text-xs mt-1" style={{ color: "var(--fg)" }}>Your role: {p.role}</div>}
               <div className="text-xs mt-2" style={{ color: "var(--muted)" }}>Overview · SOW · Workplan · Gantt · Objectives</div>
             </Link>
           ))}

@@ -65,6 +65,19 @@ export async function getProjectAccess(projectId: string): Promise<ProjectAccess
     if (collabLink) permissions.add("project.view");
   }
 
+  // Staff assigned to a project in HR (employee_project, via their linked login)
+  // get the same read-only, limited view as collaborators — so an employee the
+  // PI/HR adds to a project can actually see it in their self-service portal.
+  if (!permissions.has("project.view")) {
+    const staffLink = await one(
+      `SELECT 1 AS ok FROM employee_project ep
+       JOIN employee e ON e.id = ep.employee_id
+       WHERE ep.project_id = $1 AND e.user_id = $2`,
+      [projectId, user.id]
+    );
+    if (staffLink) permissions.add("project.view");
+  }
+
   return {
     user,
     role: pm?.role ?? null,

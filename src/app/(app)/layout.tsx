@@ -34,7 +34,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <Link href="/dashboard" className="block font-display text-lg font-semibold" style={{ color: "var(--brand)" }}>
             Project Strand
           </Link>
-          <div className="text-xs mt-1.5" style={{ color: "var(--muted)" }}>{user.isSuperAdmin ? "Platform administrator" : user.isStaff ? "Staff portal" : (org?.name ?? "")}</div>
+          <div className="text-xs mt-1.5" style={{ color: "var(--muted)" }}>{user.isSuperAdmin ? "Platform administrator" : user.isStaff ? "Staff portal" : user.isCollaborator ? "Collaborator access" : (org?.name ?? "")}</div>
         </div>
 
         {user.isStaff ? (
@@ -44,6 +44,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <NavLink href="/portal/leave">☂ Leave</NavLink>
             <NavLink href="/portal/requests">🛒 Purchase requests</NavLink>
             <NavLink href="/portal/profile">◔ My profile &amp; CV</NavLink>
+          </nav>
+        ) : user.isCollaborator ? (
+          <nav className="p-3 space-y-1">
+            <NavLink href="/projects">❏ My projects</NavLink>
+            <NavLink href="/profile">◔ My Profile</NavLink>
           </nav>
         ) : (
           <nav className="p-3 space-y-1 overflow-y-auto">
@@ -100,7 +105,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               <div className="h-8 w-8 rounded-full grid place-items-center text-xs font-semibold" style={{ background: "var(--brand)", color: "var(--brand-fg)" }}>{initials}</div>
               <div className="hidden sm:block leading-tight">
                 <div className="text-sm font-medium">{user.name}</div>
-                <div className="text-xs" style={{ color: "var(--muted)" }}>{user.isSuperAdmin ? "Admin" : "Member"}</div>
+                <div className="text-xs" style={{ color: "var(--muted)" }}>{user.isSuperAdmin ? "Admin" : user.isCollaborator ? "Collaborator" : "Member"}</div>
               </div>
               <form action={signOut}><button className="btn btn-sm" type="submit" title="Sign out">Sign out</button></form>
             </div>

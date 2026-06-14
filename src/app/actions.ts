@@ -1859,8 +1859,27 @@ export async function assignActivityLeadAction(formData: FormData) {
   const activityId = String(formData.get("activityId"));
   await requirePermission(projectId, "project.edit");
   const ownerId = String(formData.get("ownerId") || "") || null;
+  // Capture the previous owner + title so we only notify on an actual (new) assignment.
+  const prev = await one<{ ownerId: string | null; title: string }>(
+    `SELECT owner_id AS "ownerId", title FROM activity WHERE id=$1 AND project_id=$2`, [activityId, projectId]
+  );
   await q(`UPDATE activity SET owner_id=$3, updated_at=now() WHERE id=$1 AND project_id=$2`, [activityId, projectId, ownerId]);
   await writeAudit({ userId: user.id, action: "update", entity: "activity", entityId: activityId, after: { ownerId } });
+  // Notify the newly-assigned person — in-app AND by email — when this is a change.
+  if (ownerId && ownerId !== prev?.ownerId) {
+    const proj = await one<{ orgId: string; title: string; code: string }>(
+      `SELECT org_id AS "orgId", title, code FROM project WHERE id=$1`, [projectId]
+    );
+    await notify({
+      orgId: proj?.orgId ?? null,
+      userId: ownerId,
+      type: "assignment",
+      title: `You've been assigned an activity${proj ? ` on ${proj.code}` : ""}`,
+      body: `${user.name} assigned you as lead on "${prev?.title ?? "an activity"}"${proj ? ` in ${proj.title}` : ""}.`,
+      link: `/projects/${projectId}/workplan`,
+      email: true,
+    });
+  }
   revalidatePath(`/projects/${projectId}/workplan`);
 }
 
@@ -2053,4 +2072,71 @@ export async function changeAdminPasswordAction(formData: FormData) {
   await q(`UPDATE app_user SET password_hash=$2, updated_at=now() WHERE id=$1`, [user.id, await hashPassword(next)]);
   await writeAudit({ userId: user.id, action: "update", entity: "app_user", entityId: user.id, meta: { passwordChanged: true } });
   redirect("/organization?pw=changed");
+}
+
+/* ---------------- Collaborator portal login (view-only) ---------------- */
+import { createCollaboratorLogin } from "@/server/services/collab";
+
+export async function createCollaboratorLoginAction(formData: FormData) {
+  await requireInstitutionFinance();
+  const cid = String(formData.get("collaboratorId"));
+  let res;
+  try { res = await createCollaboratorLogin(cid); }
+  catch (e) { redirect(`/collaborations/${cid}?loginerr=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  redirect(`/collaborations/${cid}?login=${res.emailStatus}`);
+}
+
+/* ---------------- Compensation (grant-model payroll) ---------------- */
+import { upsertCompConfig, upsertEmployeeComp, type CompConfigRow } from "@/server/services/compensation";
+
+function parseNum(v: FormDataEntryValue | null): number | null {
+  const s = String(v ?? "").trim();
+  if (s === "") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+export async function saveCompConfigAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const cfg: CompConfigRow = {
+    nssfEmployerPct: parseNum(formData.get("nssfEmployerPct")) ?? 15,
+    nssfEmployeePct: parseNum(formData.get("nssfEmployeePct")) ?? 5,
+    consultantWhtPct: parseNum(formData.get("consultantWhtPct")) ?? 6,
+    payeMethod: (String(formData.get("payeMethod") || "uganda") as CompConfigRow["payeMethod"]),
+    payeFlatPct: parseNum(formData.get("payeFlatPct")) ?? 0,
+    payeBands: null,
+    nssfEmployerFromFringe: formData.get("nssfEmployerFromFringe") === "on",
+    nssfEmployeeFromFringe: formData.get("nssfEmployeeFromFringe") === "on",
+  };
+  await upsertCompConfig(orgId, cfg);
+  await writeAudit({ orgId, userId, action: "update", entity: "comp_config", entityId: orgId, after: cfg });
+  redirect("/hr/compensation?saved=1");
+}
+
+export async function upsertEmployeeCompAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const employeeId = String(formData.get("employeeId"));
+  const employmentType = (String(formData.get("employmentType") || "staff") === "consultant" ? "consultant" : "staff") as "staff" | "consultant";
+  // Other fringe benefits arrive as parallel benefitLabel[] / benefitAmount[] arrays.
+  const lbls = formData.getAll("benefitLabel").map((v) => String(v));
+  const amts = formData.getAll("benefitAmount").map((v) => Number(String(v)) || 0);
+  const benefits = lbls.map((lbl, i) => ({ label: lbl.trim(), amount: amts[i] ?? 0 })).filter((b) => b.label);
+  await upsertEmployeeComp(orgId, employeeId, {
+    projectId: String(formData.get("projectId") || "") || null,
+    employmentType,
+    currency: String(formData.get("currency") || "USD").trim() || "USD",
+    grossSalary: parseNum(formData.get("grossSalary")),
+    baseSalary: parseNum(formData.get("baseSalary")),
+    effortPct: parseNum(formData.get("effortPct")) ?? 100,
+    calMonths: parseNum(formData.get("calMonths")),
+    fringeAmount: parseNum(formData.get("fringeAmount")),
+    fringeRatePct: parseNum(formData.get("fringeRatePct")),
+    fringeBasis: (String(formData.get("fringeBasis") || "base") === "charged" ? "charged" : "base"),
+    requestedFunds: parseNum(formData.get("requestedFunds")),
+    benefits,
+    note: String(formData.get("note") || "") || null,
+  });
+  await writeAudit({ orgId, userId, action: "update", entity: "employee_compensation", entityId: employeeId });
+  const back = String(formData.get("back") || `/hr/employees/${employeeId}`);
+  redirect(`${back}?saved=1`);
 }

@@ -27,7 +27,7 @@ export async function destroySession(): Promise<void> {
 }
 
 export type SessionUser = {
-  id: string; email: string; name: string; isSuperAdmin: boolean; isStaff: boolean;
+  id: string; email: string; name: string; isSuperAdmin: boolean; isStaff: boolean; isCollaborator: boolean;
 };
 
 export async function getCurrentUser(): Promise<SessionUser | null> {
@@ -39,7 +39,8 @@ export async function getCurrentUser(): Promise<SessionUser | null> {
   if (sign(payload) !== sig) return null;
   const userId = payload.split(".")[0];
   return one<SessionUser>(
-    `SELECT id, email, name, is_super_admin AS "isSuperAdmin", COALESCE(is_staff, false) AS "isStaff"
+    `SELECT id, email, name, is_super_admin AS "isSuperAdmin", COALESCE(is_staff, false) AS "isStaff",
+            COALESCE(is_collaborator, false) AS "isCollaborator"
      FROM app_user WHERE id = $1 AND status = 'active'`,
     [userId]
   );

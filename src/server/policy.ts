@@ -51,6 +51,20 @@ export async function getProjectAccess(projectId: string): Promise<ProjectAccess
     ] as Permission[]).forEach((p) => permissions.add(p));
   }
 
+  // External collaborators get strictly read-only access, and ONLY to projects
+  // they are explicitly linked to. Resolved via their login (collaborator.user_id)
+  // → project_collaborator. Anyone not linked gets nothing here, so the project
+  // layout's project.view check redirects them away.
+  if (!permissions.has("project.view")) {
+    const collabLink = await one(
+      `SELECT 1 AS ok FROM project_collaborator pc
+       JOIN collaborator c ON c.id = pc.collaborator_id
+       WHERE pc.project_id = $1 AND c.user_id = $2`,
+      [projectId, user.id]
+    );
+    if (collabLink) permissions.add("project.view");
+  }
+
   return {
     user,
     role: pm?.role ?? null,

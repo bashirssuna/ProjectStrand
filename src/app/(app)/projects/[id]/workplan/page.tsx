@@ -30,6 +30,18 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
   const members = await q<{ userId: string; name: string }>(
     `SELECT pm.user_id AS "userId", u.name FROM project_member pm JOIN app_user u ON u.id=pm.user_id WHERE pm.project_id=$1 ORDER BY u.name`, [id]
   );
+  // Collaborators linked to this project who have a portal login can also be
+  // assigned as activity leads. Those without a login are surfaced as a hint so
+  // the PI knows to create one (from Collaborations) before assigning them.
+  const collaborators = await q<{ userId: string; name: string }>(
+    `SELECT c.user_id AS "userId", (CASE WHEN c.prefix IS NOT NULL AND c.prefix<>'' THEN c.prefix||' ' ELSE '' END)||c.name AS name
+     FROM project_collaborator pc JOIN collaborator c ON c.id=pc.collaborator_id
+     WHERE pc.project_id=$1 AND c.user_id IS NOT NULL ORDER BY c.name`, [id]
+  );
+  const collaboratorsWithoutLogin = (await one<{ c: number }>(
+    `SELECT COUNT(*)::int c FROM project_collaborator pc JOIN collaborator c ON c.id=pc.collaborator_id
+     WHERE pc.project_id=$1 AND c.user_id IS NULL`, [id]
+  ))?.c ?? 0;
   const canAssign = access.permissions.has("project.edit");
 
   const rows = await q<Row>(
@@ -142,10 +154,23 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
                                 <Field label="Activity lead">
                                   <select name="ownerId" defaultValue={r.ownerId ?? ""} className="select">
                                     <option value="">— Unassigned —</option>
-                                    {members.map((m) => <option key={m.userId} value={m.userId}>{m.name}</option>)}
+                                    {members.length > 0 && (
+                                      <optgroup label="Team members">
+                                        {members.map((m) => <option key={m.userId} value={m.userId}>{m.name}</option>)}
+                                      </optgroup>
+                                    )}
+                                    {collaborators.length > 0 && (
+                                      <optgroup label="Collaborators">
+                                        {collaborators.map((m) => <option key={m.userId} value={m.userId}>{m.name}</option>)}
+                                      </optgroup>
+                                    )}
                                   </select>
                                 </Field>
-                                <button className="btn btn-sm" type="submit">Assign lead</button>
+                                <button className="btn btn-sm" type="submit">Assign &amp; notify</button>
+                                <p className="text-xs" style={{ color: "var(--muted)" }}>
+                                  The person is notified in-app and by email.
+                                  {collaboratorsWithoutLogin > 0 && ` ${collaboratorsWithoutLogin} linked collaborator${collaboratorsWithoutLogin === 1 ? "" : "s"} need a login before they can be assigned — create one from Collaborations.`}
+                                </p>
                               </form>
                             )}
                             <div className="hidden" />

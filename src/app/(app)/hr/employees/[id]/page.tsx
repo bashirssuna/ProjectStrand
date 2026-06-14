@@ -2,12 +2,14 @@ import Link from "next/link";
 import { requireHrOrg } from "../../_guard";
 import { q, one } from "@/server/db";
 import { leaveBalance, computePay } from "@/server/services/hr";
+import { getEmployeeComp } from "@/server/services/compensation";
 import { PageHeader, SectionTitle, Field, Badge, Empty } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { updateEmployeeAction, assignEmployeeDepartmentAction, createEmployeeLoginAction,
   updateEmployeeProfileAction, addEmployeeEducationAction, deleteEmployeeEducationAction,
-  addEmployeePolicyAction, deleteEmployeePolicyAction, requestHrActionAction, decideHrActionAction } from "@/app/actions";
+  addEmployeePolicyAction, deleteEmployeePolicyAction, requestHrActionAction, decideHrActionAction,
+  upsertEmployeeCompAction } from "@/app/actions";
 import { dateInput } from "@/lib/format";
 
 export default async function EmployeeDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ saved?: string; login?: string; loginerr?: string; hra?: string; err?: string }> }) {
@@ -52,6 +54,8 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
   const PREFIXES = ["", "Dr", "Prof", "Assoc. Prof", "Assist. Prof", "Mr", "Ms", "Mrs", "Sr", "Rev"];
   const lb = await leaveBalance(id);
   const pay = await computePay(id);
+  const comp = await getEmployeeComp(id);
+  const projects = await q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY created_at DESC`, [orgId]);
   const recentLeave = await q<{ leaveType: string; startDate: string; endDate: string; days: number; status: string }>(
     `SELECT leave_type AS "leaveType", start_date AS "startDate", end_date AS "endDate", days::float, status FROM leave_request WHERE employee_id=$1 ORDER BY start_date DESC LIMIT 5`, [id]
   );
@@ -112,6 +116,88 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
           </tbody>
         </table>
       </div>
+
+      {/* compensation — grant model (gross + fringe + effort; NSSF as a saving funded from fringe) */}
+      <SectionTitle>Compensation (grant model)</SectionTitle>
+      {comp ? (
+        <div className="grid md:grid-cols-2 gap-4 mb-6">
+          <div className="card overflow-x-auto">
+            <table className="w-full text-sm">
+              <tbody>
+                {comp.row.employmentType === "consultant" ? (
+                  <>
+                    <tr style={{ fontWeight: 600 }}><td className="td">Requested funds</td><td className="td text-right tabular-nums">{money(comp.result.gross, comp.row.currency)}</td></tr>
+                    <tr><td className="td">− Withholding tax ({comp.config.consultantWhtPct}%)</td><td className="td text-right tabular-nums">({money(comp.result.wht, comp.row.currency)})</td></tr>
+                    <tr style={{ fontWeight: 700 }}><td className="td">Net to consultant</td><td className="td text-right tabular-nums">{money(comp.result.netPay, comp.row.currency)}</td></tr>
+                  </>
+                ) : (
+                  <>
+                    <tr style={{ fontWeight: 600 }}><td className="td">Gross salary</td><td className="td text-right tabular-nums">{money(comp.result.gross, comp.row.currency)}</td></tr>
+                    <tr><td className="td">− Employee NSSF ({comp.config.nssfEmployeePct}%)</td><td className="td text-right tabular-nums">({money(comp.result.employeeNSSF, comp.row.currency)})</td></tr>
+                    <tr><td className="td">− PAYE</td><td className="td text-right tabular-nums">({money(comp.result.paye, comp.row.currency)})</td></tr>
+                    <tr style={{ fontWeight: 700 }}><td className="td">Net pay</td><td className="td text-right tabular-nums">{money(comp.result.netPay, comp.row.currency)}</td></tr>
+                  </>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {comp.row.employmentType !== "consultant" && (
+            <div className="card p-4 text-sm space-y-3">
+              <div>
+                <div className="label">Savings (not paid as cash)</div>
+                <div className="flex justify-between"><span style={{ color: "var(--muted)" }}>Employer NSSF ({comp.config.nssfEmployerPct}%){comp.config.nssfEmployerFromFringe ? " · from fringe" : ""}</span><span className="tabular-nums">{money(comp.result.employerNSSF, comp.row.currency)}</span></div>
+                <div className="flex justify-between"><span style={{ color: "var(--muted)" }}>Total NSSF saving</span><span className="tabular-nums">{money(comp.result.nssfSavings, comp.row.currency)}</span></div>
+              </div>
+              <div className="pt-2 border-t" style={{ borderColor: "var(--border)" }}>
+                <div className="label">Fringe pool</div>
+                <div className="flex justify-between"><span style={{ color: "var(--muted)" }}>Pool</span><span className="tabular-nums">{money(comp.result.fringePool, comp.row.currency)}</span></div>
+                <div className="flex justify-between"><span style={{ color: "var(--muted)" }}>Used</span><span className="tabular-nums">{money(comp.result.fringeUsed, comp.row.currency)}</span></div>
+                <div className="flex justify-between" style={{ color: comp.result.fringeOverspent > 0 ? "var(--danger)" : "var(--ok)" }}><span>{comp.result.fringeOverspent > 0 ? "Overspent" : "Unused"}</span><span className="tabular-nums">{money(comp.result.fringeOverspent > 0 ? comp.result.fringeOverspent : comp.result.fringeUnused, comp.row.currency)}</span></div>
+              </div>
+              <div className="pt-2 border-t" style={{ borderColor: "var(--border)" }}>
+                <div className="label">Grant budgeting</div>
+                <div className="flex justify-between"><span style={{ color: "var(--muted)" }}>Charged salary (base × {comp.row.effortPct}% effort)</span><span className="tabular-nums">{money(comp.result.chargedSalary, comp.row.currency)}</span></div>
+                <div className="flex justify-between" style={{ fontWeight: 600 }}><span>Funds requested</span><span className="tabular-nums">{money(comp.result.fundsRequested, comp.row.currency)}</span></div>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>No grant-model compensation set yet. Enter the gross actually paid (or base + % effort) and a fringe pool below; employee NSSF, PAYE and net pay are derived automatically. Employer NSSF is treated as a saving funded from the fringe pool — it never inflates gross or net.</p>
+      )}
+      <form action={upsertEmployeeCompAction} className="card p-4 grid sm:grid-cols-3 gap-3 mb-6">
+        <input type="hidden" name="employeeId" value={e.id} />
+        <Field label="Type"><select name="employmentType" defaultValue={comp?.row.employmentType ?? (e.contractType === "consultant" ? "consultant" : "staff")} className="select"><option value="staff">Staff (NSSF + PAYE)</option><option value="consultant">Consultant (withholding only)</option></select></Field>
+        <Field label="Currency"><input name="currency" defaultValue={comp?.row.currency ?? e.currency} className="input" /></Field>
+        <Field label="Charge to project"><select name="projectId" defaultValue={comp?.row.projectId ?? ""} className="select"><option value="">— none —</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.code} {p.title}</option>)}</select></Field>
+
+        <Field label="Gross salary (staff)"><input type="number" step="0.01" name="grossSalary" defaultValue={comp?.row.grossSalary ?? ""} className="input" placeholder="entered directly" /></Field>
+        <Field label="Base salary (for charging)"><input type="number" step="0.01" name="baseSalary" defaultValue={comp?.row.baseSalary ?? ""} className="input" placeholder="optional" /></Field>
+        <Field label="% Effort"><input type="number" step="0.01" name="effortPct" defaultValue={comp?.row.effortPct ?? 100} className="input" /></Field>
+
+        <Field label="Fringe amount"><input type="number" step="0.01" name="fringeAmount" defaultValue={comp?.row.fringeAmount ?? ""} className="input" placeholder="explicit pool" /></Field>
+        <Field label="…or fringe rate %"><input type="number" step="0.01" name="fringeRatePct" defaultValue={comp?.row.fringeRatePct ?? ""} className="input" placeholder="e.g. 30" /></Field>
+        <Field label="Fringe basis"><select name="fringeBasis" defaultValue={comp?.row.fringeBasis ?? "base"} className="select"><option value="base">Base salary</option><option value="charged">Charged salary</option></select></Field>
+
+        <Field label="Requested funds (consultant)"><input type="number" step="0.01" name="requestedFunds" defaultValue={comp?.row.requestedFunds ?? ""} className="input" /></Field>
+        <Field label="Cal. months"><input type="number" step="0.01" name="calMonths" defaultValue={comp?.row.calMonths ?? ""} className="input" /></Field>
+        <div />
+
+        <div className="sm:col-span-3">
+          <div className="label">Other fringe benefits (drawn from the pool)</div>
+          {[0, 1, 2].map((i) => {
+            const b = comp?.benefits?.[i];
+            return (
+              <div key={i} className="grid grid-cols-2 gap-2 mb-2">
+                <input name="benefitLabel" defaultValue={b?.label ?? ""} className="input" placeholder="e.g. Fuel, Airtime" />
+                <input type="number" step="0.01" name="benefitAmount" defaultValue={b?.amount ?? ""} className="input" placeholder="amount" />
+              </div>
+            );
+          })}
+        </div>
+        <div className="sm:col-span-3"><Field label="Note"><input name="note" defaultValue={comp?.row.note ?? ""} className="input" /></Field></div>
+        <div className="sm:col-span-3 flex justify-end"><button className="btn btn-primary" type="submit">Save compensation</button></div>
+      </form>
 
       {/* recent leave */}
       <SectionTitle>Recent leave</SectionTitle>

@@ -1133,3 +1133,61 @@ ALTER TABLE organization ADD COLUMN IF NOT EXISTS registration_no text;
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS social_twitter text;
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS social_linkedin text;
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS social_facebook text;
+
+-- ===========================================================================
+-- COMPENSATION ENGINE (grant-model payroll)
+-- Sits alongside the component-based monthly payroll. The institution enters
+-- the GROSS actually paid (or base + % effort for grant charging) plus a fringe
+-- pool; a configurable engine derives NSSF (employee + employer), PAYE / WHT,
+-- net pay, and fringe used vs unused. Employer NSSF is a SAVING funded from the
+-- fringe pool — it never inflates gross or net pay. Consultants are withheld
+-- only (no NSSF/PAYE). No tax rate is hard-coded: every value is editable.
+-- ===========================================================================
+
+-- One configurable row per organisation. Percentages are stored as whole
+-- numbers (15 = 15%). Defaults reflect the institution's stated practice.
+CREATE TABLE IF NOT EXISTS comp_config (
+  org_id text PRIMARY KEY REFERENCES organization(id) ON DELETE CASCADE,
+  nssf_employer_pct numeric(7,4) NOT NULL DEFAULT 15,   -- employer NSSF, % of gross (a saving from fringe)
+  nssf_employee_pct numeric(7,4) NOT NULL DEFAULT 5,    -- employee NSSF, % of gross (a saving)
+  consultant_wht_pct numeric(7,4) NOT NULL DEFAULT 6,   -- withholding tax on consultant funds, %
+  paye_method text NOT NULL DEFAULT 'uganda',           -- uganda | flat | none
+  paye_flat_pct numeric(7,4) NOT NULL DEFAULT 0,        -- used when paye_method='flat'
+  paye_bands text,                                       -- optional JSON override of the marginal bands
+  nssf_employer_from_fringe boolean NOT NULL DEFAULT true,  -- employer NSSF drawn from the fringe pool
+  nssf_employee_from_fringe boolean NOT NULL DEFAULT false, -- employee NSSF from fringe instead of gross
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Per-employee compensation under the grant model (one row per employee).
+CREATE TABLE IF NOT EXISTS employee_compensation (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,  -- optional: lets comp roll up per project
+  employment_type text NOT NULL DEFAULT 'staff',   -- staff | consultant
+  currency text NOT NULL DEFAULT 'USD',
+  gross_salary numeric(18,2),                       -- staff: the contracted gross actually paid
+  base_salary numeric(18,2),                        -- staff: base for grant charging (charged = base × effort)
+  effort_pct numeric(7,4) NOT NULL DEFAULT 100,     -- % effort (0..100)
+  cal_months numeric(5,2),                          -- informational (calendar months)
+  fringe_amount numeric(18,2),                      -- explicit fringe pool amount, OR…
+  fringe_rate_pct numeric(7,4),                     -- …a rate applied to the fringe basis (e.g. 30)
+  fringe_basis text NOT NULL DEFAULT 'base',        -- base | charged
+  requested_funds numeric(18,2),                    -- consultant: total requested funds (WHT applies)
+  benefits text NOT NULL DEFAULT '[]',              -- JSON [{label, amount}] other fringe (fuel, gym…)
+  note text,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (employee_id)
+);
+CREATE INDEX IF NOT EXISTS idx_empcomp_org ON employee_compensation(org_id);
+CREATE INDEX IF NOT EXISTS idx_empcomp_project ON employee_compensation(project_id);
+
+-- ===========================================================================
+-- COLLABORATOR VIEW-ONLY LOGINS
+-- An external collaborator may be granted a restricted login that can only see
+-- the projects they are linked to, and only the Overview / SOW / Work plan /
+-- Gantt / Objectives tabs — never budget, spending, requisitions, etc.
+-- ===========================================================================
+ALTER TABLE collaborator ADD COLUMN IF NOT EXISTS user_id text REFERENCES app_user(id) ON DELETE SET NULL;
+ALTER TABLE app_user ADD COLUMN IF NOT EXISTS is_collaborator boolean NOT NULL DEFAULT false;

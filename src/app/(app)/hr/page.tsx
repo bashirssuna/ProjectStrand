@@ -24,6 +24,7 @@ export default async function HrHome() {
           ["/hr/leave", "Leave", "Requests, approvals and balance tracking."],
           ["/hr/timesheets", "Timesheets", "Log and approve hours, by project."],
           ["/hr/payroll", "Payroll", "Configurable components, runs & payslips."],
+          ["/hr/compensation", "Compensation", "Grant model: gross, fringe, NSSF, PAYE & effort."],
           ["/hr/departments", "Departments", "Units staff are assigned to."],
         ].map(([href, t, d]) => (
           <Link key={href} href={href} className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>

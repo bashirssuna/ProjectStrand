@@ -22,6 +22,10 @@ export async function listProjectsForUser(userId: string, isSuperAdmin: boolean)
             (SELECT role FROM project_member WHERE project_id=p.id AND user_id=$1) AS role
      FROM project p
      WHERE p.id IN (SELECT project_id FROM project_member WHERE user_id=$1)
+        OR p.id IN (
+          SELECT pc.project_id FROM project_collaborator pc
+          JOIN collaborator c ON c.id = pc.collaborator_id WHERE c.user_id=$1
+        )
         OR p.org_id IN (
           SELECT m.org_id FROM org_membership m JOIN role r ON r.id=m.role_id
           WHERE m.user_id=$1 AND r.key='org_admin'

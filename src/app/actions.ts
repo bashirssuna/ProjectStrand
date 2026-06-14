@@ -2880,3 +2880,81 @@ export async function sendAnnouncementAction(formData: FormData) {
   const res = await sendAnnouncement({ subject, body, audience, by: { id: user.id, name: user.name } });
   redirect(`/admin?announce=${res.sent}of${res.recipients}`);
 }
+
+/* ===================== SUBSCRIPTION RENEWAL REQUESTS ===================== */
+import { requestRenewal, invoiceRequest, submitPaymentProof, approveRequest, rejectRequest, cancelRequest, upsertPlatformSettings } from "@/server/services/billing";
+
+// ----- Organisation side (org admin / finance) -----
+export async function requestRenewalAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const termMonths = Number(formData.get("termMonths") || 12);
+  await requestRenewal({ orgId, termMonths, note: String(formData.get("note") || "") || undefined, by: { id: userId, name: userName } });
+  redirect("/organization/subscription?requested=1");
+}
+
+export async function submitPaymentProofAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const requestId = String(formData.get("requestId"));
+  // ensure the request belongs to this org and is awaiting payment
+  const owns = await one<{ id: string }>(`SELECT id FROM subscription_request WHERE id=$1 AND org_id=$2 AND status='invoiced'`, [requestId, orgId]);
+  if (!owns) redirect("/organization/subscription?err=state");
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) redirect("/organization/subscription?err=file");
+  const f = file as File;
+  const buf = Buffer.from(await f.arrayBuffer());
+  const docId = id("subpay");
+  const key = await saveUpload(docId, f.name, buf);
+  await submitPaymentProof({
+    requestId, storageKey: key, fileName: f.name, mime: f.type || mimeFor(f.name), size: buf.length,
+    paymentRef: String(formData.get("paymentRef") || "") || undefined, note: String(formData.get("note") || "") || undefined,
+  });
+  redirect("/organization/subscription?paid=1");
+}
+
+export async function cancelRenewalAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await cancelRequest(String(formData.get("requestId")), orgId);
+  redirect("/organization/subscription?cancelled=1");
+}
+
+// ----- Operator side (super admin) -----
+export async function invoiceRequestAction(formData: FormData) {
+  const user = await requireOperator();
+  await invoiceRequest({
+    requestId: String(formData.get("requestId")),
+    subtotal: Number(formData.get("subtotal") || 0),
+    vatRate: Number(formData.get("vatRate") || 0),
+    currency: String(formData.get("currency") || "USD").trim() || "USD",
+    bankDetails: String(formData.get("bankDetails") || ""),
+    momoDetails: String(formData.get("momoDetails") || ""),
+    note: String(formData.get("note") || "") || undefined,
+    by: { id: user.id, name: user.name },
+  });
+  redirect("/admin?inv=sent");
+}
+
+export async function approveRenewalAction(formData: FormData) {
+  const user = await requireOperator();
+  await approveRequest({ requestId: String(formData.get("requestId")), by: { id: user.id, name: user.name } });
+  redirect("/admin?renew=done");
+}
+
+export async function rejectRenewalAction(formData: FormData) {
+  const user = await requireOperator();
+  await rejectRequest({ requestId: String(formData.get("requestId")), reason: String(formData.get("reason") || "Not approved").trim(), by: { id: user.id, name: user.name } });
+  redirect("/admin?renew=rejected");
+}
+
+export async function savePlatformSettingsAction(formData: FormData) {
+  await requireOperator();
+  await upsertPlatformSettings({
+    currency: String(formData.get("currency") || "USD").trim() || "USD",
+    vatRate: Number(formData.get("vatRate") || 0),
+    rate1yr: Number(formData.get("rate1yr") || 0),
+    rate3yr: Number(formData.get("rate3yr") || 0),
+    rate5yr: Number(formData.get("rate5yr") || 0),
+    bankDetails: String(formData.get("bankDetails") || "") || null,
+    momoDetails: String(formData.get("momoDetails") || "") || null,
+  });
+  redirect("/admin?settings=saved");
+}

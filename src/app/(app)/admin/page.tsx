@@ -3,15 +3,16 @@ import { requireUser } from "@/server/auth";
 import { q } from "@/server/db";
 import { PageHeader, Stat, SectionTitle, Badge, Field } from "@/components/ui";
 import { createAdminAction, createOrganizationAction, setOrgStateAction, sendTestEmailAction, setSuperAdminAction,
-  activateSubscriptionAction, recordPaymentAction, sendReceiptAction, sendAnnouncementAction } from "@/app/actions";
-import { sendDueRenewalReminders } from "@/server/services/billing";
+  activateSubscriptionAction, recordPaymentAction, sendReceiptAction, sendAnnouncementAction,
+  invoiceRequestAction, approveRenewalAction, rejectRenewalAction, savePlatformSettingsAction } from "@/app/actions";
+import { sendDueRenewalReminders, getPlatformSettings, rateForTerm } from "@/server/services/billing";
 import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
 import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
 
 function daysLeft(iso: string | null): number | null { return iso ? Math.ceil((new Date(iso).getTime() - Date.now()) / 86400000) : null; }
 
-export default async function AdminPage({ searchParams }: { searchParams: Promise<{ created?: string; error?: string; test?: string; testerror?: string; via?: string; to?: string; su?: string; sub?: string; receipt?: string; announce?: string }> }) {
+export default async function AdminPage({ searchParams }: { searchParams: Promise<{ created?: string; error?: string; test?: string; testerror?: string; via?: string; to?: string; su?: string; sub?: string; receipt?: string; announce?: string; inv?: string; renew?: string; settings?: string }> }) {
   const user = await requireUser();
   if (!user.isSuperAdmin) redirect("/dashboard");
   const sp = await searchParams;
@@ -45,6 +46,16 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
     `SELECT id, subject, audience, recipients, sent_count AS "sentCount", created_at AS "createdAt", created_by_name AS by
      FROM platform_announcement ORDER BY created_at DESC LIMIT 8`
   );
+
+  // Open subscription renewal requests + the billing defaults used to pre-fill invoices.
+  const subRequests = await q<{ id: string; orgId: string; orgName: string; status: string; termMonths: number; requestedByName: string | null; requestedAt: string; invoiceNo: string | null; total: number | null; currency: string | null; paymentFileName: string | null; paymentRef: string | null; note: string | null }>(
+    `SELECT sr.id, sr.org_id AS "orgId", o.name AS "orgName", sr.status, sr.term_months AS "termMonths",
+            sr.requested_by_name AS "requestedByName", sr.requested_at AS "requestedAt", sr.invoice_no AS "invoiceNo",
+            sr.invoice_total::float AS total, sr.currency, sr.payment_file_name AS "paymentFileName", sr.payment_ref AS "paymentRef", sr.note
+     FROM subscription_request sr JOIN organization o ON o.id=sr.org_id
+     WHERE sr.status IN ('requested','invoiced','payment_submitted') ORDER BY sr.created_at DESC`
+  );
+  const settings = await getPlatformSettings();
 
   const counts = await q<{ orgs: number; trial: number; paid: number; admins: number }>(
     `SELECT (SELECT COUNT(*)::int FROM organization) AS orgs,
@@ -92,6 +103,10 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
       {sp.receipt === "failed" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>The receipt could not be emailed (check email settings / organisation email).</div>}
       {sp.announce === "fields" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>A subject and message are required.</div>}
       {sp.announce && sp.announce.includes("of") && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Announcement sent to {sp.announce.replace("of", " of ")} organisations.</div>}
+      {sp.inv === "sent" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Invoice issued and emailed to the organisation.</div>}
+      {sp.renew === "done" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Subscription renewed — the organisation was sent a receipt.</div>}
+      {sp.renew === "rejected" && <div className="card p-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>Renewal request returned to the organisation.</div>}
+      {sp.settings === "saved" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Billing settings saved.</div>}
 
       {/* ---------------- Email delivery ---------------- */}
       <div>
@@ -220,6 +235,90 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
               })}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* ---------------- Subscription requests ---------------- */}
+      <div>
+        <SectionTitle>Subscription requests</SectionTitle>
+        {subRequests.length === 0 ? (
+          <div className="card p-4 text-sm" style={{ color: "var(--muted)" }}>No open renewal requests. When an organisation (including trials) requests a renewal, it appears here to invoice and approve.</div>
+        ) : (
+          <div className="space-y-3">
+            {subRequests.map((r) => {
+              const years = r.termMonths % 12 === 0 ? `${r.termMonths / 12} year${r.termMonths === 12 ? "" : "s"}` : `${r.termMonths} months`;
+              const presetSubtotal = rateForTerm(settings, r.termMonths);
+              return (
+                <div key={r.id} className="card p-4">
+                  <div className="flex items-center justify-between gap-2 flex-wrap mb-1">
+                    <div className="font-medium">{r.orgName} · <span style={{ color: "var(--muted)" }}>{years}</span></div>
+                    <Badge tone={r.status === "requested" ? "warn" : r.status === "invoiced" ? "info" : "brand"}>
+                      {r.status === "requested" ? "Needs invoice" : r.status === "invoiced" ? "Awaiting payment" : "Proof submitted"}
+                    </Badge>
+                  </div>
+                  <div className="text-xs mb-2" style={{ color: "var(--muted)" }}>Requested by {r.requestedByName ?? "—"} · {fmtDate(r.requestedAt)}{r.note ? ` · “${r.note}”` : ""}</div>
+
+                  {r.status === "requested" && (
+                    <form action={invoiceRequestAction} className="grid sm:grid-cols-2 gap-2 border-t pt-3" style={{ borderColor: "var(--border)" }}>
+                      <input type="hidden" name="requestId" value={r.id} />
+                      <Field label="Subtotal (rate)"><input type="number" step="0.01" name="subtotal" defaultValue={presetSubtotal || ""} className="input" /></Field>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Field label="VAT %"><input type="number" step="0.01" name="vatRate" defaultValue={settings.vatRate || ""} className="input" /></Field>
+                        <Field label="Currency"><input name="currency" defaultValue={settings.currency} className="input" /></Field>
+                      </div>
+                      <Field label="Bank details"><textarea name="bankDetails" rows={3} defaultValue={settings.bankDetails ?? ""} className="textarea" /></Field>
+                      <Field label="Mobile money details"><textarea name="momoDetails" rows={3} defaultValue={settings.momoDetails ?? ""} className="textarea" /></Field>
+                      <div className="sm:col-span-2"><Field label="Note (optional)"><input name="note" className="input" placeholder="Shown on the invoice email" /></Field></div>
+                      <div className="sm:col-span-2 flex justify-end"><button className="btn btn-primary" type="submit">Issue invoice &amp; email</button></div>
+                    </form>
+                  )}
+
+                  {r.status === "invoiced" && (
+                    <div className="text-sm border-t pt-3" style={{ borderColor: "var(--border)" }}>
+                      Invoice <span className="font-mono" style={{ color: "var(--brand)" }}>{r.invoiceNo}</span> for {money(r.total ?? 0, r.currency ?? "USD")} sent. Waiting for the organisation to pay and upload proof.
+                    </div>
+                  )}
+
+                  {r.status === "payment_submitted" && (
+                    <div className="border-t pt-3" style={{ borderColor: "var(--border)" }}>
+                      <div className="text-sm mb-2">Invoice <span className="font-mono" style={{ color: "var(--brand)" }}>{r.invoiceNo}</span> · {money(r.total ?? 0, r.currency ?? "USD")} · proof: {r.paymentFileName ? <a className="underline" href={`/api/subscription-files/${r.id}`} target="_blank" rel="noopener">{r.paymentFileName}</a> : "—"}{r.paymentRef ? ` · ref ${r.paymentRef}` : ""}</div>
+                      <div className="flex flex-wrap gap-2 items-start">
+                        <form action={approveRenewalAction}><input type="hidden" name="requestId" value={r.id} /><button className="btn btn-sm btn-primary" type="submit">Approve &amp; renew</button></form>
+                        <details className="editor"><summary className="btn btn-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Reject</summary>
+                          <div className="editor-panel card p-4">
+                            <form action={rejectRenewalAction} className="grid gap-2">
+                              <input type="hidden" name="requestId" value={r.id} />
+                              <Field label="Reason"><input name="reason" required className="input" placeholder="e.g. payment not received" /></Field>
+                              <div className="flex justify-end"><button className="btn btn-sm" type="submit">Send</button></div>
+                            </form>
+                          </div>
+                        </details>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="mt-4">
+          <SectionTitle>Billing settings</SectionTitle>
+          <form action={savePlatformSettingsAction} className="card p-4 grid sm:grid-cols-2 gap-3">
+            <p className="sm:col-span-2 text-sm" style={{ color: "var(--muted)" }}>Defaults used to pre-fill renewal invoices — set your standard rates, VAT and payment details once.</p>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Currency"><input name="currency" defaultValue={settings.currency} className="input" /></Field>
+              <Field label="VAT %"><input type="number" step="0.01" name="vatRate" defaultValue={settings.vatRate || ""} className="input" /></Field>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <Field label="1-year rate"><input type="number" step="0.01" name="rate1yr" defaultValue={settings.rate1yr || ""} className="input" /></Field>
+              <Field label="3-year rate"><input type="number" step="0.01" name="rate3yr" defaultValue={settings.rate3yr || ""} className="input" /></Field>
+              <Field label="5-year rate"><input type="number" step="0.01" name="rate5yr" defaultValue={settings.rate5yr || ""} className="input" /></Field>
+            </div>
+            <Field label="Bank details"><textarea name="bankDetails" rows={3} defaultValue={settings.bankDetails ?? ""} className="textarea" placeholder="Bank, account name, account no., branch, SWIFT" /></Field>
+            <Field label="Mobile money details"><textarea name="momoDetails" rows={3} defaultValue={settings.momoDetails ?? ""} className="textarea" placeholder="Provider, number, registered name" /></Field>
+            <div className="sm:col-span-2 flex justify-end"><button className="btn btn-primary" type="submit">Save billing settings</button></div>
+          </form>
         </div>
       </div>
 

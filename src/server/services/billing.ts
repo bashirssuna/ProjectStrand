@@ -2,7 +2,10 @@ import "server-only";
 import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
 import { sendEmail } from "@/server/email";
-import { writeAudit } from "@/server/services/audit";
+import { writeAudit, notify } from "@/server/services/audit";
+import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
+
+const round2 = (n: number) => Math.round(((Number(n) || 0) + Number.EPSILON) * 100) / 100;
 
 function addMonths(d: Date, m: number): Date { const x = new Date(d); x.setMonth(x.getMonth() + m); return x; }
 const fmt = (iso: string | Date) => new Date(iso).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
@@ -156,4 +159,168 @@ export async function sendDueRenewalReminders(): Promise<number> {
     if (res.status === "sent") sent++;
   }
   return sent;
+}
+
+/* ===================== PLATFORM BILLING SETTINGS ===================== */
+export type PlatformSettings = { currency: string; vatRate: number; rate1yr: number; rate3yr: number; rate5yr: number; bankDetails: string | null; momoDetails: string | null };
+
+export async function getPlatformSettings(): Promise<PlatformSettings> {
+  const r = await one<PlatformSettings>(
+    `SELECT currency, vat_rate::float AS "vatRate", rate_1yr::float AS "rate1yr", rate_3yr::float AS "rate3yr",
+            rate_5yr::float AS "rate5yr", bank_details AS "bankDetails", momo_details AS "momoDetails"
+     FROM platform_settings WHERE id='singleton'`
+  );
+  return r ?? { currency: "USD", vatRate: 0, rate1yr: 0, rate3yr: 0, rate5yr: 0, bankDetails: null, momoDetails: null };
+}
+
+export async function upsertPlatformSettings(s: PlatformSettings): Promise<void> {
+  await q(
+    `INSERT INTO platform_settings (id, currency, vat_rate, rate_1yr, rate_3yr, rate_5yr, bank_details, momo_details, updated_at)
+     VALUES ('singleton',$1,$2,$3,$4,$5,$6,$7,now())
+     ON CONFLICT (id) DO UPDATE SET currency=$1, vat_rate=$2, rate_1yr=$3, rate_3yr=$4, rate_5yr=$5, bank_details=$6, momo_details=$7, updated_at=now()`,
+    [s.currency, s.vatRate, s.rate1yr, s.rate3yr, s.rate5yr, s.bankDetails, s.momoDetails]
+  );
+}
+
+export function rateForTerm(s: PlatformSettings, months: number): number {
+  return months >= 60 ? s.rate5yr : months >= 36 ? s.rate3yr : s.rate1yr;
+}
+
+const termLabel = (m: number) => m % 12 === 0 ? `${m / 12} year${m === 12 ? "" : "s"}` : `${m} months`;
+
+// Email + in-app notify every platform operator.
+async function notifyOperators(subject: string, html: string, link = "/admin"): Promise<void> {
+  await sendEmail({ to: SYSTEM_ADMIN_EMAIL, subject, html });
+  const supers = await q<{ id: string }>(`SELECT id FROM app_user WHERE is_super_admin=true`);
+  for (const s of supers) await notify({ userId: s.id, type: "approval_needed", title: subject, link, email: false });
+}
+
+/* ===================== SUBSCRIPTION RENEWAL REQUESTS ===================== */
+
+// Org admin/finance requests a renewal term. One open request per org at a time.
+export async function requestRenewal(input: { orgId: string; termMonths: number; note?: string; by: { id: string; name: string } }): Promise<string> {
+  const open = await one<{ id: string }>(
+    `SELECT id FROM subscription_request WHERE org_id=$1 AND status IN ('requested','invoiced','payment_submitted') ORDER BY created_at DESC LIMIT 1`, [input.orgId]
+  );
+  if (open) return open.id;
+  const rid = id("subreq");
+  await q(`INSERT INTO subscription_request (id, org_id, status, term_months, requested_by, requested_by_name, note) VALUES ($1,$2,'requested',$3,$4,$5,$6)`,
+    [rid, input.orgId, input.termMonths, input.by.id, input.by.name, input.note ?? null]);
+  const org = await one<{ name: string }>(`SELECT name FROM organization WHERE id=$1`, [input.orgId]);
+  await writeAudit({ orgId: input.orgId, userId: input.by.id, action: "create", entity: "subscription_request", entityId: rid, after: { termMonths: input.termMonths } });
+  await notifyOperators(
+    `Renewal request — ${org?.name ?? "Organisation"}`,
+    shell(`<p style="font-size:16px;font-weight:700">New subscription renewal request</p>
+           <p><strong>${org?.name ?? "An organisation"}</strong> has requested a renewal for <strong>${termLabel(input.termMonths)}</strong>.</p>
+           <p>Requested by ${input.by.name}. Open the admin control center to issue an invoice.</p>`)
+  );
+  return rid;
+}
+
+// Operator issues an invoice (rate + VAT + bank/mobile-money) and emails it.
+export async function invoiceRequest(input: { requestId: string; subtotal: number; vatRate: number; currency: string; bankDetails: string; momoDetails: string; note?: string; by: { id: string; name: string } }): Promise<void> {
+  const req = await one<{ orgId: string; termMonths: number }>(`SELECT org_id AS "orgId", term_months AS "termMonths" FROM subscription_request WHERE id=$1`, [input.requestId]);
+  if (!req) throw new Error("Request not found");
+  const count = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM subscription_request WHERE invoice_no IS NOT NULL`))?.c ?? 0;
+  const invoiceNo = `INV-${String(count + 1).padStart(4, "0")}`;
+  const vatAmount = round2(input.subtotal * (input.vatRate / 100));
+  const total = round2(input.subtotal + vatAmount);
+  await q(
+    `UPDATE subscription_request SET status='invoiced', invoice_no=$2, invoice_subtotal=$3, vat_rate=$4, vat_amount=$5, invoice_total=$6,
+            currency=$7, bank_details=$8, momo_details=$9, invoice_note=$10, invoiced_at=now(), invoiced_by=$11, invoiced_by_name=$12 WHERE id=$1`,
+    [input.requestId, invoiceNo, input.subtotal, input.vatRate, vatAmount, total, input.currency, input.bankDetails, input.momoDetails, input.note ?? null, input.by.id, input.by.name]
+  );
+  const org = await one<{ name: string }>(`SELECT name FROM organization WHERE id=$1`, [req.orgId]);
+  const to = await orgAdminEmail(req.orgId);
+  if (to) {
+    const html = shell(
+      `<p style="font-size:16px;font-weight:700">Invoice ${invoiceNo}</p>
+       <p>Dear <strong>${org?.name ?? "Customer"}</strong>, please find your Project Strand subscription invoice below.</p>
+       <table style="width:100%;border-collapse:collapse;margin:12px 0">
+         <tr><td style="padding:6px 0;color:#78716c">Invoice no.</td><td style="text-align:right;font-weight:600">${invoiceNo}</td></tr>
+         <tr><td style="padding:6px 0;color:#78716c">Subscription term</td><td style="text-align:right">${termLabel(req.termMonths)}</td></tr>
+         <tr><td style="padding:6px 0;color:#78716c">Subtotal</td><td style="text-align:right">${money(input.subtotal, input.currency)}</td></tr>
+         <tr><td style="padding:6px 0;color:#78716c">VAT (${input.vatRate}%)</td><td style="text-align:right">${money(vatAmount, input.currency)}</td></tr>
+         <tr><td style="padding:8px 0;border-top:1px solid #e7e5e4;font-weight:700">Total due</td><td style="text-align:right;border-top:1px solid #e7e5e4;font-weight:700">${money(total, input.currency)}</td></tr>
+       </table>
+       <div style="background:#faf9f7;border:1px solid #e7e5e4;border-radius:8px;padding:12px;margin:10px 0">
+         <div style="font-weight:700;margin-bottom:4px">Bank transfer</div>
+         <div style="white-space:pre-wrap;color:#44403c">${(input.bankDetails || "—").replace(/</g, "&lt;")}</div>
+         <div style="font-weight:700;margin:10px 0 4px">Mobile money</div>
+         <div style="white-space:pre-wrap;color:#44403c">${(input.momoDetails || "—").replace(/</g, "&lt;")}</div>
+       </div>
+       ${input.note ? `<p style="color:#44403c">${input.note.replace(/</g, "&lt;")}</p>` : ""}
+       <p>Once paid, upload your proof of payment in Project Strand (Organisation → Subscription) and we will activate your renewal.</p>`
+    );
+    await sendEmail({ to, subject: `Invoice ${invoiceNo} — Project Strand subscription`, html });
+  }
+  await writeAudit({ orgId: req.orgId, userId: input.by.id, action: "update", entity: "subscription_request", entityId: input.requestId, after: { invoiceNo, total } });
+}
+
+// Organisation uploads proof of payment.
+export async function submitPaymentProof(input: { requestId: string; storageKey: string; fileName: string; mime: string; size: number; paymentRef?: string; note?: string }): Promise<void> {
+  await q(
+    `UPDATE subscription_request SET status='payment_submitted', payment_storage_key=$2, payment_file_name=$3, payment_mime=$4, payment_size=$5,
+            payment_ref=$6, payment_note=$7, payment_submitted_at=now() WHERE id=$1 AND status='invoiced'`,
+    [input.requestId, input.storageKey, input.fileName, input.mime, input.size, input.paymentRef ?? null, input.note ?? null]
+  );
+  const req = await one<{ orgId: string; orgName: string }>(`SELECT sr.org_id AS "orgId", o.name AS "orgName" FROM subscription_request sr JOIN organization o ON o.id=sr.org_id WHERE sr.id=$1`, [input.requestId]);
+  if (req) await notifyOperators(
+    `Payment proof submitted — ${req.orgName}`,
+    shell(`<p style="font-size:16px;font-weight:700">Proof of payment received</p>
+           <p><strong>${req.orgName}</strong> has uploaded proof of payment for their subscription renewal. Review it in the admin control center and approve to renew.</p>`)
+  );
+}
+
+// Operator approves: records the payment (extends subscription), emails a receipt.
+export async function approveRequest(input: { requestId: string; by: { id: string; name: string } }): Promise<void> {
+  const req = await one<{ orgId: string; status: string; termMonths: number; total: number | null; currency: string | null; invoiceNo: string | null }>(
+    `SELECT org_id AS "orgId", status, term_months AS "termMonths", invoice_total::float AS total, currency, invoice_no AS "invoiceNo" FROM subscription_request WHERE id=$1`, [input.requestId]
+  );
+  if (!req) throw new Error("Request not found");
+  if (req.status !== "payment_submitted") throw new Error("Request is not awaiting approval");
+  const pid = await recordSubscriptionPayment({
+    orgId: req.orgId, amount: req.total ?? 0, currency: req.currency ?? "USD", termMonths: req.termMonths,
+    reference: req.invoiceNo ?? undefined, by: input.by,
+  });
+  await sendReceiptEmail(pid);
+  await q(`UPDATE subscription_request SET status='approved', completed_at=now(), completed_by=$2, completed_by_name=$3, payment_id=$4 WHERE id=$1`,
+    [input.requestId, input.by.id, input.by.name, pid]);
+  await writeAudit({ orgId: req.orgId, userId: input.by.id, action: "update", entity: "subscription_request", entityId: input.requestId, after: { approved: true, paymentId: pid } });
+}
+
+export async function rejectRequest(input: { requestId: string; reason: string; by: { id: string; name: string } }): Promise<void> {
+  const req = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM subscription_request WHERE id=$1`, [input.requestId]);
+  if (!req) return;
+  await q(`UPDATE subscription_request SET status='rejected', reject_reason=$2, completed_at=now(), completed_by=$3, completed_by_name=$4 WHERE id=$1`,
+    [input.requestId, input.reason, input.by.id, input.by.name]);
+  const to = await orgAdminEmail(req.orgId);
+  if (to) await sendEmail({ to, subject: `Subscription renewal — update`, html: shell(`<p>Your subscription renewal request needs attention:</p><p style="color:#44403c">${input.reason.replace(/</g, "&lt;")}</p><p>Please start a new request in Project Strand (Organisation → Subscription) if needed.</p>`) });
+  await writeAudit({ orgId: req.orgId, userId: input.by.id, action: "update", entity: "subscription_request", entityId: input.requestId, after: { rejected: true } });
+}
+
+// Organisation cancels its own open request.
+export async function cancelRequest(requestId: string, orgId: string): Promise<void> {
+  await q(`UPDATE subscription_request SET status='cancelled' WHERE id=$1 AND org_id=$2 AND status IN ('requested','invoiced','payment_submitted')`, [requestId, orgId]);
+}
+
+export type OrgRequest = {
+  id: string; status: string; termMonths: number; requestedAt: string; note: string | null;
+  invoiceNo: string | null; subtotal: number | null; vatRate: number | null; vatAmount: number | null;
+  total: number | null; currency: string | null; bankDetails: string | null; momoDetails: string | null;
+  invoiceNote: string | null; invoicedAt: string | null; paymentFileName: string | null; paymentRef: string | null;
+  paymentSubmittedAt: string | null; completedAt: string | null; rejectReason: string | null;
+};
+
+// The current open/most-recent request for an organisation (for the org page).
+export async function getOrgRequest(orgId: string): Promise<OrgRequest | null> {
+  return one<OrgRequest>(
+    `SELECT id, status, term_months AS "termMonths", requested_at AS "requestedAt", note,
+            invoice_no AS "invoiceNo", invoice_subtotal::float AS subtotal, vat_rate::float AS "vatRate",
+            vat_amount::float AS "vatAmount", invoice_total::float AS total, currency, bank_details AS "bankDetails",
+            momo_details AS "momoDetails", invoice_note AS "invoiceNote", invoiced_at AS "invoicedAt",
+            payment_file_name AS "paymentFileName", payment_ref AS "paymentRef", payment_submitted_at AS "paymentSubmittedAt",
+            completed_at AS "completedAt", reject_reason AS "rejectReason"
+     FROM subscription_request WHERE org_id=$1 ORDER BY created_at DESC LIMIT 1`, [orgId]
+  );
 }

@@ -93,7 +93,9 @@ export default async function DashboardPage() {
               </div>
             )}
           </div>
-          {subDaysLeft <= 30 && <Badge tone={subDaysLeft < 0 ? "danger" : "warn"}>{subDaysLeft < 0 ? "Renew now" : "Renewal approaching"}</Badge>}
+          {org?.isOrgAdmin
+            ? <a href="/organization/subscription" className="btn btn-sm btn-primary">{subDaysLeft < 0 ? "Renew now" : "Manage subscription"}</a>
+            : subDaysLeft <= 30 && <Badge tone={subDaysLeft < 0 ? "danger" : "warn"}>{subDaysLeft < 0 ? "Renew now" : "Renewal approaching"}</Badge>}
         </div>
       )}
       {trialDaysLeft !== null && (
@@ -113,7 +115,7 @@ export default async function DashboardPage() {
             )}
           </div>
           {org?.isOrgAdmin && (
-            <a href="/upgrade" target="_blank" rel="noopener" className="btn btn-primary">Upgrade plan</a>
+            <a href="/organization/subscription" className="btn btn-primary">Renew / subscribe</a>
           )}
         </div>
       )}

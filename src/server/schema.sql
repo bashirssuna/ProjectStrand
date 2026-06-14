@@ -1532,3 +1532,52 @@ CREATE TABLE IF NOT EXISTS platform_announcement (
   created_by text, created_by_name text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ===========================================================================
+-- SUBSCRIPTION RENEWAL REQUESTS (org → invoice → proof of payment → renew)
+-- An organisation admin/finance requests a renewal term; the operator issues an
+-- invoice (rates, VAT, bank & mobile-money details); the organisation pays and
+-- uploads proof; the operator approves and the subscription is renewed.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS subscription_request (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  status text NOT NULL DEFAULT 'requested', -- requested | invoiced | payment_submitted | approved | rejected | cancelled
+  term_months integer NOT NULL DEFAULT 12,
+  requested_by text, requested_by_name text, requested_at timestamptz NOT NULL DEFAULT now(),
+  note text,
+  -- invoice (operator)
+  invoice_no text,
+  invoice_subtotal numeric(18,2),
+  vat_rate numeric(7,4),
+  vat_amount numeric(18,2),
+  invoice_total numeric(18,2),
+  currency text DEFAULT 'USD',
+  bank_details text,
+  momo_details text,
+  invoice_note text,
+  invoiced_at timestamptz, invoiced_by text, invoiced_by_name text,
+  -- proof of payment (organisation)
+  payment_storage_key text, payment_file_name text, payment_mime text, payment_size integer,
+  payment_ref text, payment_note text, payment_submitted_at timestamptz,
+  -- completion (operator)
+  completed_at timestamptz, completed_by text, completed_by_name text,
+  reject_reason text,
+  payment_id text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_subreq_org ON subscription_request(org_id);
+CREATE INDEX IF NOT EXISTS idx_subreq_status ON subscription_request(status);
+
+-- Platform billing defaults used to pre-fill invoices (one global row).
+CREATE TABLE IF NOT EXISTS platform_settings (
+  id text PRIMARY KEY,
+  currency text NOT NULL DEFAULT 'USD',
+  vat_rate numeric(7,4) NOT NULL DEFAULT 0,
+  rate_1yr numeric(18,2) NOT NULL DEFAULT 0,
+  rate_3yr numeric(18,2) NOT NULL DEFAULT 0,
+  rate_5yr numeric(18,2) NOT NULL DEFAULT 0,
+  bank_details text,
+  momo_details text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);

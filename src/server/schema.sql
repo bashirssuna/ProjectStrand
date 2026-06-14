@@ -1484,3 +1484,51 @@ CREATE TABLE IF NOT EXISTS gift_log (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_gift_org ON gift_log(org_id);
+
+-- ===========================================================================
+-- SUBSCRIPTIONS, RECEIPTS, RENEWAL REMINDERS & PLATFORM ANNOUNCEMENTS
+-- Paid organisations renew on fixed terms (1/3/5 years). We track the expiry,
+-- record payments + emailed receipts, throttle renewal reminders, and log
+-- operator broadcasts.
+-- ===========================================================================
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS subscription_ends_at timestamptz;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS subscription_term_months integer;
+
+CREATE TABLE IF NOT EXISTS subscription_payment (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  receipt_no text,
+  amount numeric(18,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'USD',
+  term_months integer NOT NULL DEFAULT 12,
+  period_start date,
+  period_end date,
+  reference text,
+  note text,
+  paid_on date NOT NULL,
+  receipt_sent_at timestamptz,
+  created_by text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_subpay_org ON subscription_payment(org_id);
+
+-- One row per (org, threshold, expiry) so each reminder fires only once per cycle.
+CREATE TABLE IF NOT EXISTS subscription_reminder (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  reminder_kind text NOT NULL,   -- '30d' | '14d' | '7d' | 'expired'
+  expiry date NOT NULL,
+  sent_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, reminder_kind, expiry)
+);
+
+CREATE TABLE IF NOT EXISTS platform_announcement (
+  id text PRIMARY KEY,
+  subject text NOT NULL,
+  body text NOT NULL,
+  audience text NOT NULL,        -- 'all' | 'active' | 'trial'
+  recipients integer NOT NULL DEFAULT 0,
+  sent_count integer NOT NULL DEFAULT 0,
+  created_by text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

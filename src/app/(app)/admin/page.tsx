@@ -2,19 +2,29 @@ import { redirect } from "next/navigation";
 import { requireUser } from "@/server/auth";
 import { q } from "@/server/db";
 import { PageHeader, Stat, SectionTitle, Badge, Field } from "@/components/ui";
-import { createAdminAction, createOrganizationAction, setOrgStateAction, sendTestEmailAction, setSuperAdminAction } from "@/app/actions";
+import { createAdminAction, createOrganizationAction, setOrgStateAction, sendTestEmailAction, setSuperAdminAction,
+  activateSubscriptionAction, recordPaymentAction, sendReceiptAction, sendAnnouncementAction } from "@/app/actions";
+import { sendDueRenewalReminders } from "@/server/services/billing";
 import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
 import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
 
-export default async function AdminPage({ searchParams }: { searchParams: Promise<{ created?: string; error?: string; test?: string; testerror?: string; via?: string; to?: string; su?: string }> }) {
+function daysLeft(iso: string | null): number | null { return iso ? Math.ceil((new Date(iso).getTime() - Date.now()) / 86400000) : null; }
+
+export default async function AdminPage({ searchParams }: { searchParams: Promise<{ created?: string; error?: string; test?: string; testerror?: string; via?: string; to?: string; su?: string; sub?: string; receipt?: string; announce?: string }> }) {
   const user = await requireUser();
   if (!user.isSuperAdmin) redirect("/dashboard");
-  const { created, error, test, testerror, via, to, su } = await searchParams;
+  const sp = await searchParams;
+  const { created, error, test, testerror, via, to, su } = sp;
   const emailProvider = process.env.EMAIL_PROVIDER || "console";
 
-  const orgs = await q<{ id: string; name: string; plan: string; status: string; trialEndsAt: string | null; adminEmail: string | null; members: number; projects: number }>(
+  // Fire any due renewal reminders opportunistically when the operator opens the
+  // console (the per-cycle log prevents duplicate sends). Never blocks the page.
+  try { await sendDueRenewalReminders(); } catch { /* non-fatal */ }
+
+  const orgs = await q<{ id: string; name: string; plan: string; status: string; trialEndsAt: string | null; subEndsAt: string | null; termMonths: number | null; adminEmail: string | null; members: number; projects: number }>(
     `SELECT o.id, o.name, o.plan, o.status, o.trial_ends_at AS "trialEndsAt",
+            o.subscription_ends_at AS "subEndsAt", o.subscription_term_months AS "termMonths",
             (SELECT u.email FROM org_membership m JOIN app_user u ON u.id=m.user_id JOIN role r ON r.id=m.role_id
              WHERE m.org_id=o.id AND r.key='org_admin' ORDER BY m.created_at LIMIT 1) AS "adminEmail",
             (SELECT COUNT(*)::int FROM org_membership m WHERE m.org_id=o.id) AS members,
@@ -22,16 +32,39 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
      FROM organization o ORDER BY o.created_at DESC`
   );
 
-  const counts = await q<{ orgs: number; trial: number; paid: number; users: number }>(
+  // Recent subscription payments, grouped per organisation (for the receipts panel).
+  const payRows = await q<{ id: string; orgId: string; receiptNo: string | null; amount: number; currency: string; paidOn: string; periodEnd: string | null; sentAt: string | null }>(
+    `SELECT id, org_id AS "orgId", receipt_no AS "receiptNo", amount::float AS amount, currency,
+            paid_on AS "paidOn", period_end AS "periodEnd", receipt_sent_at AS "sentAt"
+     FROM subscription_payment ORDER BY created_at DESC`
+  );
+  const paymentsByOrg = new Map<string, typeof payRows>();
+  for (const p of payRows) { if (!paymentsByOrg.has(p.orgId)) paymentsByOrg.set(p.orgId, []); paymentsByOrg.get(p.orgId)!.push(p); }
+
+  const announcements = await q<{ id: string; subject: string; audience: string; recipients: number; sentCount: number; createdAt: string; by: string | null }>(
+    `SELECT id, subject, audience, recipients, sent_count AS "sentCount", created_at AS "createdAt", created_by_name AS by
+     FROM platform_announcement ORDER BY created_at DESC LIMIT 8`
+  );
+
+  const counts = await q<{ orgs: number; trial: number; paid: number; admins: number }>(
     `SELECT (SELECT COUNT(*)::int FROM organization) AS orgs,
             (SELECT COUNT(*)::int FROM organization WHERE plan='trial') AS trial,
             (SELECT COUNT(*)::int FROM organization WHERE plan!='trial') AS paid,
-            (SELECT COUNT(*)::int FROM app_user) AS users`
+            (SELECT COUNT(*)::int FROM app_user u WHERE u.is_super_admin=true
+               OR EXISTS(SELECT 1 FROM org_membership m JOIN role r ON r.id=m.role_id WHERE m.user_id=u.id AND r.key='org_admin')) AS admins`
   );
   const c = counts[0];
 
-  const users = await q<{ id: string; name: string; email: string; status: string; isSuper: boolean }>(
-    `SELECT id, name, email, status, is_super_admin AS "isSuper" FROM app_user ORDER BY created_at`
+  // Operator only sees platform admins + the organisation admins they provisioned —
+  // not every employee/member/collaborator created inside tenant organisations.
+  const users = await q<{ id: string; name: string; email: string; status: string; isSuper: boolean; orgName: string | null }>(
+    `SELECT u.id, u.name, u.email, u.status, u.is_super_admin AS "isSuper",
+            (SELECT o.name FROM org_membership m JOIN role r ON r.id=m.role_id JOIN organization o ON o.id=m.org_id
+             WHERE m.user_id=u.id AND r.key='org_admin' ORDER BY m.created_at LIMIT 1) AS "orgName"
+     FROM app_user u
+     WHERE u.is_super_admin=true
+        OR EXISTS(SELECT 1 FROM org_membership m JOIN role r ON r.id=m.role_id WHERE m.user_id=u.id AND r.key='org_admin')
+     ORDER BY u.created_at`
   );
   // Platform-level audit only — the operator does not see tenant project or
   // financial activity (requisitions, budgets, activities, etc.).
@@ -50,8 +83,15 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
         <Stat label="Organisations" value={c.orgs} />
         <Stat label="On trial" value={c.trial} />
         <Stat label="Paid" value={c.paid} />
-        <Stat label="Users" value={c.users} />
+        <Stat label="Admins" value={c.admins} />
       </div>
+
+      {sp.sub === "activated" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Subscription activated / renewed.</div>}
+      {sp.receipt === "sent" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Payment recorded and receipt emailed to the organisation.</div>}
+      {sp.receipt === "saved" && <div className="card p-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>Payment recorded, but the receipt email could not be sent (check email settings).</div>}
+      {sp.receipt === "failed" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>The receipt could not be emailed (check email settings / organisation email).</div>}
+      {sp.announce === "fields" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>A subject and message are required.</div>}
+      {sp.announce && sp.announce.includes("of") && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Announcement sent to {sp.announce.replace("of", " of ")} organisations.</div>}
 
       {/* ---------------- Email delivery ---------------- */}
       <div>
@@ -104,7 +144,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
           <table className="w-full text-sm">
             <thead><tr>
               <th className="th text-left">Organisation</th><th className="th text-left">Admin</th>
-              <th className="th text-left">Plan</th><th className="th text-center">Projects</th>
+              <th className="th text-left">Plan</th><th className="th text-left">Renews</th><th className="th text-center">Projects</th>
               <th className="th text-left">Actions</th>
             </tr></thead>
             <tbody>
@@ -112,15 +152,65 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
                 const ended = o.plan === "trial" && o.trialEndsAt && new Date(o.trialEndsAt) < new Date();
                 const tone = o.status === "suspended" ? "danger" : o.plan === "active" ? "ok" : ended ? "danger" : "warn";
                 const planLabel = o.status === "suspended" ? "Suspended" : o.plan === "active" ? "Paid · active" : ended ? "Trial ended" : `Trial · ends ${fmtDate(o.trialEndsAt)}`;
+                const subLeft = daysLeft(o.subEndsAt);
+                const pays = paymentsByOrg.get(o.id) ?? [];
                 return (
                   <tr key={o.id} className="hover:bg-[var(--surface)]">
                     <td className="td"><div className="font-medium">{o.name}</div><div className="text-xs" style={{ color: "var(--muted)" }}>{o.members} member{o.members === 1 ? "" : "s"}</div></td>
                     <td className="td text-xs">{o.adminEmail ?? "—"}</td>
                     <td className="td"><Badge tone={tone}>{planLabel}</Badge></td>
+                    <td className="td text-xs">
+                      {o.plan === "active" && o.subEndsAt
+                        ? (subLeft !== null && subLeft < 0
+                            ? <span style={{ color: "var(--danger)" }}>Expired {fmtDate(o.subEndsAt)}</span>
+                            : <span style={subLeft !== null && subLeft <= 30 ? { color: "var(--warn)" } : undefined}>{subLeft}d · {fmtDate(o.subEndsAt)}</span>)
+                        : "—"}
+                    </td>
                     <td className="td text-center">{o.projects}</td>
                     <td className="td">
                       <div className="flex flex-wrap gap-1.5">
-                        <form action={setOrgStateAction}><input type="hidden" name="orgId" value={o.id} /><input type="hidden" name="action" value="activate" /><button className="btn btn-sm" type="submit">Activate</button></form>
+                        <details className="editor"><summary className="btn btn-sm btn-primary">Subscription</summary>
+                          <div className="editor-panel card p-4" style={{ width: 420 }}>
+                            <div className="font-display font-semibold mb-1">{o.name}</div>
+                            <div className="text-xs mb-3" style={{ color: "var(--muted)" }}>
+                              {o.plan === "active" && o.subEndsAt
+                                ? (subLeft !== null && subLeft < 0 ? `Subscription expired ${fmtDate(o.subEndsAt)}` : `Renews ${fmtDate(o.subEndsAt)} · ${subLeft} days left`)
+                                : o.plan === "trial" ? `On trial${o.trialEndsAt ? ` · ends ${fmtDate(o.trialEndsAt)}` : ""}` : "No active subscription"}
+                            </div>
+
+                            <div className="text-xs font-medium uppercase tracking-wide mb-1" style={{ color: "var(--muted)" }}>Activate / renew</div>
+                            <form action={activateSubscriptionAction} className="flex items-end gap-2 mb-4">
+                              <input type="hidden" name="orgId" value={o.id} />
+                              <Field label="Term"><select name="termMonths" className="select"><option value="12">1 year</option><option value="36">3 years</option><option value="60">5 years</option></select></Field>
+                              <button className="btn btn-sm btn-primary" type="submit">Apply</button>
+                            </form>
+
+                            <div className="text-xs font-medium uppercase tracking-wide mb-1" style={{ color: "var(--muted)" }}>Record payment &amp; email receipt</div>
+                            <form action={recordPaymentAction} className="grid grid-cols-2 gap-2">
+                              <input type="hidden" name="orgId" value={o.id} />
+                              <Field label="Amount"><input type="number" step="0.01" name="amount" className="input" /></Field>
+                              <Field label="Currency"><input name="currency" defaultValue="USD" className="input" /></Field>
+                              <Field label="Term"><select name="termMonths" className="select"><option value="12">1 year</option><option value="36">3 years</option><option value="60">5 years</option></select></Field>
+                              <Field label="Paid on"><input type="date" name="paidOn" className="input" /></Field>
+                              <div className="col-span-2"><Field label="Reference"><input name="reference" className="input" placeholder="Bank ref / invoice no." /></Field></div>
+                              <div className="col-span-2 flex justify-end"><button className="btn btn-sm btn-primary" type="submit">Record &amp; send receipt</button></div>
+                            </form>
+
+                            {pays.length > 0 && (
+                              <div className="mt-3 border-t pt-2" style={{ borderColor: "var(--border)" }}>
+                                <div className="text-xs font-medium uppercase tracking-wide mb-1" style={{ color: "var(--muted)" }}>Receipts</div>
+                                <ul className="text-xs space-y-1">
+                                  {pays.slice(0, 5).map((p) => (
+                                    <li key={p.id} className="flex items-center justify-between gap-2">
+                                      <span>{p.receiptNo} · {money(p.amount, p.currency)} · {fmtDate(p.paidOn)}</span>
+                                      <form action={sendReceiptAction}><input type="hidden" name="paymentId" value={p.id} /><button className="btn btn-sm" type="submit">{p.sentAt ? "Resend" : "Send"}</button></form>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        </details>
                         <form action={setOrgStateAction}><input type="hidden" name="orgId" value={o.id} /><input type="hidden" name="action" value="extend" /><input type="hidden" name="days" value="90" /><button className="btn btn-sm" type="submit">+90d trial</button></form>
                         <form action={setOrgStateAction}><input type="hidden" name="orgId" value={o.id} /><input type="hidden" name="action" value={o.status === "suspended" ? "activate" : "suspend"} /><button className="btn btn-sm" type="submit">{o.status === "suspended" ? "Unsuspend" : "Suspend"}</button></form>
                       </div>
@@ -133,9 +223,37 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
         </div>
       </div>
 
+      {/* ---------------- Announcements ---------------- */}
+      <div>
+        <SectionTitle>Announcements &amp; notices</SectionTitle>
+        <div className="card p-4 mb-3">
+          <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>Email all organisation admins about planned maintenance, upgrades or other notices. One email per organisation, sent to its admin address.</p>
+          <form action={sendAnnouncementAction} className="grid sm:grid-cols-4 gap-3 items-end">
+            <div className="sm:col-span-3"><Field label="Subject"><input name="subject" required className="input" placeholder="Scheduled maintenance — Sat 21 Jun, 22:00–23:00 EAT" /></Field></div>
+            <Field label="Send to"><select name="audience" className="select"><option value="all">All organisations</option><option value="active">Paid only</option><option value="trial">Trials only</option></select></Field>
+            <div className="sm:col-span-4"><Field label="Message"><textarea name="body" rows={4} required className="textarea" placeholder="Write your notice. Blank lines start new paragraphs." /></Field></div>
+            <div className="sm:col-span-4 flex justify-end"><button className="btn btn-primary" type="submit">Send announcement</button></div>
+          </form>
+        </div>
+        {announcements.length > 0 && (
+          <div className="card p-4">
+            <div className="text-xs font-medium uppercase tracking-wide mb-2" style={{ color: "var(--muted)" }}>Recent</div>
+            <div className="space-y-2">
+              {announcements.map((a) => (
+                <div key={a.id} className="flex items-center justify-between gap-2 text-sm py-1 border-b last:border-0" style={{ borderColor: "var(--border)" }}>
+                  <span className="min-w-0 truncate">{a.subject} <span style={{ color: "var(--muted)" }}>· {a.audience}</span></span>
+                  <span className="text-xs whitespace-nowrap" style={{ color: "var(--muted)" }}>{a.sentCount}/{a.recipients} sent · {fmtDateTime(a.createdAt)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="grid lg:grid-cols-2 gap-6">
         <div>
-          <SectionTitle>Platform admins &amp; users</SectionTitle>
+          <SectionTitle>Platform admins &amp; organisation admins</SectionTitle>
+          <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Shows platform operators and the admin of each organisation you provisioned — not the staff, members or collaborators created inside tenant organisations.</p>
           {su === "ok" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Platform-admin access updated.</div>}
           {su === "self" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>You can&apos;t change your own platform-admin status.</div>}
           <form action={createAdminAction} className="card p-4 mb-3 flex flex-wrap items-end gap-3">
@@ -152,7 +270,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
               <tbody>
                 {users.map((u) => (
                   <tr key={u.id}>
-                    <td className="td">{u.name} {u.isSuper && <Badge tone="brand">platform admin</Badge>}</td>
+                    <td className="td">{u.name} {u.isSuper && <Badge tone="brand">platform admin</Badge>} {u.orgName && <Badge tone="muted">{u.orgName}</Badge>}</td>
                     <td className="td">{u.email}</td>
                     <td className="td">{u.status === "invited" ? <Badge tone="warn">invited</Badge> : <Badge tone="ok">active</Badge>}</td>
                     <td className="td text-right">

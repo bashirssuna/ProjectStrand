@@ -2826,3 +2826,55 @@ export async function bulkSetDepartmentAccessAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "update", entity: "project_member", entityId: projectId, after: { department, role, count: n } });
   redirect(`/hr/access/manage?saved=${n}`);
 }
+
+/* ===================== SUBSCRIPTIONS, RECEIPTS & ANNOUNCEMENTS (operator) ===================== */
+import { activateSubscription, recordSubscriptionPayment, sendReceiptEmail, sendAnnouncement } from "@/server/services/billing";
+
+async function requireOperator() {
+  const user = await requireUser();
+  if (!user.isSuperAdmin) throw new Error("FORBIDDEN");
+  return user;
+}
+
+export async function activateSubscriptionAction(formData: FormData) {
+  const user = await requireOperator();
+  const orgId = String(formData.get("orgId"));
+  const termMonths = Number(formData.get("termMonths") || 12);
+  await activateSubscription(orgId, termMonths, { id: user.id, name: user.name });
+  revalidatePath("/admin");
+  redirect("/admin?sub=activated");
+}
+
+export async function recordPaymentAction(formData: FormData) {
+  const user = await requireOperator();
+  const orgId = String(formData.get("orgId"));
+  const amount = Number(formData.get("amount") || 0);
+  const termMonths = Number(formData.get("termMonths") || 12);
+  const pid = await recordSubscriptionPayment({
+    orgId, amount, termMonths,
+    currency: String(formData.get("currency") || "USD").trim() || "USD",
+    reference: String(formData.get("reference") || "") || undefined,
+    paidOn: String(formData.get("paidOn") || "") || undefined,
+    by: { id: user.id, name: user.name },
+  });
+  const res = await sendReceiptEmail(pid);
+  revalidatePath("/admin");
+  redirect(`/admin?receipt=${res.status === "sent" ? "sent" : "saved"}`);
+}
+
+export async function sendReceiptAction(formData: FormData) {
+  await requireOperator();
+  const res = await sendReceiptEmail(String(formData.get("paymentId")));
+  revalidatePath("/admin");
+  redirect(`/admin?receipt=${res.status === "sent" ? "sent" : "failed"}`);
+}
+
+export async function sendAnnouncementAction(formData: FormData) {
+  const user = await requireOperator();
+  const subject = String(formData.get("subject") || "").trim();
+  const body = String(formData.get("body") || "").trim();
+  if (!subject || !body) redirect("/admin?announce=fields");
+  const audience = (String(formData.get("audience") || "all") as "all" | "active" | "trial");
+  const res = await sendAnnouncement({ subject, body, audience, by: { id: user.id, name: user.name } });
+  redirect(`/admin?announce=${res.sent}of${res.recipients}`);
+}

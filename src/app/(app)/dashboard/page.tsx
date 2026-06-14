@@ -15,6 +15,8 @@ export default async function DashboardPage() {
   const org = user.isSuperAdmin ? null : await getUserOrg(user.id);
   const trialDaysLeft = org?.plan === "trial" && org.trialEndsAt
     ? Math.ceil((new Date(org.trialEndsAt).getTime() - Date.now()) / 86400000) : null;
+  const subDaysLeft = org?.plan === "active" && org.subscriptionEndsAt
+    ? Math.ceil((new Date(org.subscriptionEndsAt).getTime() - Date.now()) / 86400000) : null;
   const projects = await listProjectsForUser(user.id, user.isSuperAdmin);
   const summaries = await Promise.all(projects.map((p) => getProjectSummary(p.id)));
 
@@ -75,6 +77,25 @@ export default async function DashboardPage() {
         actions={<Link href="/projects/new" className="btn btn-primary">+ New project</Link>}
       />
 
+      {subDaysLeft !== null && (
+        <div className="card p-4 mb-5 flex flex-wrap items-center justify-between gap-3"
+          style={{ borderColor: subDaysLeft <= 30 ? "var(--warn)" : subDaysLeft < 0 ? "var(--danger)" : "var(--border)" }}>
+          <div>
+            <div className="text-xs uppercase tracking-wide" style={{ color: "var(--muted)" }}>Subscription</div>
+            <div className="font-display text-lg font-semibold">
+              {subDaysLeft > 0
+                ? <>{subDaysLeft} day{subDaysLeft === 1 ? "" : "s"} until renewal</>
+                : <span style={{ color: "var(--danger)" }}>Subscription expired</span>}
+            </div>
+            {org?.subscriptionEndsAt && (
+              <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                {org.name} · {subDaysLeft >= 0 ? "renews" : "expired"} {fmtDate(org.subscriptionEndsAt)}
+              </div>
+            )}
+          </div>
+          {subDaysLeft <= 30 && <Badge tone={subDaysLeft < 0 ? "danger" : "warn"}>{subDaysLeft < 0 ? "Renew now" : "Renewal approaching"}</Badge>}
+        </div>
+      )}
       {trialDaysLeft !== null && (
         <div className="card p-4 mb-5 flex flex-wrap items-center justify-between gap-3"
           style={{ borderColor: trialDaysLeft <= 14 ? "var(--warn)" : "var(--border)" }}>

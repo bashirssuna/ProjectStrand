@@ -1582,4 +1582,20 @@ CREATE TABLE IF NOT EXISTS platform_settings (
   momo_details text,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ===========================================================================
+-- TAX IDS + PLATFORM ISSUER IDENTITY (for invoices & receipts)
+-- Organisations get a TIN (bill-to party). The platform/operator gets a full
+-- issuer profile — name, TIN, address, contacts, logo — shown as the "from"
+-- letterhead on invoices and receipts.
+-- ===========================================================================
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS tin text;  -- tax identification number
+
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS issuer_name text;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS issuer_tin text;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS issuer_address text;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS issuer_email text;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS issuer_phone text;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS issuer_website text;
+ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS issuer_logo_data_url text;
 `;

@@ -1602,7 +1602,7 @@ export async function updateEmployeeAction(formData: FormData) {
   const eid = String(formData.get("employeeId"));
   await q(`UPDATE employee SET job_title=$2, department=$3, contract_type=$4, basic_salary=$5, currency=$6,
              bank_name=$7, bank_account=$8, bank_branch=$9, mobile_money=$10, annual_leave_days=$11, status=$12,
-             start_date=$13, end_date=$14, phone=$15, email=$16 WHERE id=$1 AND org_id=$17`,
+             start_date=$13, end_date=$14, phone=$15, email=$16, staff_no=$17 WHERE id=$1 AND org_id=$18`,
     [eid, String(formData.get("jobTitle") || "") || null, String(formData.get("department") || "") || null,
      String(formData.get("contractType") || "permanent"), Number(formData.get("basicSalary") || 0),
      String(formData.get("currency") || "USD"), String(formData.get("bankName") || "") || null,
@@ -1610,7 +1610,7 @@ export async function updateEmployeeAction(formData: FormData) {
      String(formData.get("mobileMoney") || "") || null, Number(formData.get("annualLeaveDays") || 21),
      String(formData.get("status") || "active"), String(formData.get("startDate") || "") || null,
      String(formData.get("endDate") || "") || null, String(formData.get("phone") || "") || null,
-     String(formData.get("email") || "") || null, orgId]);
+     String(formData.get("email") || "") || null, String(formData.get("staffNo") || "") || null, orgId]);
   revalidatePath(`/hr/employees/${eid}`);
   redirect(`/hr/employees/${eid}?saved=1`);
 }
@@ -2101,7 +2101,7 @@ export async function updateOrgProfileAction(formData: FormData) {
   const { orgId, userId } = await requireInstitutionFinance();
   await q(`UPDATE organization SET name=$2, address=$3, email=$4, phone=$5, website=$6, slogan=$7,
              mission=$8, vision=$9, values_text=$10, objectives=$11, registration_no=$12,
-             social_twitter=$13, social_linkedin=$14, social_facebook=$15, brand_color=$16, updated_at=now()
+             social_twitter=$13, social_linkedin=$14, social_facebook=$15, brand_color=$16, tin=$17, updated_at=now()
            WHERE id=$1`,
     [orgId, String(formData.get("name") || "").trim() || "Organisation",
      String(formData.get("address") || "") || null, String(formData.get("email") || "") || null,
@@ -2110,7 +2110,8 @@ export async function updateOrgProfileAction(formData: FormData) {
      String(formData.get("vision") || "") || null, String(formData.get("valuesText") || "") || null,
      String(formData.get("objectives") || "") || null, String(formData.get("registrationNo") || "") || null,
      String(formData.get("twitter") || "") || null, String(formData.get("linkedin") || "") || null,
-     String(formData.get("facebook") || "") || null, String(formData.get("brandColor") || "#2f5d62")]);
+     String(formData.get("facebook") || "") || null, String(formData.get("brandColor") || "#2f5d62"),
+     String(formData.get("tin") || "") || null]);
   await writeAudit({ orgId, userId, action: "update", entity: "organization", entityId: orgId });
   redirect("/organization?saved=1");
 }
@@ -2882,7 +2883,7 @@ export async function sendAnnouncementAction(formData: FormData) {
 }
 
 /* ===================== SUBSCRIPTION RENEWAL REQUESTS ===================== */
-import { requestRenewal, invoiceRequest, submitPaymentProof, approveRequest, rejectRequest, cancelRequest, upsertPlatformSettings } from "@/server/services/billing";
+import { requestRenewal, invoiceRequest, submitPaymentProof, approveRequest, rejectRequest, cancelRequest, upsertPlatformSettings, setIssuerLogo } from "@/server/services/billing";
 
 // ----- Organisation side (org admin / finance) -----
 export async function requestRenewalAction(formData: FormData) {
@@ -2955,8 +2956,31 @@ export async function savePlatformSettingsAction(formData: FormData) {
     rate5yr: Number(formData.get("rate5yr") || 0),
     bankDetails: String(formData.get("bankDetails") || "") || null,
     momoDetails: String(formData.get("momoDetails") || "") || null,
+    issuerName: String(formData.get("issuerName") || "") || null,
+    issuerTin: String(formData.get("issuerTin") || "") || null,
+    issuerAddress: String(formData.get("issuerAddress") || "") || null,
+    issuerEmail: String(formData.get("issuerEmail") || "") || null,
+    issuerPhone: String(formData.get("issuerPhone") || "") || null,
+    issuerWebsite: String(formData.get("issuerWebsite") || "") || null,
   });
   redirect("/admin?settings=saved");
+}
+
+export async function uploadIssuerLogoAction(formData: FormData) {
+  await requireOperator();
+  const file = formData.get("logo") as File | null;
+  if (!file || file.size === 0) redirect("/admin?settings=logoerr");
+  if (file.size > 2 * 1024 * 1024) redirect("/admin?settings=logosize");
+  const buf = Buffer.from(await file.arrayBuffer());
+  const dataUrl = `data:${mimeFor(file.name)};base64,${buf.toString("base64")}`;
+  await setIssuerLogo(dataUrl);
+  redirect("/admin?settings=logo");
+}
+
+export async function removeIssuerLogoAction() {
+  await requireOperator();
+  await setIssuerLogo(null);
+  redirect("/admin?settings=logoremoved");
 }
 
 // Add a department to the org register directly from Access management, so it

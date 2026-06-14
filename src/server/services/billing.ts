@@ -17,6 +17,30 @@ const shell = (inner: string) =>
      <div style="border-top:1px solid #e7e5e4;padding-top:12px;font-size:12px;color:#78716c">Project Strand — research &amp; grant operations platform.</div>
    </div>`;
 
+const esc = (s: unknown) => String(s ?? "").replace(/</g, "&lt;");
+
+// "From" (platform issuer) + "Bill to" (organisation) header for invoices/receipts.
+function letterhead(
+  issuer: { issuerName: string | null; issuerTin: string | null; issuerAddress: string | null; issuerEmail: string | null; issuerPhone: string | null; issuerWebsite: string | null; issuerLogoDataUrl: string | null },
+  org: { name: string; address: string | null; tin: string | null; email: string | null; phone: string | null }
+): string {
+  const lines = (arr: (string | null)[]) => arr.filter(Boolean).map((l) => `<div>${esc(l)}</div>`).join("");
+  const issuerName = issuer.issuerName || "Project Strand";
+  const logo = issuer.issuerLogoDataUrl ? `<img src="${issuer.issuerLogoDataUrl}" alt="" style="max-height:54px;max-width:160px;object-fit:contain;margin-bottom:6px"/>` : "";
+  const issuerLines = lines([issuer.issuerAddress, [issuer.issuerEmail, issuer.issuerPhone].filter(Boolean).join(" · ") || null, issuer.issuerWebsite, issuer.issuerTin ? `TIN: ${issuer.issuerTin}` : null]);
+  const billLines = lines([org.address, [org.email, org.phone].filter(Boolean).join(" · ") || null, org.tin ? `TIN: ${org.tin}` : null]);
+  return `<table style="width:100%;border-collapse:collapse;margin-bottom:14px"><tr>
+      <td style="vertical-align:top">${logo}<div style="font-weight:700;font-size:15px;color:#9a7b4f">${esc(issuerName)}</div><div style="font-size:12px;color:#57534e">${issuerLines}</div></td>
+      <td style="vertical-align:top;text-align:right"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#a8a29e">Bill to</div><div style="font-weight:700">${esc(org.name)}</div><div style="font-size:12px;color:#57534e">${billLines}</div></td>
+    </tr></table>`;
+}
+
+type OrgBillTo = { name: string; address: string | null; tin: string | null; email: string | null; phone: string | null };
+async function orgBillTo(orgId: string): Promise<OrgBillTo> {
+  return (await one<OrgBillTo>(`SELECT name, address, tin, email, phone FROM organization WHERE id=$1`, [orgId]))
+    ?? { name: "Organisation", address: null, tin: null, email: null, phone: null };
+}
+
 // The admin email for an organisation (its org_admin, else the earliest member).
 export async function orgAdminEmail(orgId: string): Promise<string | null> {
   const admin = await one<{ email: string }>(
@@ -79,10 +103,13 @@ export async function sendReceiptEmail(paymentId: string): Promise<{ status: "se
   if (!p) return { status: "failed", error: "Payment not found" };
   const to = await orgAdminEmail(p.orgId);
   if (!to) return { status: "failed", error: "No organisation email on file" };
+  const org = await orgBillTo(p.orgId);
+  const settings = await getPlatformSettings();
   const years = p.termMonths % 12 === 0 ? `${p.termMonths / 12} year${p.termMonths === 12 ? "" : "s"}` : `${p.termMonths} months`;
   const html = shell(
+    letterhead(settings, org) +
     `<p style="font-size:16px;font-weight:700">Payment receipt</p>
-     <p>Thank you, <strong>${p.orgName}</strong>. We confirm receipt of your Project Strand subscription payment.</p>
+     <p>Thank you, <strong>${esc(p.orgName)}</strong>. We confirm receipt of your Project Strand subscription payment.</p>
      <table style="width:100%;border-collapse:collapse;margin:12px 0">
        <tr><td style="padding:6px 0;color:#78716c">Receipt no.</td><td style="text-align:right;font-weight:600">${p.receiptNo ?? "—"}</td></tr>
        <tr><td style="padding:6px 0;color:#78716c">Amount paid</td><td style="text-align:right;font-weight:600">${money(p.amount, p.currency)}</td></tr>
@@ -162,23 +189,42 @@ export async function sendDueRenewalReminders(): Promise<number> {
 }
 
 /* ===================== PLATFORM BILLING SETTINGS ===================== */
-export type PlatformSettings = { currency: string; vatRate: number; rate1yr: number; rate3yr: number; rate5yr: number; bankDetails: string | null; momoDetails: string | null };
+export type PlatformSettings = {
+  currency: string; vatRate: number; rate1yr: number; rate3yr: number; rate5yr: number; bankDetails: string | null; momoDetails: string | null;
+  issuerName: string | null; issuerTin: string | null; issuerAddress: string | null; issuerEmail: string | null; issuerPhone: string | null; issuerWebsite: string | null; issuerLogoDataUrl: string | null;
+};
 
 export async function getPlatformSettings(): Promise<PlatformSettings> {
   const r = await one<PlatformSettings>(
     `SELECT currency, vat_rate::float AS "vatRate", rate_1yr::float AS "rate1yr", rate_3yr::float AS "rate3yr",
-            rate_5yr::float AS "rate5yr", bank_details AS "bankDetails", momo_details AS "momoDetails"
+            rate_5yr::float AS "rate5yr", bank_details AS "bankDetails", momo_details AS "momoDetails",
+            issuer_name AS "issuerName", issuer_tin AS "issuerTin", issuer_address AS "issuerAddress",
+            issuer_email AS "issuerEmail", issuer_phone AS "issuerPhone", issuer_website AS "issuerWebsite",
+            issuer_logo_data_url AS "issuerLogoDataUrl"
      FROM platform_settings WHERE id='singleton'`
   );
-  return r ?? { currency: "USD", vatRate: 0, rate1yr: 0, rate3yr: 0, rate5yr: 0, bankDetails: null, momoDetails: null };
+  return r ?? { currency: "USD", vatRate: 0, rate1yr: 0, rate3yr: 0, rate5yr: 0, bankDetails: null, momoDetails: null,
+    issuerName: null, issuerTin: null, issuerAddress: null, issuerEmail: null, issuerPhone: null, issuerWebsite: null, issuerLogoDataUrl: null };
 }
 
-export async function upsertPlatformSettings(s: PlatformSettings): Promise<void> {
+// Saves rates + issuer text identity. The logo is managed separately so saving
+// text settings never clobbers an uploaded logo.
+export async function upsertPlatformSettings(s: Omit<PlatformSettings, "issuerLogoDataUrl">): Promise<void> {
   await q(
-    `INSERT INTO platform_settings (id, currency, vat_rate, rate_1yr, rate_3yr, rate_5yr, bank_details, momo_details, updated_at)
-     VALUES ('singleton',$1,$2,$3,$4,$5,$6,$7,now())
-     ON CONFLICT (id) DO UPDATE SET currency=$1, vat_rate=$2, rate_1yr=$3, rate_3yr=$4, rate_5yr=$5, bank_details=$6, momo_details=$7, updated_at=now()`,
-    [s.currency, s.vatRate, s.rate1yr, s.rate3yr, s.rate5yr, s.bankDetails, s.momoDetails]
+    `INSERT INTO platform_settings (id, currency, vat_rate, rate_1yr, rate_3yr, rate_5yr, bank_details, momo_details,
+            issuer_name, issuer_tin, issuer_address, issuer_email, issuer_phone, issuer_website, updated_at)
+     VALUES ('singleton',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now())
+     ON CONFLICT (id) DO UPDATE SET currency=$1, vat_rate=$2, rate_1yr=$3, rate_3yr=$4, rate_5yr=$5, bank_details=$6, momo_details=$7,
+            issuer_name=$8, issuer_tin=$9, issuer_address=$10, issuer_email=$11, issuer_phone=$12, issuer_website=$13, updated_at=now()`,
+    [s.currency, s.vatRate, s.rate1yr, s.rate3yr, s.rate5yr, s.bankDetails, s.momoDetails,
+     s.issuerName, s.issuerTin, s.issuerAddress, s.issuerEmail, s.issuerPhone, s.issuerWebsite]
+  );
+}
+
+export async function setIssuerLogo(dataUrl: string | null): Promise<void> {
+  await q(
+    `INSERT INTO platform_settings (id, issuer_logo_data_url, updated_at) VALUES ('singleton',$1,now())
+     ON CONFLICT (id) DO UPDATE SET issuer_logo_data_url=$1, updated_at=now()`, [dataUrl]
   );
 }
 
@@ -230,12 +276,14 @@ export async function invoiceRequest(input: { requestId: string; subtotal: numbe
             currency=$7, bank_details=$8, momo_details=$9, invoice_note=$10, invoiced_at=now(), invoiced_by=$11, invoiced_by_name=$12 WHERE id=$1`,
     [input.requestId, invoiceNo, input.subtotal, input.vatRate, vatAmount, total, input.currency, input.bankDetails, input.momoDetails, input.note ?? null, input.by.id, input.by.name]
   );
-  const org = await one<{ name: string }>(`SELECT name FROM organization WHERE id=$1`, [req.orgId]);
+  const org = await orgBillTo(req.orgId);
+  const settings = await getPlatformSettings();
   const to = await orgAdminEmail(req.orgId);
   if (to) {
     const html = shell(
+      letterhead(settings, org) +
       `<p style="font-size:16px;font-weight:700">Invoice ${invoiceNo}</p>
-       <p>Dear <strong>${org?.name ?? "Customer"}</strong>, please find your Project Strand subscription invoice below.</p>
+       <p>Dear <strong>${esc(org.name)}</strong>, please find your Project Strand subscription invoice below.</p>
        <table style="width:100%;border-collapse:collapse;margin:12px 0">
          <tr><td style="padding:6px 0;color:#78716c">Invoice no.</td><td style="text-align:right;font-weight:600">${invoiceNo}</td></tr>
          <tr><td style="padding:6px 0;color:#78716c">Subscription term</td><td style="text-align:right">${termLabel(req.termMonths)}</td></tr>

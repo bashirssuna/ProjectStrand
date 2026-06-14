@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { requireOrgAdmin } from "../_guard";
 import { getUserOrg } from "@/server/services/accounts";
-import { getOrgRequest } from "@/server/services/billing";
+import { getOrgRequest, getPlatformSettings } from "@/server/services/billing";
+import { q } from "@/server/db";
 import { PageHeader, SectionTitle, Field, Badge } from "@/components/ui";
 import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { requestRenewalAction, submitPaymentProofAction, cancelRenewalAction } from "@/app/actions";
@@ -13,6 +14,8 @@ export default async function SubscriptionPage({ searchParams }: { searchParams:
   const sp = await searchParams;
   const org = await getUserOrg(userId);
   const req = await getOrgRequest(orgId);
+  const issuer = await getPlatformSettings();
+  const billTo = (await q<{ name: string; address: string | null; tin: string | null }>(`SELECT name, address, tin FROM organization WHERE id=$1`, [orgId]))[0];
 
   const subLeft = org?.plan === "active" && org.subscriptionEndsAt ? Math.ceil((new Date(org.subscriptionEndsAt).getTime() - Date.now()) / 86400000) : null;
   const trialLeft = org?.plan === "trial" && org.trialEndsAt ? Math.ceil((new Date(org.trialEndsAt).getTime() - Date.now()) / 86400000) : null;
@@ -66,6 +69,21 @@ export default async function SubscriptionPage({ searchParams }: { searchParams:
             {/* Invoice (issued) */}
             {(req.status === "invoiced" || req.status === "payment_submitted") && req.invoiceNo && (
               <div className="border rounded-lg p-3 mt-2" style={{ borderColor: "var(--border)" }}>
+                <div className="flex flex-wrap items-start justify-between gap-3 mb-3 pb-3 border-b" style={{ borderColor: "var(--border)" }}>
+                  <div className="min-w-0">
+                    {issuer.issuerLogoDataUrl && <img src={issuer.issuerLogoDataUrl} alt="" style={{ maxHeight: 40, maxWidth: 140, objectFit: "contain", marginBottom: 4 }} />}
+                    <div className="font-semibold" style={{ color: "var(--brand)" }}>{issuer.issuerName || "Project Strand"}</div>
+                    <div className="text-xs whitespace-pre-wrap" style={{ color: "var(--muted)" }}>{issuer.issuerAddress || ""}</div>
+                    <div className="text-xs" style={{ color: "var(--muted)" }}>{[issuer.issuerEmail, issuer.issuerPhone].filter(Boolean).join(" · ")}</div>
+                    {issuer.issuerTin && <div className="text-xs" style={{ color: "var(--muted)" }}>TIN: {issuer.issuerTin}</div>}
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] uppercase tracking-wide" style={{ color: "var(--muted)" }}>Bill to</div>
+                    <div className="font-semibold">{billTo?.name}</div>
+                    {billTo?.address && <div className="text-xs whitespace-pre-wrap" style={{ color: "var(--muted)" }}>{billTo.address}</div>}
+                    {billTo?.tin && <div className="text-xs" style={{ color: "var(--muted)" }}>TIN: {billTo.tin}</div>}
+                  </div>
+                </div>
                 <div className="flex items-center justify-between mb-2">
                   <div className="font-mono text-sm" style={{ color: "var(--brand)" }}>{req.invoiceNo}</div>
                   <div className="text-xs" style={{ color: "var(--muted)" }}>{req.invoicedAt ? fmtDate(req.invoicedAt) : ""}</div>

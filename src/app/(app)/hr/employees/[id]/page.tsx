@@ -336,6 +336,7 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
       <SectionTitle>Employment details</SectionTitle>
       <form action={updateEmployeeAction} className="card p-4 grid sm:grid-cols-3 gap-3">
         <input type="hidden" name="employeeId" value={e.id} />
+        <Field label="Staff no."><input name="staffNo" defaultValue={e.staffNo ?? ""} className="input" placeholder="e.g. EMP-014" /></Field>
         <Field label="Job title"><input name="jobTitle" defaultValue={e.jobTitle ?? ""} className="input" /></Field>
         <Field label="Department"><input name="department" defaultValue={e.department ?? ""} className="input" /></Field>
         <Field label="Contract type">

@@ -4,7 +4,8 @@ import { q } from "@/server/db";
 import { PageHeader, Stat, SectionTitle, Badge, Field } from "@/components/ui";
 import { createAdminAction, createOrganizationAction, setOrgStateAction, sendTestEmailAction, setSuperAdminAction,
   activateSubscriptionAction, recordPaymentAction, sendReceiptAction, sendAnnouncementAction,
-  invoiceRequestAction, approveRenewalAction, rejectRenewalAction, savePlatformSettingsAction } from "@/app/actions";
+  invoiceRequestAction, approveRenewalAction, rejectRenewalAction, savePlatformSettingsAction,
+  uploadIssuerLogoAction, removeIssuerLogoAction } from "@/app/actions";
 import { sendDueRenewalReminders, getPlatformSettings, rateForTerm } from "@/server/services/billing";
 import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
 import { money, fmtDate, fmtDateTime } from "@/lib/format";
@@ -107,6 +108,10 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
       {sp.renew === "done" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Subscription renewed — the organisation was sent a receipt.</div>}
       {sp.renew === "rejected" && <div className="card p-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>Renewal request returned to the organisation.</div>}
       {sp.settings === "saved" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Billing settings saved.</div>}
+      {sp.settings === "logo" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Issuer logo updated.</div>}
+      {sp.settings === "logoremoved" && <div className="card p-3 text-sm" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>Issuer logo removed.</div>}
+      {sp.settings === "logosize" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Logo must be under 2MB.</div>}
+      {sp.settings === "logoerr" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Please choose an image file.</div>}
 
       {/* ---------------- Email delivery ---------------- */}
       <div>
@@ -304,8 +309,36 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
 
         <div className="mt-4">
           <SectionTitle>Billing settings</SectionTitle>
+
+          {/* Issuer logo (the "from" letterhead on invoices & receipts) */}
+          <div className="card p-4 mb-3 flex items-center gap-4 flex-wrap">
+            <div className="flex items-center justify-center shrink-0" style={{ width: 172, height: 84, border: "1px dashed var(--border)", borderRadius: 8, background: "var(--surface)" }}>
+              {settings.issuerLogoDataUrl ? <img src={settings.issuerLogoDataUrl} alt="Issuer logo" style={{ maxHeight: 80, maxWidth: 168, objectFit: "contain" }} /> : <span className="text-xs" style={{ color: "var(--muted)" }}>No logo</span>}
+            </div>
+            <div className="min-w-0">
+              <div className="font-medium">Issuer logo</div>
+              <p className="text-sm mb-2" style={{ color: "var(--muted)" }}>Your platform logo — appears with your details as the &ldquo;from&rdquo; on every invoice and receipt. PNG or JPG, under 2MB.</p>
+              <div className="flex items-center gap-2">
+                <form action={uploadIssuerLogoAction} className="flex items-center gap-2" encType="multipart/form-data">
+                  <input type="file" name="logo" accept="image/*" required className="input" />
+                  <button className="btn btn-sm btn-primary" type="submit">Upload</button>
+                </form>
+                {settings.issuerLogoDataUrl && <form action={removeIssuerLogoAction}><button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Remove</button></form>}
+              </div>
+            </div>
+          </div>
+
           <form action={savePlatformSettingsAction} className="card p-4 grid sm:grid-cols-2 gap-3">
-            <p className="sm:col-span-2 text-sm" style={{ color: "var(--muted)" }}>Defaults used to pre-fill renewal invoices — set your standard rates, VAT and payment details once.</p>
+            <div className="sm:col-span-2 text-xs font-medium uppercase tracking-wide" style={{ color: "var(--muted)" }}>Issuer identity (shown on invoices &amp; receipts)</div>
+            <Field label="Issuer / company name"><input name="issuerName" defaultValue={settings.issuerName ?? ""} className="input" placeholder="e.g. MakePiStat Ltd" /></Field>
+            <Field label="Issuer TIN"><input name="issuerTin" defaultValue={settings.issuerTin ?? ""} className="input" placeholder="Your tax identification no." /></Field>
+            <div className="sm:col-span-2"><Field label="Address / location"><textarea name="issuerAddress" rows={2} defaultValue={settings.issuerAddress ?? ""} className="textarea" placeholder="Street, city, country" /></Field></div>
+            <Field label="Email"><input name="issuerEmail" defaultValue={settings.issuerEmail ?? ""} className="input" /></Field>
+            <Field label="Phone"><input name="issuerPhone" defaultValue={settings.issuerPhone ?? ""} className="input" /></Field>
+            <div className="sm:col-span-2"><Field label="Website"><input name="issuerWebsite" defaultValue={settings.issuerWebsite ?? ""} className="input" /></Field></div>
+
+            <div className="sm:col-span-2 border-t pt-3 mt-1 text-xs font-medium uppercase tracking-wide" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>Rates &amp; payment details</div>
+            <p className="sm:col-span-2 text-sm" style={{ color: "var(--muted)" }}>Defaults used to pre-fill renewal invoices.</p>
             <div className="grid grid-cols-2 gap-2">
               <Field label="Currency"><input name="currency" defaultValue={settings.currency} className="input" /></Field>
               <Field label="VAT %"><input type="number" step="0.01" name="vatRate" defaultValue={settings.vatRate || ""} className="input" /></Field>

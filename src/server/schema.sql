@@ -1028,3 +1028,90 @@ ALTER TABLE employee ADD COLUMN IF NOT EXISTS date_of_birth date;
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS national_id text;
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS address text;
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS emergency_contact text;
+
+-- ===========================================================================
+-- RICHER EMPLOYEE RECORDS + TERMINATION WORKFLOW + COLLABORATIONS + DUAL CCY
+-- ===========================================================================
+
+-- Demographic / statutory fields on the employee record.
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS prefix text;              -- Dr, Prof, Assoc. Prof, Ms, Mr, Sr...
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS gender text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS marital_status text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS nationality text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS nssf_number text;         -- social security number
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS tin_number text;          -- tax identification number
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS next_of_kin text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS next_of_kin_relationship text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS next_of_kin_phone text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS next_of_kin_address text;
+
+-- Flexible statutory/policy numbers beyond the common ones (e.g. professional
+-- body registration, insurance policy numbers). Free-form label + value.
+CREATE TABLE IF NOT EXISTS employee_policy_number (
+  id text PRIMARY KEY,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  label text NOT NULL,                 -- 'NSSF', 'Medical insurance', 'Professional council'
+  value text NOT NULL,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Education / qualifications history (degrees, certificates, fellowships, trainings).
+CREATE TABLE IF NOT EXISTS employee_education (
+  id text PRIMARY KEY,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  kind text NOT NULL DEFAULT 'degree', -- degree | certificate | fellowship | training | other
+  qualification text NOT NULL,         -- 'PhD Epidemiology', 'GCP certificate'
+  institution text,
+  year_obtained text,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Termination / access-revocation requests: HR submits, PI approves, then executes.
+CREATE TABLE IF NOT EXISTS hr_action_request (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  action_type text NOT NULL,           -- terminate | revoke_access
+  reason text,
+  effective_date date,
+  status text NOT NULL DEFAULT 'pending', -- pending | approved | rejected | executed
+  requested_by text, requested_by_name text,
+  decided_by text, decided_by_name text, decided_at timestamptz, decision_note text,
+  executed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- ===========================================================================
+-- COLLABORATIONS MODULE (external partners — a separate people directory)
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS collaborator (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  prefix text,
+  name text NOT NULL,
+  organisation text,                   -- their home institution
+  collaborator_type text NOT NULL DEFAULT 'institution', -- institution | individual | funder | partner_ngo | government
+  email text, phone text, country text, address text,
+  expertise text,
+  website text,
+  status text NOT NULL DEFAULT 'active', -- active | inactive
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_collaborator_org ON collaborator(org_id);
+
+-- A collaborator's role on a specific project (many-to-many with a role label).
+CREATE TABLE IF NOT EXISTS project_collaborator (
+  id text PRIMARY KEY,
+  project_id text NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  collaborator_id text NOT NULL REFERENCES collaborator(id) ON DELETE CASCADE,
+  role text NOT NULL DEFAULT 'collaborator', -- co_investigator | partner | funder | advisor | sub_grantee | collaborator
+  responsibilities text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (project_id, collaborator_id)
+);
+
+-- Dual-currency display on the dashboard: a secondary display currency per org.
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS display_currency text;

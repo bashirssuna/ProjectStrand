@@ -171,3 +171,27 @@ export async function createEmployeeLogin(employeeId: string): Promise<{ emailSt
 export async function employeeForUser(userId: string): Promise<{ id: string; orgId: string; firstName: string; lastName: string } | null> {
   return one(`SELECT id, org_id AS "orgId", first_name AS "firstName", last_name AS "lastName" FROM employee WHERE user_id=$1`, [userId]);
 }
+
+// ---------------------------------------------------------------------------
+// Termination / access-revocation workflow: HR submits a request, the PI (or an
+// approver) approves it, and only then is it executed. Executing a termination
+// sets the employee to 'terminated' and suspends their login; revoke_access
+// only suspends the login.
+// ---------------------------------------------------------------------------
+export async function executeHrAction(requestId: string): Promise<void> {
+  const r = await one<{ employeeId: string; actionType: string; status: string }>(
+    `SELECT employee_id AS "employeeId", action_type AS "actionType", status FROM hr_action_request WHERE id=$1`, [requestId]
+  );
+  if (!r) throw new Error("Request not found.");
+  if (r.status !== "approved") throw new Error("Only an approved request can be executed.");
+
+  const emp = await one<{ userId: string | null }>(`SELECT user_id AS "userId" FROM employee WHERE id=$1`, [r.employeeId]);
+  if (r.actionType === "terminate") {
+    await q(`UPDATE employee SET status='terminated', end_date=COALESCE(end_date, CURRENT_DATE) WHERE id=$1`, [r.employeeId]);
+  }
+  // both actions revoke the login (if any) by suspending the account
+  if (emp?.userId) {
+    await q(`UPDATE app_user SET status='suspended' WHERE id=$1`, [emp.userId]);
+  }
+  await q(`UPDATE hr_action_request SET status='executed', executed_at=now() WHERE id=$1`, [requestId]);
+}

@@ -178,9 +178,10 @@ export async function verifyEmailToken(token: string): Promise<{ userId: string 
 }
 
 // Returns the user's primary organisation + trial state (for banners/guards).
-export async function getUserOrg(userId: string): Promise<{ id: string; name: string; plan: string; status: string; trialEndsAt: string | null; isOrgAdmin: boolean } | null> {
+export async function getUserOrg(userId: string): Promise<{ id: string; name: string; plan: string; status: string; trialEndsAt: string | null; isOrgAdmin: boolean; baseCurrency: string; displayCurrency: string | null } | null> {
   return one(
     `SELECT o.id, o.name, o.plan, o.status, o.trial_ends_at AS "trialEndsAt",
+            COALESCE(o.base_currency, 'USD') AS "baseCurrency", o.display_currency AS "displayCurrency",
             EXISTS(SELECT 1 FROM org_membership m JOIN role r ON r.id=m.role_id
                    WHERE m.org_id=o.id AND m.user_id=$1 AND r.key='org_admin') AS "isOrgAdmin"
      FROM organization o JOIN org_membership m ON m.org_id=o.id

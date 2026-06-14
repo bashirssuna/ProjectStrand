@@ -47,6 +47,7 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
 
       <SectionTitle>Add an employee</SectionTitle>
       <form action={addEmployeeAction} className="card p-4 grid sm:grid-cols-3 gap-3">
+        <Field label="Prefix"><select name="prefix" className="select"><option value="">—</option><option>Dr</option><option>Prof</option><option>Assoc. Prof</option><option>Assist. Prof</option><option>Mr</option><option>Ms</option><option>Mrs</option><option>Sr</option><option>Rev</option></select></Field>
         <Field label="First name"><input name="firstName" required className="input" /></Field>
         <Field label="Last name"><input name="lastName" required className="input" /></Field>
         <Field label="Staff no."><input name="staffNo" className="input" /></Field>

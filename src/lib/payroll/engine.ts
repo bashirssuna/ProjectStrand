@@ -47,6 +47,20 @@ export interface StaffInput {
   fringeRatePct?: number;   // e.g. 0.30
   fringeBasis?: "base" | "charged";   // default "base" (matches the uploaded sheet)
   otherFringeBenefits?: FringeBenefit[];
+  // Optional per-employee PAYE rate (0..1). When set, overrides the org PAYE
+  // method with a flat rate for this person (useful for non-UGX salaries where
+  // the banded scale doesn't apply).
+  payeOverrideRate?: number;
+  // Additional deductions/savings beyond NSSF & PAYE (e.g. SACCO, local service
+  // tax, insurance). All reduce net take-home; "saving" ones are the employee's
+  // own money set aside (shown separately), the rest are costs/levies.
+  otherDeductions?: Deduction[];
+}
+
+export interface Deduction {
+  label: string;
+  amount: number;      // absolute amount (the service resolves % → amount)
+  saving?: boolean;    // true = a saving scheme (e.g. SACCO); false = a tax/levy
 }
 
 export interface ConsultantInput {
@@ -56,6 +70,7 @@ export interface ConsultantInput {
   requestedFunds: number;
   effortPct?: number;
   calMonths?: number;
+  otherDeductions?: Deduction[];
 }
 
 export type EmployeeInput = StaffInput | ConsultantInput;
@@ -74,6 +89,9 @@ export interface CompResult {
   wht: number;             // consultants only
   netPay: number;
   nssfSavings: number;     // employee + employer NSSF
+  otherDeductions: Deduction[];     // resolved SACCO/levies/etc.
+  otherDeductionsTotal: number;     // total of all (reduce net)
+  otherSavings: number;             // subtotal of the "saving" ones (e.g. SACCO)
   fringePool: number;
   fringeUsed: number;
   fringeUnused: number;
@@ -123,11 +141,18 @@ function computeStaff(e: StaffInput, cfg: CompensationConfig): CompResult {
 
   const employeeNSSF = gross * cfg.nssfEmployeeRate;
   const employerNSSF = gross * cfg.nssfEmployerRate;
-  const paye = computePAYE(gross, cfg);
+  // A per-employee flat PAYE rate overrides the org method when provided.
+  const paye = e.payeOverrideRate != null ? gross * e.payeOverrideRate : computePAYE(gross, cfg);
 
-  // Employer NSSF and other fringe never touch net pay.
+  // Additional deductions/savings (SACCO, levies…) — all reduce net take-home.
+  const otherDeductions: Deduction[] = (e.otherDeductions ?? []).map((d) => ({ label: d.label, amount: Number(d.amount) || 0, saving: Boolean(d.saving) }));
+  const otherDeductionsTotal = otherDeductions.reduce((s, d) => s + d.amount, 0);
+  const otherSavings = otherDeductions.filter((d) => d.saving).reduce((s, d) => s + d.amount, 0);
+
+  // Employer NSSF and other fringe never touch net pay; employee NSSF, PAYE and
+  // the additional deductions do.
   const nssfFromNet = cfg.nssfEmployeeFromFringe ? 0 : employeeNSSF;
-  const netPay = gross - nssfFromNet - paye;
+  const netPay = gross - nssfFromNet - paye - otherDeductionsTotal;
   const nssfSavings = employeeNSSF + employerNSSF;
 
   const basisAmt = (e.fringeBasis ?? "base") === "base" ? base : chargedSalary;
@@ -144,6 +169,7 @@ function computeStaff(e: StaffInput, cfg: CompensationConfig): CompResult {
   return {
     type: "staff", name: e.name, role: e.role, effort, calMonths: e.calMonths,
     chargedSalary, gross, employeeNSSF, employerNSSF, paye, wht: 0, netPay, nssfSavings,
+    otherDeductions, otherDeductionsTotal, otherSavings,
     fringePool, fringeUsed, fringeUnused, fringeOverspent, otherFringe,
     fundsRequested: chargedSalary + fringePool,
     employerCost: gross + employerNSSF + otherFringe,
@@ -153,10 +179,15 @@ function computeStaff(e: StaffInput, cfg: CompensationConfig): CompResult {
 function computeConsultant(e: ConsultantInput, cfg: CompensationConfig): CompResult {
   const funds = e.requestedFunds ?? 0;
   const wht = funds * cfg.consultantWHTRate;
+  const otherDeductions: Deduction[] = (e.otherDeductions ?? []).map((d) => ({ label: d.label, amount: Number(d.amount) || 0, saving: Boolean(d.saving) }));
+  const otherDeductionsTotal = otherDeductions.reduce((s, d) => s + d.amount, 0);
+  const otherSavings = otherDeductions.filter((d) => d.saving).reduce((s, d) => s + d.amount, 0);
   return {
     type: "consultant", name: e.name, role: e.role, effort: e.effortPct ?? 1, calMonths: e.calMonths,
     chargedSalary: funds, gross: funds, employeeNSSF: 0, employerNSSF: 0, paye: 0, wht,
-    netPay: funds - wht, nssfSavings: 0, fringePool: 0, fringeUsed: 0, fringeUnused: 0,
+    netPay: funds - wht - otherDeductionsTotal, nssfSavings: 0,
+    otherDeductions, otherDeductionsTotal, otherSavings,
+    fringePool: 0, fringeUsed: 0, fringeUnused: 0,
     fringeOverspent: 0, otherFringe: 0, fundsRequested: funds, employerCost: funds,
   };
 }
@@ -171,6 +202,7 @@ export interface CompRollup {
   fundsRequested: number; netPay: number;
   employeeNSSF: number; employerNSSF: number; nssfSavings: number;
   paye: number; wht: number; taxes: number;
+  otherDeductions: number; otherSavings: number;
   fringePool: number; fringeUsed: number; fringeUnused: number; otherFringe: number;
   employerCost: number; chargedSalary: number;
 }
@@ -187,6 +219,7 @@ export function rollupCompensation(results: CompResult[], currency: string): Com
     fundsRequested: sum("fundsRequested"), netPay: sum("netPay"),
     employeeNSSF: sum("employeeNSSF"), employerNSSF: sum("employerNSSF"), nssfSavings: sum("nssfSavings"),
     paye: sum("paye"), wht: sum("wht"), taxes: sum("paye") + sum("wht"),
+    otherDeductions: sum("otherDeductionsTotal"), otherSavings: sum("otherSavings"),
     fringePool: sum("fringePool"), fringeUsed: sum("fringeUsed"), fringeUnused: sum("fringeUnused"),
     otherFringe: sum("otherFringe"), employerCost: sum("employerCost"), chargedSalary: sum("chargedSalary"),
   };

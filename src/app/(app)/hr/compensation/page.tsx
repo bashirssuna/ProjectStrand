@@ -52,6 +52,7 @@ export default async function CompensationPage({ searchParams }: { searchParams:
                 <Stat label="Net pay" value={money(r.netPay, r.currency)} sub="take-home (after NSSF + PAYE)" />
                 <Stat label="NSSF saving" value={money(r.nssfSavings, r.currency)} sub={`employee ${money(r.employeeNSSF, r.currency)} + employer ${money(r.employerNSSF, r.currency)}`} />
                 <Stat label="Taxes" value={money(r.taxes, r.currency)} sub={`PAYE ${money(r.paye, r.currency)} · WHT ${money(r.wht, r.currency)}`} />
+                {r.otherDeductions > 0 && <Stat label="Other deductions" value={money(r.otherDeductions, r.currency)} sub={`incl. savings ${money(r.otherSavings, r.currency)} (e.g. SACCO)`} />}
                 <Stat label="Fringe pool" value={money(r.fringePool, r.currency)} />
                 <Stat label="Fringe used" value={money(r.fringeUsed, r.currency)} />
                 <Stat label="Fringe unused" value={money(r.fringeUnused, r.currency)} tone={r.fringeUnused > 0 ? "ok" : undefined} />

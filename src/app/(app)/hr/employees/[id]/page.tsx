@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireHrOrg } from "../../_guard";
 import { q, one } from "@/server/db";
-import { leaveBalance, computePay } from "@/server/services/hr";
+import { leaveBalance } from "@/server/services/hr";
 import { getEmployeeComp } from "@/server/services/compensation";
 import { PageHeader, SectionTitle, Field, Badge, Empty } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
@@ -53,7 +53,6 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
   );
   const PREFIXES = ["", "Dr", "Prof", "Assoc. Prof", "Assist. Prof", "Mr", "Ms", "Mrs", "Sr", "Rev"];
   const lb = await leaveBalance(id);
-  const pay = await computePay(id);
   const comp = await getEmployeeComp(id);
   const projects = await q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY created_at DESC`, [orgId]);
   const recentLeave = await q<{ leaveType: string; startDate: string; endDate: string; days: number; status: string }>(
@@ -98,23 +97,9 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
 
       <div className="grid sm:grid-cols-4 gap-3 mb-6">
         <div className="card p-3"><div className="label">Basic salary</div><div className="font-semibold tabular-nums">{money(e.basicSalary, e.currency)}</div></div>
-        <div className="card p-3"><div className="label">Net pay (computed)</div><div className="font-semibold tabular-nums">{money(pay.net, e.currency)}</div></div>
+        <div className="card p-3"><div className="label">Net pay (grant model)</div><div className="font-semibold tabular-nums">{comp ? money(comp.result.netPay, comp.row.currency) : "—"}</div></div>
         <div className="card p-3"><div className="label">Leave remaining</div><div className="font-semibold">{lb.remaining} / {lb.entitlement} days</div></div>
         <div className="card p-3"><div className="label">Status</div><div className="font-semibold">{label(e.status)}</div></div>
-      </div>
-
-      {/* current pay breakdown */}
-      <SectionTitle>Current pay breakdown</SectionTitle>
-      <div className="card overflow-x-auto mb-6">
-        <table className="w-full text-sm">
-          <tbody>
-            <tr><td className="td">Basic salary</td><td className="td text-right tabular-nums">{money(pay.basic, e.currency)}</td></tr>
-            {pay.lines.filter((l) => l.kind === "earning").map((l, i) => <tr key={`e${i}`}><td className="td">+ {l.name}</td><td className="td text-right tabular-nums">{money(l.amount, e.currency)}</td></tr>)}
-            <tr style={{ fontWeight: 600 }}><td className="td">Gross</td><td className="td text-right tabular-nums">{money(pay.gross, e.currency)}</td></tr>
-            {pay.lines.filter((l) => l.kind === "deduction").map((l, i) => <tr key={`d${i}`}><td className="td">− {l.name}</td><td className="td text-right tabular-nums">({money(l.amount, e.currency)})</td></tr>)}
-            <tr style={{ fontWeight: 700 }}><td className="td">Net pay</td><td className="td text-right tabular-nums">{money(pay.net, e.currency)}</td></tr>
-          </tbody>
-        </table>
       </div>
 
       {/* compensation — grant model (gross + fringe + effort; NSSF as a saving funded from fringe) */}
@@ -128,13 +113,15 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
                   <>
                     <tr style={{ fontWeight: 600 }}><td className="td">Requested funds</td><td className="td text-right tabular-nums">{money(comp.result.gross, comp.row.currency)}</td></tr>
                     <tr><td className="td">− Withholding tax ({comp.config.consultantWhtPct}%)</td><td className="td text-right tabular-nums">({money(comp.result.wht, comp.row.currency)})</td></tr>
+                    {comp.result.otherDeductions.map((d, i) => <tr key={`cod${i}`}><td className="td">− {d.label}{d.saving ? " (saving)" : ""}</td><td className="td text-right tabular-nums">({money(d.amount, comp.row.currency)})</td></tr>)}
                     <tr style={{ fontWeight: 700 }}><td className="td">Net to consultant</td><td className="td text-right tabular-nums">{money(comp.result.netPay, comp.row.currency)}</td></tr>
                   </>
                 ) : (
                   <>
                     <tr style={{ fontWeight: 600 }}><td className="td">Gross salary</td><td className="td text-right tabular-nums">{money(comp.result.gross, comp.row.currency)}</td></tr>
                     <tr><td className="td">− Employee NSSF ({comp.config.nssfEmployeePct}%)</td><td className="td text-right tabular-nums">({money(comp.result.employeeNSSF, comp.row.currency)})</td></tr>
-                    <tr><td className="td">− PAYE</td><td className="td text-right tabular-nums">({money(comp.result.paye, comp.row.currency)})</td></tr>
+                    <tr><td className="td">− PAYE{comp.row.payeOverridePct != null ? ` (${comp.row.payeOverridePct}%)` : ""}</td><td className="td text-right tabular-nums">({money(comp.result.paye, comp.row.currency)})</td></tr>
+                    {comp.result.otherDeductions.map((d, i) => <tr key={`od${i}`}><td className="td">− {d.label}{d.saving ? " (saving)" : ""}</td><td className="td text-right tabular-nums">({money(d.amount, comp.row.currency)})</td></tr>)}
                     <tr style={{ fontWeight: 700 }}><td className="td">Net pay</td><td className="td text-right tabular-nums">{money(comp.result.netPay, comp.row.currency)}</td></tr>
                   </>
                 )}
@@ -147,7 +134,17 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
                 <div className="label">Savings (not paid as cash)</div>
                 <div className="flex justify-between"><span style={{ color: "var(--muted)" }}>Employer NSSF ({comp.config.nssfEmployerPct}%){comp.config.nssfEmployerFromFringe ? " · from fringe" : ""}</span><span className="tabular-nums">{money(comp.result.employerNSSF, comp.row.currency)}</span></div>
                 <div className="flex justify-between"><span style={{ color: "var(--muted)" }}>Total NSSF saving</span><span className="tabular-nums">{money(comp.result.nssfSavings, comp.row.currency)}</span></div>
+                {comp.result.otherSavings > 0 && <div className="flex justify-between"><span style={{ color: "var(--muted)" }}>Other savings (e.g. SACCO)</span><span className="tabular-nums">{money(comp.result.otherSavings, comp.row.currency)}</span></div>}
               </div>
+              {comp.result.otherDeductionsTotal > 0 && (
+                <div className="pt-2 border-t" style={{ borderColor: "var(--border)" }}>
+                  <div className="label">Other deductions &amp; savings</div>
+                  {comp.result.otherDeductions.map((d, i) => (
+                    <div key={i} className="flex justify-between"><span style={{ color: "var(--muted)" }}>{d.label}{d.saving ? " (saving)" : ""}</span><span className="tabular-nums">{money(d.amount, comp.row.currency)}</span></div>
+                  ))}
+                  <div className="flex justify-between" style={{ fontWeight: 600 }}><span>Total</span><span className="tabular-nums">{money(comp.result.otherDeductionsTotal, comp.row.currency)}</span></div>
+                </div>
+              )}
               <div className="pt-2 border-t" style={{ borderColor: "var(--border)" }}>
                 <div className="label">Fringe pool</div>
                 <div className="flex justify-between"><span style={{ color: "var(--muted)" }}>Pool</span><span className="tabular-nums">{money(comp.result.fringePool, comp.row.currency)}</span></div>
@@ -181,7 +178,7 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
 
         <Field label="Requested funds (consultant)"><input type="number" step="0.01" name="requestedFunds" defaultValue={comp?.row.requestedFunds ?? ""} className="input" /></Field>
         <Field label="Cal. months"><input type="number" step="0.01" name="calMonths" defaultValue={comp?.row.calMonths ?? ""} className="input" /></Field>
-        <div />
+        <Field label="PAYE rate % (override)"><input type="number" step="0.01" name="payeOverridePct" defaultValue={comp?.row.payeOverridePct ?? ""} className="input" placeholder="optional flat %" /></Field>
 
         <div className="sm:col-span-3">
           <div className="label">Other fringe benefits (drawn from the pool)</div>
@@ -195,8 +192,30 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
             );
           })}
         </div>
+        <div className="sm:col-span-3">
+          <div className="label">Other deductions &amp; savings (e.g. SACCO, local service tax, insurance)</div>
+          <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Each reduces net take-home. Choose % of gross or a flat amount, and whether it's a saving (the employee's own money, e.g. SACCO) or a levy/tax.</p>
+          {[0, 1, 2].map((i) => {
+            const d = comp?.deductionDefs?.[i];
+            return (
+              <div key={i} className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-2">
+                <input name="deductionLabel" defaultValue={d?.label ?? ""} className="input" placeholder="e.g. SACCO" />
+                <input type="number" step="0.01" name="deductionValue" defaultValue={d?.value ?? ""} className="input" placeholder="rate % or amount" />
+                <select name="deductionKind" defaultValue={d?.kind ?? "pct_deduction"} className="select">
+                  <option value="pct_saving">% of gross · saving</option>
+                  <option value="pct_deduction">% of gross · deduction</option>
+                  <option value="flat_saving">Flat amount · saving</option>
+                  <option value="flat_deduction">Flat amount · deduction</option>
+                </select>
+              </div>
+            );
+          })}
+        </div>
         <div className="sm:col-span-3"><Field label="Note"><input name="note" defaultValue={comp?.row.note ?? ""} className="input" /></Field></div>
-        <div className="sm:col-span-3 flex justify-end"><button className="btn btn-primary" type="submit">Save compensation</button></div>
+        <div className="sm:col-span-3 flex items-center justify-between">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>PAYE method &amp; bands are set org-wide under HR → Compensation; the override above forces a flat PAYE % for this person (useful for non-UGX salaries).</span>
+          <button className="btn btn-primary" type="submit">Save compensation</button>
+        </div>
       </form>
 
       {/* recent leave */}

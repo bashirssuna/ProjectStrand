@@ -72,6 +72,7 @@ export type EmpCompRow = {
   currency: string; grossSalary: number | null; baseSalary: number | null; effortPct: number;
   calMonths: number | null; fringeAmount: number | null; fringeRatePct: number | null; fringeBasis: string;
   requestedFunds: number | null; benefits: string; note: string | null;
+  payeOverridePct: number | null; deductions: string;
   firstName: string; lastName: string; prefix: string | null; jobTitle: string | null;
   projectCode: string | null; projectTitle: string | null;
 };
@@ -82,7 +83,7 @@ const EMP_COMP_SELECT = `
          ec.effort_pct::float AS "effortPct", ec.cal_months::float AS "calMonths",
          ec.fringe_amount::float AS "fringeAmount", ec.fringe_rate_pct::float AS "fringeRatePct",
          ec.fringe_basis AS "fringeBasis", ec.requested_funds::float AS "requestedFunds",
-         ec.benefits, ec.note,
+         ec.benefits, ec.note, ec.paye_override_pct::float AS "payeOverridePct", ec.deductions,
          e.first_name AS "firstName", e.last_name AS "lastName", e.prefix, e.job_title AS "jobTitle",
          p.code AS "projectCode", p.title AS "projectTitle"
   FROM employee_compensation ec
@@ -90,6 +91,8 @@ const EMP_COMP_SELECT = `
   LEFT JOIN project p ON p.id = ec.project_id`;
 
 export type ParsedBenefit = { label: string; amount: number };
+export type DeductionKind = "pct_deduction" | "pct_saving" | "flat_deduction" | "flat_saving";
+export type ParsedDeduction = { label: string; value: number; kind: DeductionKind };
 
 function parseBenefits(raw: string): ParsedBenefit[] {
   try {
@@ -99,11 +102,41 @@ function parseBenefits(raw: string): ParsedBenefit[] {
   } catch { return []; }
 }
 
+const DEDUCTION_KINDS: DeductionKind[] = ["pct_deduction", "pct_saving", "flat_deduction", "flat_saving"];
+
+function parseDeductionDefs(raw: string): ParsedDeduction[] {
+  try {
+    const arr = JSON.parse(raw || "[]");
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .map((d) => ({ label: String(d.label ?? ""), value: Number(d.value) || 0, kind: (DEDUCTION_KINDS.includes(d.kind) ? d.kind : "pct_deduction") as DeductionKind }))
+      .filter((d) => d.label);
+  } catch { return []; }
+}
+
+// Resolve stored deduction definitions into absolute amounts given the gross.
+function resolveDeductions(defs: ParsedDeduction[], gross: number) {
+  return defs.map((d) => ({
+    label: d.label,
+    amount: d.kind.startsWith("pct") ? gross * (d.value / 100) : d.value,
+    saving: d.kind.endsWith("saving"),
+  }));
+}
+
+// Gross actually paid (mirrors the engine) — needed to resolve % deductions.
+function grossOf(r: EmpCompRow): number {
+  const effort = (r.effortPct ?? 100) / 100;
+  const base = r.baseSalary ?? r.grossSalary ?? 0;
+  const charged = r.baseSalary != null ? base * effort : (r.grossSalary ?? 0);
+  return r.grossSalary ?? charged;
+}
+
 function toEngineInput(r: EmpCompRow): EmployeeInput {
   const name = `${r.prefix ? r.prefix + " " : ""}${r.firstName} ${r.lastName}`.trim();
   const effort = (r.effortPct ?? 100) / 100;
+  const deductions = resolveDeductions(parseDeductionDefs(r.deductions), grossOf(r));
   if (r.employmentType === "consultant") {
-    return { type: "consultant", name, role: r.jobTitle ?? undefined, requestedFunds: r.requestedFunds ?? 0, effortPct: effort, calMonths: r.calMonths ?? undefined };
+    return { type: "consultant", name, role: r.jobTitle ?? undefined, requestedFunds: r.requestedFunds ?? 0, effortPct: effort, calMonths: r.calMonths ?? undefined, otherDeductions: deductions };
   }
   return {
     type: "staff", name, role: r.jobTitle ?? undefined,
@@ -115,10 +148,12 @@ function toEngineInput(r: EmpCompRow): EmployeeInput {
     fringeRatePct: r.fringeRatePct != null ? r.fringeRatePct / 100 : undefined,
     fringeBasis: (r.fringeBasis as "base" | "charged") || "base",
     otherFringeBenefits: parseBenefits(r.benefits).map((b) => ({ label: b.label, amount: b.amount })),
+    payeOverrideRate: r.payeOverridePct != null ? r.payeOverridePct / 100 : undefined,
+    otherDeductions: deductions,
   };
 }
 
-export type EmpCompComputed = { row: EmpCompRow; result: CompResult; benefits: ParsedBenefit[] };
+export type EmpCompComputed = { row: EmpCompRow; result: CompResult; benefits: ParsedBenefit[]; deductionDefs: ParsedDeduction[] };
 
 export async function getEmployeeComp(employeeId: string): Promise<(EmpCompComputed & { config: CompConfigRow }) | null> {
   const row = await one<EmpCompRow>(`${EMP_COMP_SELECT} WHERE ec.employee_id=$1`, [employeeId]);
@@ -126,7 +161,7 @@ export async function getEmployeeComp(employeeId: string): Promise<(EmpCompCompu
   const owner = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM employee WHERE id=$1`, [employeeId]);
   const config = await getCompConfig(owner!.orgId);
   const result = computeCompensation(toEngineInput(row), toEngineConfig(row.currency, config));
-  return { row, result, benefits: parseBenefits(row.benefits), config };
+  return { row, result, benefits: parseBenefits(row.benefits), deductionDefs: parseDeductionDefs(row.deductions), config };
 }
 
 export type UpsertCompInput = {
@@ -142,31 +177,34 @@ export type UpsertCompInput = {
   fringeBasis: "base" | "charged";
   requestedFunds: number | null;
   benefits: ParsedBenefit[];
+  payeOverridePct: number | null;
+  deductions: ParsedDeduction[];
   note: string | null;
 };
 
 export async function upsertEmployeeComp(orgId: string, employeeId: string, input: UpsertCompInput): Promise<void> {
   const existing = await one<{ id: string }>(`SELECT id FROM employee_compensation WHERE employee_id=$1`, [employeeId]);
   const benefitsJson = JSON.stringify(input.benefits ?? []);
+  const deductionsJson = JSON.stringify(input.deductions ?? []);
   if (existing) {
     await q(
       `UPDATE employee_compensation SET project_id=$2, employment_type=$3, currency=$4, gross_salary=$5,
          base_salary=$6, effort_pct=$7, cal_months=$8, fringe_amount=$9, fringe_rate_pct=$10,
-         fringe_basis=$11, requested_funds=$12, benefits=$13, note=$14, updated_at=now()
+         fringe_basis=$11, requested_funds=$12, benefits=$13, note=$14, paye_override_pct=$15, deductions=$16, updated_at=now()
        WHERE id=$1`,
       [existing.id, input.projectId, input.employmentType, input.currency, input.grossSalary,
        input.baseSalary, input.effortPct, input.calMonths, input.fringeAmount, input.fringeRatePct,
-       input.fringeBasis, input.requestedFunds, benefitsJson, input.note]
+       input.fringeBasis, input.requestedFunds, benefitsJson, input.note, input.payeOverridePct, deductionsJson]
     );
   } else {
     await q(
       `INSERT INTO employee_compensation
          (id, org_id, employee_id, project_id, employment_type, currency, gross_salary, base_salary,
-          effort_pct, cal_months, fringe_amount, fringe_rate_pct, fringe_basis, requested_funds, benefits, note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+          effort_pct, cal_months, fringe_amount, fringe_rate_pct, fringe_basis, requested_funds, benefits, note, paye_override_pct, deductions)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
       [id("ecmp"), orgId, employeeId, input.projectId, input.employmentType, input.currency, input.grossSalary,
        input.baseSalary, input.effortPct, input.calMonths, input.fringeAmount, input.fringeRatePct,
-       input.fringeBasis, input.requestedFunds, benefitsJson, input.note]
+       input.fringeBasis, input.requestedFunds, benefitsJson, input.note, input.payeOverridePct, deductionsJson]
     );
   }
 }
@@ -190,7 +228,7 @@ async function computeRows(where: string, param: string): Promise<EmpCompCompute
   if (rows.length === 0) return [];
   const orgId = (await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM employee WHERE id=$1`, [rows[0].employeeId]))!.orgId;
   const config = await getCompConfig(orgId);
-  return rows.map((row) => ({ row, result: computeCompensation(toEngineInput(row), toEngineConfig(row.currency, config)), benefits: parseBenefits(row.benefits) }));
+  return rows.map((row) => ({ row, result: computeCompensation(toEngineInput(row), toEngineConfig(row.currency, config)), benefits: parseBenefits(row.benefits), deductionDefs: parseDeductionDefs(row.deductions) }));
 }
 
 export async function orgCompensation(orgId: string): Promise<{ byCurrency: CompRollup[]; rows: EmpCompComputed[] }> {

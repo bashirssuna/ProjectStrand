@@ -1204,3 +1204,8 @@ ALTER TABLE purchase_request ADD COLUMN IF NOT EXISTS budget_line_id text REFERE
 ALTER TABLE commitment ADD COLUMN IF NOT EXISTS source text;      -- e.g. 'purchase_request'
 ALTER TABLE commitment ADD COLUMN IF NOT EXISTS source_id text;   -- originating record id
 CREATE INDEX IF NOT EXISTS idx_commitment_source ON commitment(source, source_id);
+
+-- Per-employee PAYE override (flat %, optional) and additional deduction/saving
+-- schemes (SACCO, local service tax, insurance…) stored as JSON [{label,value,kind}].
+ALTER TABLE employee_compensation ADD COLUMN IF NOT EXISTS paye_override_pct numeric(7,4);
+ALTER TABLE employee_compensation ADD COLUMN IF NOT EXISTS deductions text NOT NULL DEFAULT '[]';

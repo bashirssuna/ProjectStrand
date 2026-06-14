@@ -2136,6 +2136,16 @@ export async function upsertEmployeeCompAction(formData: FormData) {
   const lbls = formData.getAll("benefitLabel").map((v) => String(v));
   const amts = formData.getAll("benefitAmount").map((v) => Number(String(v)) || 0);
   const benefits = lbls.map((lbl, i) => ({ label: lbl.trim(), amount: amts[i] ?? 0 })).filter((b) => b.label);
+  // Additional deductions/savings: deductionLabel[] / deductionValue[] / deductionKind[].
+  const dLbls = formData.getAll("deductionLabel").map((v) => String(v));
+  const dVals = formData.getAll("deductionValue").map((v) => Number(String(v)) || 0);
+  const dKinds = formData.getAll("deductionKind").map((v) => String(v));
+  const validKinds = ["pct_deduction", "pct_saving", "flat_deduction", "flat_saving"];
+  const deductions = dLbls.map((lbl, i) => ({
+    label: lbl.trim(),
+    value: dVals[i] ?? 0,
+    kind: (validKinds.includes(dKinds[i]) ? dKinds[i] : "pct_deduction") as "pct_deduction" | "pct_saving" | "flat_deduction" | "flat_saving",
+  })).filter((d) => d.label);
   await upsertEmployeeComp(orgId, employeeId, {
     projectId: String(formData.get("projectId") || "") || null,
     employmentType,
@@ -2149,6 +2159,8 @@ export async function upsertEmployeeCompAction(formData: FormData) {
     fringeBasis: (String(formData.get("fringeBasis") || "base") === "charged" ? "charged" : "base"),
     requestedFunds: parseNum(formData.get("requestedFunds")),
     benefits,
+    payeOverridePct: parseNum(formData.get("payeOverridePct")),
+    deductions,
     note: String(formData.get("note") || "") || null,
   });
   await writeAudit({ orgId, userId, action: "update", entity: "employee_compensation", entityId: employeeId });

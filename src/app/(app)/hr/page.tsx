@@ -26,7 +26,7 @@ export default async function HrHome() {
           ["/hr/payroll", "Payroll", "Configurable components, runs & payslips."],
           ["/hr/compensation", "Compensation", "Grant model: gross, fringe, NSSF, PAYE & effort."],
           ["/hr/departments", "Departments", "Units staff are assigned to."],
-          ["/hr/access/manage", "Access management", "See everyone's rights; edit roles & permissions by person or department."],
+          ["/organization/access", "Access management", "Now under Organisation → manage roles & permissions by person or department."],
         ].map(([href, t, d]) => (
           <Link key={href} href={href} className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
             <div className="font-display font-semibold">{t}</div>

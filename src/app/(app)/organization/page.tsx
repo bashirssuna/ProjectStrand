@@ -25,6 +25,14 @@ export default async function OrganizationPage({ searchParams }: { searchParams:
   return (
     <div className="max-w-4xl">
       <PageHeader title="Organisation profile" subtitle="Your institution's details, branding and letterhead" />
+
+      <a href="/organization/access" className="card p-4 mb-5 flex items-center justify-between gap-3 hover:border-[var(--brand)]" style={{ display: "flex" }}>
+        <div>
+          <div className="font-display font-semibold">Access &amp; permissions</div>
+          <div className="text-sm" style={{ color: "var(--muted)" }}>See everyone&apos;s rights and manage roles &amp; fine-grained permissions — by person or by department.</div>
+        </div>
+        <span className="btn btn-sm">Open →</span>
+      </a>
       {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Profile saved.</div>}
       {sp.logo === "ok" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Logo updated — it now appears on all printouts.</div>}
       {sp.logo === "removed" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>Logo removed.</div>}

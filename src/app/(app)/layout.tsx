@@ -68,6 +68,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
             <div className="text-[10px] font-semibold uppercase tracking-wider px-3 pt-4 pb-1" style={{ color: "var(--muted)" }}>Account</div>
             {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization">⌂ Organisation</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization/access">⚷ Access &amp; permissions</NavLink>}
             {user.isSuperAdmin && <NavLink href="/admin">⚙ Admin Center</NavLink>}
             <NavLink href="/profile">◔ My Profile</NavLink>
           </nav>

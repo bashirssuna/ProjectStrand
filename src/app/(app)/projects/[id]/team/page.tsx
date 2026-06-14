@@ -1,11 +1,15 @@
 import { getProjectAccess } from "@/server/policy";
-import { q } from "@/server/db";
-import { addMemberAction, updateMemberRoleAction, removeMemberAction } from "@/app/actions";
+import { q, one } from "@/server/db";
+import { addMemberAction, updateMemberRoleAction, removeMemberAction,
+  upsertEmployeeProjectAction, removeEmployeeProjectAction,
+  updateCollaboratorProjectRoleAction, removeCollaboratorProjectLinkAction } from "@/app/actions";
 import { SectionTitle, Badge, Field } from "@/components/ui";
 import { PROJECT_ROLES, ROLE_PERMISSIONS, label } from "@/lib/enums";
 import { blockStaff } from "../_staffblock";
 
-export default async function TeamPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ invite?: string; why?: string }> }) {
+const COLLAB_ROLES = [["co_investigator", "Co-Investigator"], ["partner", "Partner"], ["funder", "Funder"], ["advisor", "Advisor"], ["sub_grantee", "Sub-grantee"], ["collaborator", "Collaborator"]];
+
+export default async function TeamPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ invite?: string; why?: string; saved?: string }> }) {
   const { id } = await params;
   await blockStaff(id);
   const sp = await searchParams;
@@ -18,6 +22,29 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
      JOIN app_user u ON u.id = pm.user_id
      LEFT JOIN user_profile up ON up.user_id = u.id
      WHERE pm.project_id=$1 ORDER BY pm.created_at`, [id]
+  );
+
+  // Staff assigned to this project (HR view of who works on it), and the org's
+  // employees available to assign. Plus external collaborators linked here.
+  const proj = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [id]);
+  const orgId = proj?.orgId ?? null;
+  const staff = await q<{ id: string; employeeId: string; name: string; role: string | null; responsibilities: string | null }>(
+    `SELECT ep.id, ep.employee_id AS "employeeId",
+            (CASE WHEN e.prefix IS NOT NULL AND e.prefix<>'' THEN e.prefix||' ' ELSE '' END)||e.first_name||' '||e.last_name AS name,
+            ep.role, ep.responsibilities
+     FROM employee_project ep JOIN employee e ON e.id=ep.employee_id
+     WHERE ep.project_id=$1 ORDER BY e.last_name, e.first_name`, [id]
+  );
+  const assignedEmpIds = new Set(staff.map((s) => s.employeeId));
+  const orgEmployees = orgId ? await q<{ id: string; name: string }>(
+    `SELECT id, (CASE WHEN prefix IS NOT NULL AND prefix<>'' THEN prefix||' ' ELSE '' END)||first_name||' '||last_name AS name
+     FROM employee WHERE org_id=$1 AND status<>'terminated' ORDER BY last_name, first_name`, [orgId]
+  ) : [];
+  const assignableEmployees = orgEmployees.filter((e) => !assignedEmpIds.has(e.id));
+  const collaborators = await q<{ id: string; name: string; role: string; responsibilities: string | null }>(
+    `SELECT pc.id, (CASE WHEN c.prefix IS NOT NULL AND c.prefix<>'' THEN c.prefix||' ' ELSE '' END)||c.name AS name, pc.role, pc.responsibilities
+     FROM project_collaborator pc JOIN collaborator c ON c.id=pc.collaborator_id
+     WHERE pc.project_id=$1 ORDER BY c.name`, [id]
   );
 
   return (
@@ -79,6 +106,108 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* Staff assigned to this project (HR/PI view of who works on it) */}
+      <div>
+        <SectionTitle>Staff on this project</SectionTitle>
+        {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved.</div>}
+        {staff.length === 0 ? (
+          <p className="text-sm" style={{ color: "var(--muted)" }}>No staff assigned yet.{canManage ? " Assign employees and their responsibilities below." : ""}</p>
+        ) : (
+          <div className="card overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr><th className="th text-left">Employee</th><th className="th text-left" style={{ minWidth: 360 }}>Role &amp; responsibilities</th>{canManage && <th className="th" />}</tr></thead>
+              <tbody>
+                {staff.map((s) => (
+                  <tr key={s.id}>
+                    <td className="td font-medium">{s.name}</td>
+                    <td className="td">
+                      {canManage ? (
+                        <form action={upsertEmployeeProjectAction} className="flex flex-wrap items-end gap-2">
+                          <input type="hidden" name="projectId" value={id} />
+                          <input type="hidden" name="employeeId" value={s.employeeId} />
+                          <input type="hidden" name="back" value={`/projects/${id}/team`} />
+                          <input name="role" defaultValue={s.role ?? ""} className="input" placeholder="Role" style={{ width: 150 }} />
+                          <input name="responsibilities" defaultValue={s.responsibilities ?? ""} className="input" placeholder="Responsibilities" style={{ minWidth: 200, flex: 1 }} />
+                          <button className="btn btn-sm" type="submit">Save</button>
+                        </form>
+                      ) : (
+                        <span>{s.role ? <Badge tone="brand">{label(s.role)}</Badge> : null} <span style={{ color: "var(--muted)" }}>{s.responsibilities ?? ""}</span></span>
+                      )}
+                    </td>
+                    {canManage && (
+                      <td className="td text-right">
+                        <form action={removeEmployeeProjectAction}>
+                          <input type="hidden" name="projectId" value={id} />
+                          <input type="hidden" name="employeeId" value={s.employeeId} />
+                          <input type="hidden" name="back" value={`/projects/${id}/team`} />
+                          <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Remove</button>
+                        </form>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {canManage && assignableEmployees.length > 0 && (
+          <form action={upsertEmployeeProjectAction} className="card p-4 grid sm:grid-cols-4 gap-3 items-end mt-3">
+            <input type="hidden" name="projectId" value={id} />
+            <input type="hidden" name="back" value={`/projects/${id}/team`} />
+            <Field label="Employee"><select name="employeeId" required className="select"><option value="">— choose —</option>{assignableEmployees.map((emp) => <option key={emp.id} value={emp.id}>{emp.name}</option>)}</select></Field>
+            <Field label="Role"><input name="role" className="input" placeholder="e.g. Field Coordinator" /></Field>
+            <Field label="Responsibilities"><input name="responsibilities" className="input" /></Field>
+            <button className="btn btn-primary" type="submit">Assign staff</button>
+          </form>
+        )}
+        {canManage && orgEmployees.length === 0 && <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>No employees in HR yet — add staff under HR → Employees first.</p>}
+      </div>
+
+      {/* External collaborators linked to this project */}
+      <div>
+        <SectionTitle>Collaborators</SectionTitle>
+        {collaborators.length === 0 ? (
+          <p className="text-sm" style={{ color: "var(--muted)" }}>No external collaborators linked.{canManage ? " Link them from the Collaborations section, then set their role here." : ""}</p>
+        ) : (
+          <div className="card overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr><th className="th text-left">Collaborator</th><th className="th text-left" style={{ minWidth: 360 }}>Role &amp; responsibilities</th>{canManage && <th className="th" />}</tr></thead>
+              <tbody>
+                {collaborators.map((cl) => (
+                  <tr key={cl.id}>
+                    <td className="td font-medium">{cl.name}</td>
+                    <td className="td">
+                      {canManage ? (
+                        <form action={updateCollaboratorProjectRoleAction} className="flex flex-wrap items-end gap-2">
+                          <input type="hidden" name="projectId" value={id} />
+                          <input type="hidden" name="linkId" value={cl.id} />
+                          <input type="hidden" name="back" value={`/projects/${id}/team`} />
+                          <select name="role" defaultValue={cl.role} className="select" style={{ width: 150 }}>{COLLAB_ROLES.map(([v, lbl]) => <option key={v} value={v}>{lbl}</option>)}</select>
+                          <input name="responsibilities" defaultValue={cl.responsibilities ?? ""} className="input" placeholder="Responsibilities" style={{ minWidth: 200, flex: 1 }} />
+                          <button className="btn btn-sm" type="submit">Save</button>
+                        </form>
+                      ) : (
+                        <span><Badge tone="info">{label(cl.role)}</Badge> <span style={{ color: "var(--muted)" }}>{cl.responsibilities ?? ""}</span></span>
+                      )}
+                    </td>
+                    {canManage && (
+                      <td className="td text-right">
+                        <form action={removeCollaboratorProjectLinkAction}>
+                          <input type="hidden" name="projectId" value={id} />
+                          <input type="hidden" name="linkId" value={cl.id} />
+                          <input type="hidden" name="back" value={`/projects/${id}/team`} />
+                          <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Remove</button>
+                        </form>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {canManage && (

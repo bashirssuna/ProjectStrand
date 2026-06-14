@@ -3,14 +3,7 @@ import { requireHrOrg } from "../_guard";
 import { q } from "@/server/db";
 import { PageHeader, SectionTitle, Field, Empty } from "@/components/ui";
 import { addDepartmentAction } from "@/app/actions";
-
-// Common organisational units offered as quick presets; users can still type a
-// custom name for anything not in the list.
-const COMMON_DEPARTMENTS = [
-  "Human Resources", "Finance", "Research", "Procurement", "Transport",
-  "Welfare", "Marketing", "Field Operations", "Customer Support",
-  "Legal", "Information Technology", "Administration",
-];
+import { COMMON_DEPARTMENTS } from "@/lib/departments";
 
 export default async function DepartmentsPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string }> }) {
   const { orgId } = await requireHrOrg();

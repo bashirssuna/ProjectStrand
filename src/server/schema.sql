@@ -1209,3 +1209,22 @@ CREATE INDEX IF NOT EXISTS idx_commitment_source ON commitment(source, source_id
 -- schemes (SACCO, local service tax, insurance…) stored as JSON [{label,value,kind}].
 ALTER TABLE employee_compensation ADD COLUMN IF NOT EXISTS paye_override_pct numeric(7,4);
 ALTER TABLE employee_compensation ADD COLUMN IF NOT EXISTS deductions text NOT NULL DEFAULT '[]';
+
+-- ===========================================================================
+-- STAFF ↔ PROJECT ASSIGNMENTS
+-- Which employees work on which projects, with a role and responsibilities.
+-- This is the HR/PI view of project staffing (who does what), distinct from the
+-- login-based project_member table that governs app access. Editable by HR/org
+-- admins (from the employee profile) and by PIs (from the project Team page).
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS employee_project (
+  id text PRIMARY KEY,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  project_id text NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  role text,
+  responsibilities text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (employee_id, project_id)
+);
+CREATE INDEX IF NOT EXISTS idx_empproj_employee ON employee_project(employee_id);
+CREATE INDEX IF NOT EXISTS idx_empproj_project ON employee_project(project_id);

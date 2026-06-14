@@ -1523,8 +1523,16 @@ export async function addEmployeeAction(formData: FormData) {
   const last = String(formData.get("lastName") || "").trim();
   if (!first || !last) redirect("/hr/employees?err=name");
   const eid = id("emp");
-  const deptId = String(formData.get("departmentId") || "") || null;
-  const deptName = deptId ? (await one<{ name: string }>(`SELECT name FROM department WHERE id=$1`, [deptId]))?.name ?? null : (String(formData.get("department") || "") || null);
+  // Department can be picked OR typed (combobox). A typed name is found-or-created.
+  const deptNameInput = String(formData.get("departmentName") || "").trim();
+  let deptId: string | null = String(formData.get("departmentId") || "") || null;
+  let deptName: string | null = null;
+  if (deptNameInput) {
+    const dep = await ensureDepartment(orgId, deptNameInput);
+    if (dep) { deptId = dep.id; deptName = dep.name; }
+  } else if (deptId) {
+    deptName = (await one<{ name: string }>(`SELECT name FROM department WHERE id=$1`, [deptId]))?.name ?? null;
+  }
   await q(`INSERT INTO employee (id, org_id, user_id, staff_no, first_name, last_name, email, phone, job_title, department, department_id,
              contract_type, start_date, end_date, basic_salary, currency, pay_frequency, bank_name, bank_account, bank_branch, mobile_money, annual_leave_days, note, prefix)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
@@ -1773,7 +1781,10 @@ export async function addDepartmentAction(formData: FormData) {
 export async function assignEmployeeDepartmentAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
   const empId = String(formData.get("employeeId"));
-  const deptId = String(formData.get("departmentId") || "") || null;
+  // Pick from existing OR type a new department name (found-or-created).
+  const nameInput = String(formData.get("departmentName") || "").trim();
+  let deptId: string | null = String(formData.get("departmentId") || "") || null;
+  if (nameInput) { const dep = await ensureDepartment(orgId, nameInput); deptId = dep?.id ?? null; }
   await q(`UPDATE employee SET department_id=$2, department=(SELECT name FROM department WHERE id=$2) WHERE id=$1 AND org_id=$3`, [empId, deptId, orgId]);
   revalidatePath(`/hr/employees/${empId}`);
 }
@@ -2165,5 +2176,93 @@ export async function upsertEmployeeCompAction(formData: FormData) {
   });
   await writeAudit({ orgId, userId, action: "update", entity: "employee_compensation", entityId: employeeId });
   const back = String(formData.get("back") || `/hr/employees/${employeeId}`);
+  redirect(`${back}?saved=1`);
+}
+
+/* ---------------- Departments (find-or-create helper) ---------------- */
+async function ensureDepartment(orgId: string, rawName: string): Promise<{ id: string; name: string } | null> {
+  const name = rawName.trim();
+  if (!name) return null;
+  const existing = await one<{ id: string; name: string }>(`SELECT id, name FROM department WHERE org_id=$1 AND lower(name)=lower($2)`, [orgId, name]);
+  if (existing) return existing;
+  await q(`INSERT INTO department (id, org_id, name) VALUES ($1,$2,$3) ON CONFLICT (org_id, name) DO NOTHING`, [id("dept"), orgId, name]);
+  return one<{ id: string; name: string }>(`SELECT id, name FROM department WHERE org_id=$1 AND lower(name)=lower($2)`, [orgId, name]);
+}
+
+/* ---------------- Collaborator details & project roles ---------------- */
+// HR / org admins edit a collaborator's master details.
+export async function updateCollaboratorDetailsAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const cid = String(formData.get("collaboratorId"));
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect(`/collaborations/${cid}?err=name`);
+  await q(
+    `UPDATE collaborator SET prefix=$3, name=$4, organisation=$5, collaborator_type=$6, email=$7,
+       phone=$8, country=$9, address=$10, expertise=$11, website=$12, note=$13
+     WHERE id=$1 AND org_id=$2`,
+    [cid, orgId, String(formData.get("prefix") || "") || null, name,
+     String(formData.get("organisation") || "") || null, String(formData.get("collaboratorType") || "institution"),
+     String(formData.get("email") || "") || null, String(formData.get("phone") || "") || null,
+     String(formData.get("country") || "") || null, String(formData.get("address") || "") || null,
+     String(formData.get("expertise") || "") || null, String(formData.get("website") || "") || null,
+     String(formData.get("note") || "") || null]
+  );
+  await writeAudit({ orgId, userId, action: "update", entity: "collaborator", entityId: cid });
+  redirect(`/collaborations/${cid}?saved=1`);
+}
+
+// Edit a collaborator's role/responsibilities on a specific project. Gated by
+// project-level members.manage, so the PI (and org admins) can both use it.
+export async function updateCollaboratorProjectRoleAction(formData: FormData) {
+  const projectId = String(formData.get("projectId"));
+  const access = await requirePermission(projectId, "members.manage");
+  const linkId = String(formData.get("linkId"));
+  await q(`UPDATE project_collaborator SET role=$2, responsibilities=$3 WHERE id=$1 AND project_id=$4`,
+    [linkId, String(formData.get("role") || "collaborator"), String(formData.get("responsibilities") || "") || null, projectId]);
+  await writeAudit({ userId: access.user.id, action: "update", entity: "project_collaborator", entityId: linkId });
+  const back = String(formData.get("back") || `/projects/${projectId}/team`);
+  revalidatePath(back);
+  redirect(`${back}?saved=1`);
+}
+
+export async function removeCollaboratorProjectLinkAction(formData: FormData) {
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "members.manage");
+  await q(`DELETE FROM project_collaborator WHERE id=$1 AND project_id=$2`, [String(formData.get("linkId")), projectId]);
+  const back = String(formData.get("back") || `/projects/${projectId}/team`);
+  revalidatePath(back);
+  redirect(`${back}?saved=1`);
+}
+
+/* ---------------- Staff ↔ project assignments (role & responsibilities) ---------------- */
+// Assign an employee to a project (or update their role/responsibilities).
+// Gated by project members.manage so HR/org admins (from the employee profile)
+// and PIs (from the project Team page) can both manage staffing.
+export async function upsertEmployeeProjectAction(formData: FormData) {
+  const projectId = String(formData.get("projectId"));
+  const employeeId = String(formData.get("employeeId"));
+  const access = await requirePermission(projectId, "members.manage");
+  if (!projectId || !employeeId) redirect(String(formData.get("back") || "/hr/employees"));
+  const role = String(formData.get("role") || "") || null;
+  const responsibilities = String(formData.get("responsibilities") || "") || null;
+  await q(
+    `INSERT INTO employee_project (id, employee_id, project_id, role, responsibilities)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (employee_id, project_id) DO UPDATE SET role=$4, responsibilities=$5`,
+    [id("epj"), employeeId, projectId, role, responsibilities]
+  );
+  await writeAudit({ userId: access.user.id, action: "update", entity: "employee_project", entityId: `${employeeId}:${projectId}`, after: { role } });
+  const back = String(formData.get("back") || `/hr/employees/${employeeId}`);
+  revalidatePath(back);
+  redirect(`${back}?saved=1`);
+}
+
+export async function removeEmployeeProjectAction(formData: FormData) {
+  const projectId = String(formData.get("projectId"));
+  const employeeId = String(formData.get("employeeId"));
+  await requirePermission(projectId, "members.manage");
+  await q(`DELETE FROM employee_project WHERE employee_id=$1 AND project_id=$2`, [employeeId, projectId]);
+  const back = String(formData.get("back") || `/hr/employees/${employeeId}`);
+  revalidatePath(back);
   redirect(`${back}?saved=1`);
 }

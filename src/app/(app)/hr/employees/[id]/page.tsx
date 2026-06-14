@@ -9,8 +9,9 @@ import { label } from "@/lib/enums";
 import { updateEmployeeAction, assignEmployeeDepartmentAction, createEmployeeLoginAction,
   updateEmployeeProfileAction, addEmployeeEducationAction, deleteEmployeeEducationAction,
   addEmployeePolicyAction, deleteEmployeePolicyAction, requestHrActionAction, decideHrActionAction,
-  upsertEmployeeCompAction } from "@/app/actions";
+  upsertEmployeeCompAction, upsertEmployeeProjectAction, removeEmployeeProjectAction } from "@/app/actions";
 import { dateInput } from "@/lib/format";
+import { COMMON_DEPARTMENTS } from "@/lib/departments";
 
 export default async function EmployeeDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ saved?: string; login?: string; loginerr?: string; hra?: string; err?: string }> }) {
   const { id } = await params;
@@ -55,6 +56,13 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
   const lb = await leaveBalance(id);
   const comp = await getEmployeeComp(id);
   const projects = await q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY created_at DESC`, [orgId]);
+  const employeeProjects = await q<{ id: string; projectId: string; code: string; title: string; role: string | null; responsibilities: string | null }>(
+    `SELECT ep.id, ep.project_id AS "projectId", p.code, p.title, ep.role, ep.responsibilities
+     FROM employee_project ep JOIN project p ON p.id=ep.project_id WHERE ep.employee_id=$1 ORDER BY p.code`, [id]
+  );
+  const assignedProjectIds = new Set(employeeProjects.map((a) => a.projectId));
+  const assignableProjects = projects.filter((p) => !assignedProjectIds.has(p.id));
+  const deptOptions = Array.from(new Map([...departments.map((d) => d.name), ...COMMON_DEPARTMENTS].map((n) => [n.toLowerCase(), n])).values());
   const recentLeave = await q<{ leaveType: string; startDate: string; endDate: string; days: number; status: string }>(
     `SELECT leave_type AS "leaveType", start_date AS "startDate", end_date AS "endDate", days::float, status FROM leave_request WHERE employee_id=$1 ORDER BY start_date DESC LIMIT 5`, [id]
   );
@@ -85,13 +93,11 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
           <div className="font-medium mb-2">Department</div>
           <form action={assignEmployeeDepartmentAction} className="flex items-end gap-2">
             <input type="hidden" name="employeeId" value={e.id} />
-            <select name="departmentId" defaultValue={e.departmentId ?? ""} className="select">
-              <option value="">— unassigned —</option>
-              {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
+            <input name="departmentName" list="emp-dept-options" defaultValue={e.department ?? ""} className="input" placeholder="Pick or type a department…" />
+            <datalist id="emp-dept-options">{deptOptions.map((n) => <option key={n} value={n} />)}</datalist>
             <button className="btn btn-sm" type="submit">Assign</button>
           </form>
-          {departments.length === 0 && <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>No departments yet — create them under HR → Departments.</p>}
+          <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>Pick a common one or type a new department — it&apos;ll be created automatically. Leave blank to unassign.</p>
         </div>
       </div>
 
@@ -217,6 +223,57 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
           <button className="btn btn-primary" type="submit">Save compensation</button>
         </div>
       </form>
+
+      {/* project assignments — which projects this person works on, role & responsibilities */}
+      <SectionTitle>Project assignments</SectionTitle>
+      {employeeProjects.length === 0 ? (
+        <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>Not assigned to any project yet. Assign this person to one or more projects with a role and responsibilities below.</p>
+      ) : (
+        <div className="card overflow-x-auto mb-3">
+          <table className="w-full text-sm">
+            <thead><tr><th className="th text-left">Project</th><th className="th text-left" style={{ minWidth: 360 }}>Role &amp; responsibilities</th><th className="th" /></tr></thead>
+            <tbody>
+              {employeeProjects.map((a) => (
+                <tr key={a.id}>
+                  <td className="td"><Link href={`/projects/${a.projectId}`} className="hover:underline" style={{ color: "var(--brand)" }}>{a.code}</Link> {a.title}</td>
+                  <td className="td">
+                    <form action={upsertEmployeeProjectAction} className="flex flex-wrap items-end gap-2">
+                      <input type="hidden" name="employeeId" value={e.id} />
+                      <input type="hidden" name="projectId" value={a.projectId} />
+                      <input type="hidden" name="back" value={`/hr/employees/${e.id}`} />
+                      <input name="role" defaultValue={a.role ?? ""} className="input" placeholder="Role" style={{ width: 150 }} />
+                      <input name="responsibilities" defaultValue={a.responsibilities ?? ""} className="input" placeholder="Responsibilities" style={{ minWidth: 200, flex: 1 }} />
+                      <button className="btn btn-sm" type="submit">Save</button>
+                    </form>
+                  </td>
+                  <td className="td text-right">
+                    <form action={removeEmployeeProjectAction}>
+                      <input type="hidden" name="employeeId" value={e.id} />
+                      <input type="hidden" name="projectId" value={a.projectId} />
+                      <input type="hidden" name="back" value={`/hr/employees/${e.id}`} />
+                      <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Remove</button>
+                    </form>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {assignableProjects.length > 0 ? (
+        <form action={upsertEmployeeProjectAction} className="card p-4 grid sm:grid-cols-4 gap-3 items-end mb-6">
+          <input type="hidden" name="employeeId" value={e.id} />
+          <input type="hidden" name="back" value={`/hr/employees/${e.id}`} />
+          <Field label="Project"><select name="projectId" required className="select"><option value="">— choose —</option>{assignableProjects.map((p) => <option key={p.id} value={p.id}>{p.code} {p.title}</option>)}</select></Field>
+          <Field label="Role"><input name="role" className="input" placeholder="e.g. Data Manager" /></Field>
+          <Field label="Responsibilities"><input name="responsibilities" className="input" /></Field>
+          <button className="btn btn-primary" type="submit">Assign to project</button>
+        </form>
+      ) : projects.length > 0 ? (
+        <p className="text-sm mb-6" style={{ color: "var(--muted)" }}>This person is assigned to all available projects.</p>
+      ) : (
+        <p className="text-sm mb-6" style={{ color: "var(--muted)" }}>No projects exist yet to assign.</p>
+      )}
 
       {/* recent leave */}
       <SectionTitle>Recent leave</SectionTitle>

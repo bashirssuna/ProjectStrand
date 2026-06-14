@@ -1,13 +1,14 @@
 import Link from "next/link";
 import { requireCollabOrg } from "../_guard";
 import { q, one } from "@/server/db";
-import { PageHeader, SectionTitle, Field, Badge, Empty } from "@/components/ui";
+import { PageHeader, SectionTitle, Field, Empty } from "@/components/ui";
 import { label } from "@/lib/enums";
-import { updateCollaboratorStatusAction, linkCollaboratorToProjectAction, unlinkCollaboratorFromProjectAction, createCollaboratorLoginAction } from "@/app/actions";
+import { updateCollaboratorStatusAction, linkCollaboratorToProjectAction, unlinkCollaboratorFromProjectAction, createCollaboratorLoginAction, updateCollaboratorDetailsAction, updateCollaboratorProjectRoleAction } from "@/app/actions";
 
 const ROLES = [["co_investigator", "Co-Investigator"], ["partner", "Partner"], ["funder", "Funder"], ["advisor", "Advisor"], ["sub_grantee", "Sub-grantee"], ["collaborator", "Collaborator"]];
+const TYPES = [["institution", "Institution"], ["individual", "Individual"], ["funder", "Funder"], ["partner_ngo", "Partner NGO"], ["government", "Government"]];
 
-export default async function CollaboratorDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ linked?: string; err?: string; login?: string; loginerr?: string }> }) {
+export default async function CollaboratorDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ linked?: string; err?: string; login?: string; loginerr?: string; saved?: string }> }) {
   const { id } = await params;
   const { orgId } = await requireCollabOrg();
   const sp = await searchParams;
@@ -52,26 +53,45 @@ export default async function CollaboratorDetail({ params, searchParams }: { par
         )}
       </div>
 
+      {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved.</div>}
+      {sp.err === "name" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>A name is required.</div>}
+
       <SectionTitle>Details</SectionTitle>
-      <div className="card p-4 mb-6 grid sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-        {[["Status", c.status], ["Email", c.email], ["Phone", c.phone], ["Country", c.country], ["Expertise", c.expertise], ["Website", c.website], ["Address", c.address], ["Note", c.note]].map(([k, v]) => (
-          <div key={k as string} className="flex justify-between gap-4 border-b py-1" style={{ borderColor: "var(--border)" }}>
-            <span style={{ color: "var(--muted)" }}>{k}</span><span className="text-right">{v || "—"}</span>
-          </div>
-        ))}
-      </div>
+      <form action={updateCollaboratorDetailsAction} className="card p-4 mb-6 grid sm:grid-cols-3 gap-3">
+        <input type="hidden" name="collaboratorId" value={c.id} />
+        <Field label="Prefix"><input name="prefix" defaultValue={c.prefix ?? ""} className="input" placeholder="Dr, Prof…" /></Field>
+        <div className="sm:col-span-2"><Field label="Name"><input name="name" required defaultValue={c.name} className="input" /></Field></div>
+        <Field label="Type"><select name="collaboratorType" defaultValue={c.collaboratorType} className="select">{TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></Field>
+        <div className="sm:col-span-2"><Field label="Home institution"><input name="organisation" defaultValue={c.organisation ?? ""} className="input" /></Field></div>
+        <Field label="Email"><input name="email" defaultValue={c.email ?? ""} className="input" /></Field>
+        <Field label="Phone"><input name="phone" defaultValue={c.phone ?? ""} className="input" /></Field>
+        <Field label="Country"><input name="country" defaultValue={c.country ?? ""} className="input" /></Field>
+        <div className="sm:col-span-2"><Field label="Area of expertise"><input name="expertise" defaultValue={c.expertise ?? ""} className="input" /></Field></div>
+        <Field label="Website"><input name="website" defaultValue={c.website ?? ""} className="input" /></Field>
+        <div className="sm:col-span-3"><Field label="Address"><input name="address" defaultValue={c.address ?? ""} className="input" /></Field></div>
+        <div className="sm:col-span-3"><Field label="Note"><input name="note" defaultValue={c.note ?? ""} className="input" /></Field></div>
+        <div className="sm:col-span-3 flex justify-end"><button className="btn btn-primary" type="submit">Save details</button></div>
+      </form>
 
       <SectionTitle>Project roles</SectionTitle>
       {links.length === 0 ? <p className="text-sm mb-4" style={{ color: "var(--muted)" }}>Not linked to any project yet.</p> : (
         <div className="card overflow-x-auto mb-4">
           <table className="w-full text-sm">
-            <thead><tr><th className="th text-left">Project</th><th className="th text-left">Role</th><th className="th text-left">Responsibilities</th><th className="th" /></tr></thead>
+            <thead><tr><th className="th text-left">Project</th><th className="th text-left" style={{ minWidth: 360 }}>Role &amp; responsibilities</th><th className="th" /></tr></thead>
             <tbody>
               {links.map((l) => (
                 <tr key={l.id}>
                   <td className="td"><Link href={`/projects/${l.projectId}`} className="hover:underline" style={{ color: "var(--brand)" }}>{l.code}</Link> {l.title}</td>
-                  <td className="td"><Badge tone="info">{label(l.role)}</Badge></td>
-                  <td className="td">{l.responsibilities ?? "—"}</td>
+                  <td className="td">
+                    <form action={updateCollaboratorProjectRoleAction} className="flex flex-wrap items-end gap-2">
+                      <input type="hidden" name="projectId" value={l.projectId} />
+                      <input type="hidden" name="linkId" value={l.id} />
+                      <input type="hidden" name="back" value={`/collaborations/${c.id}`} />
+                      <select name="role" defaultValue={l.role} className="select" style={{ width: 150 }}>{ROLES.map(([v, lbl]) => <option key={v} value={v}>{lbl}</option>)}</select>
+                      <input name="responsibilities" defaultValue={l.responsibilities ?? ""} className="input" placeholder="Responsibilities" style={{ minWidth: 200, flex: 1 }} />
+                      <button className="btn btn-sm" type="submit">Save</button>
+                    </form>
+                  </td>
                   <td className="td text-right"><form action={unlinkCollaboratorFromProjectAction}><input type="hidden" name="collaboratorId" value={c.id} /><input type="hidden" name="linkId" value={l.id} /><button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Remove</button></form></td>
                 </tr>
               ))}

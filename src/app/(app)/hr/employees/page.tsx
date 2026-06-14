@@ -5,6 +5,7 @@ import { PageHeader, SectionTitle, Field, Badge, Empty } from "@/components/ui";
 import { money } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { addEmployeeAction } from "@/app/actions";
+import { COMMON_DEPARTMENTS } from "@/lib/departments";
 
 export default async function EmployeesPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string }> }) {
   const { orgId } = await requireHrOrg();
@@ -52,7 +53,11 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
         <Field label="Last name"><input name="lastName" required className="input" /></Field>
         <Field label="Staff no."><input name="staffNo" className="input" /></Field>
         <Field label="Job title"><input name="jobTitle" className="input" /></Field>
-        <Field label="Department"><select name="departmentId" className="select"><option value="">— none —</option>{departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select></Field>
+        <Field label="Department"><input name="departmentName" list="dept-options" className="input" placeholder="Pick or type a department…" />
+          <datalist id="dept-options">
+            {Array.from(new Map([...departments.map((d) => d.name), ...COMMON_DEPARTMENTS].map((n) => [n.toLowerCase(), n])).values()).map((n) => <option key={n} value={n} />)}
+          </datalist>
+        </Field>
         <Field label="Contract type">
           <select name="contractType" className="select"><option value="permanent">Permanent</option><option value="fixed_term">Fixed term</option><option value="casual">Casual</option><option value="consultant">Consultant</option><option value="intern">Intern</option></select>
         </Field>

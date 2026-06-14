@@ -4,6 +4,7 @@ import { getProjectAccess } from "@/server/policy";
 import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { PrintButton } from "@/components/print-button";
+import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
 
 // Print-friendly payment voucher on the institution's letterhead.
 // Shows the three-stage workflow: Prepared by → Checked by → Approved by.
@@ -16,7 +17,7 @@ export default async function PrintVoucherPage({ params }: { params: Promise<{ v
     preparedByName: string | null; preparedById: string | null; preparedAt: string;
     checkedByName: string | null; checkedById: string | null; checkedAt: string | null;
     approvedByName: string | null; approvedById: string | null; approvedAt: string | null;
-    reqNumber: string; reqTitle: string; org: string; projectTitle: string; projectCode: string; currency: string;
+    reqNumber: string; reqTitle: string; org: string; orgId: string; projectTitle: string; projectCode: string; currency: string;
   }>(
     `SELECT pv.project_id AS "projectId", pv.number, pv.payee, pv.amount, pv.method, pv.reference,
             pv.purpose, pv.created_at AS "createdAt", pv.status,
@@ -24,7 +25,7 @@ export default async function PrintVoucherPage({ params }: { params: Promise<{ v
             pv.checked_by_name AS "checkedByName", pv.checked_by AS "checkedById", pv.checked_at AS "checkedAt",
             pv.approved_by_name AS "approvedByName", pv.approved_by AS "approvedById", pv.approved_at AS "approvedAt",
             r.number AS "reqNumber", r.title AS "reqTitle",
-            o.name AS org, p.title AS "projectTitle", p.code AS "projectCode", p.currency
+            o.name AS org, p.org_id AS "orgId", p.title AS "projectTitle", p.code AS "projectCode", p.currency
      FROM payment_voucher pv
      JOIN requisition r ON r.id=pv.requisition_id
      JOIN project p ON p.id=pv.project_id
@@ -47,13 +48,11 @@ export default async function PrintVoucherPage({ params }: { params: Promise<{ v
     { label: "Approved by", name: v.approvedByName, at: v.approvedAt, sig: await sigFor(v.approvedById) },
   ];
 
+  const lh = await getLetterhead(v.orgId);
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "40px 32px", fontSize: 14 }}>
-        <div style={{ textAlign: "center", borderBottom: "3px double #111", paddingBottom: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>{v.org}</div>
-          <div style={{ fontSize: 12, marginTop: 4, color: "#444" }}>Project: {v.projectCode} — {v.projectTitle}</div>
-        </div>
+        <PrintLetterhead lh={lh} subtitle={`Project: ${v.projectCode} — ${v.projectTitle}`} />
 
         <div style={{ textAlign: "center", margin: "18px 0 6px", fontSize: 17, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
           Payment Voucher

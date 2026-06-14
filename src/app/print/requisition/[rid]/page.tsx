@@ -4,6 +4,7 @@ import { getProjectAccess } from "@/server/policy";
 import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { PrintButton } from "@/components/print-button";
+import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
 
 // Print-friendly requisition on the institution's letterhead (use the browser's
 // Print → Save as PDF for the physical archive copy).
@@ -17,13 +18,13 @@ export default async function PrintRequisitionPage({ params }: { params: Promise
   const req = (await one<{
     number: string; title: string; amount: number; status: string; justification: string | null;
     neededBy: string | null; payee: string | null; createdAt: string; requester: string | null;
-    budgetLine: string | null; projectTitle: string; projectCode: string; currency: string; org: string;
+    budgetLine: string | null; projectTitle: string; projectCode: string; currency: string; org: string; orgId: string;
   }>(
     `SELECT r.number, r.title, r.amount, r.status, r.justification, r.needed_by AS "neededBy",
             r.payee, r.created_at AS "createdAt",
             (SELECT name FROM app_user WHERE id=r.requested_by_id) AS requester,
             (SELECT code || ' — ' || description FROM budget_line WHERE id=r.budget_line_id) AS "budgetLine",
-            p.title AS "projectTitle", p.code AS "projectCode", p.currency, o.name AS org
+            p.title AS "projectTitle", p.code AS "projectCode", p.currency, o.name AS org, p.org_id AS "orgId"
      FROM requisition r JOIN project p ON p.id=r.project_id JOIN organization o ON o.id=p.org_id
      WHERE r.id=$1`, [rid]
   ))!;
@@ -42,16 +43,11 @@ export default async function PrintRequisitionPage({ params }: { params: Promise
   );
   const c = req.currency;
 
+  const lh = await getLetterhead(req.orgId);
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>
       <div style={{ maxWidth: 760, margin: "0 auto", padding: "40px 32px", fontSize: 14 }}>
-        {/* Letterhead */}
-        <div style={{ textAlign: "center", borderBottom: "3px double #111", paddingBottom: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: 0.4 }}>{req.org}</div>
-          <div style={{ fontSize: 12, marginTop: 4, color: "#444" }}>
-            Project: {req.projectCode} — {req.projectTitle}
-          </div>
-        </div>
+        <PrintLetterhead lh={lh} subtitle={`Project: ${req.projectCode} — ${req.projectTitle}`} />
 
         <div style={{ textAlign: "center", margin: "18px 0 6px", fontSize: 17, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
           Fund Requisition

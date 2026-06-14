@@ -4,6 +4,7 @@ import { getUserOrg } from "@/server/services/accounts";
 import { q, one } from "@/server/db";
 import { money } from "@/lib/format";
 import { PrintButton } from "@/components/print-button";
+import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
 
 export default async function PrintPayslip({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -29,13 +30,11 @@ export default async function PrintPayslip({ params }: { params: Promise<{ id: s
   const td: React.CSSProperties = { border: "1px solid #999", padding: "6px 10px" };
   const tdR: React.CSSProperties = { ...td, textAlign: "right", whiteSpace: "nowrap" };
 
+  const lh = await getLetterhead(s.orgId);
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>
       <div style={{ maxWidth: 680, margin: "0 auto", padding: "40px 32px", fontSize: 14 }}>
-        <div style={{ textAlign: "center", borderBottom: "3px double #111", paddingBottom: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>{s.orgName}</div>
-          <div style={{ fontSize: 15, fontWeight: 600, marginTop: 6, letterSpacing: 1 }}>PAYSLIP — {s.period}</div>
-        </div>
+        <PrintLetterhead lh={lh} subtitle={`PAYSLIP — ${s.period}`} />
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 16, fontSize: 13 }}>
           <div><div style={{ fontWeight: 600 }}>{s.empFirst} {s.empLast}</div><div style={{ color: "#444" }}>{s.jobTitle ?? ""}</div>{s.staffNo && <div style={{ color: "#444" }}>Staff no: {s.staffNo}</div>}</div>
           <div style={{ textAlign: "right", color: "#444" }}>{s.bankName && <div>{s.bankName}</div>}{s.bankAccount && <div>A/C: {s.bankAccount}</div>}</div>

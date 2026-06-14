@@ -2000,3 +2000,57 @@ export async function setDisplayCurrencyAction(formData: FormData) {
   revalidatePath("/dashboard");
   redirect("/dashboard?ccy=1");
 }
+
+/* ============================ ORGANIZATION PROFILE ============================ */
+// Org admins manage their organisation's profile. Logo + address feed the
+// letterhead used on all printouts.
+export async function updateOrgProfileAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  await q(`UPDATE organization SET name=$2, address=$3, email=$4, phone=$5, website=$6, slogan=$7,
+             mission=$8, vision=$9, values_text=$10, objectives=$11, registration_no=$12,
+             social_twitter=$13, social_linkedin=$14, social_facebook=$15, brand_color=$16, updated_at=now()
+           WHERE id=$1`,
+    [orgId, String(formData.get("name") || "").trim() || "Organisation",
+     String(formData.get("address") || "") || null, String(formData.get("email") || "") || null,
+     String(formData.get("phone") || "") || null, String(formData.get("website") || "") || null,
+     String(formData.get("slogan") || "") || null, String(formData.get("mission") || "") || null,
+     String(formData.get("vision") || "") || null, String(formData.get("valuesText") || "") || null,
+     String(formData.get("objectives") || "") || null, String(formData.get("registrationNo") || "") || null,
+     String(formData.get("twitter") || "") || null, String(formData.get("linkedin") || "") || null,
+     String(formData.get("facebook") || "") || null, String(formData.get("brandColor") || "#2f5d62")]);
+  await writeAudit({ orgId, userId, action: "update", entity: "organization", entityId: orgId });
+  redirect("/organization?saved=1");
+}
+
+export async function uploadOrgLogoAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const file = formData.get("logo") as File | null;
+  if (!file || file.size === 0) redirect("/organization?err=logo");
+  if (file.size > 2 * 1024 * 1024) redirect("/organization?err=logosize");
+  const buf = Buffer.from(await file.arrayBuffer());
+  const mime = mimeFor(file.name);
+  const dataUrl = `data:${mime};base64,${buf.toString("base64")}`;
+  await q(`UPDATE organization SET logo_data_url=$2, updated_at=now() WHERE id=$1`, [orgId, dataUrl]);
+  redirect("/organization?logo=ok");
+}
+export async function removeOrgLogoAction() {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`UPDATE organization SET logo_data_url=NULL WHERE id=$1`, [orgId]);
+  redirect("/organization?logo=removed");
+}
+
+// Admin password change from the organisation page (redirects back there).
+export async function changeAdminPasswordAction(formData: FormData) {
+  const user = await requireUser();
+  const current = String(formData.get("current") || "");
+  const next = String(formData.get("next") || "");
+  const confirm = String(formData.get("confirm") || "");
+  const row = await one<{ passwordHash: string | null }>(`SELECT password_hash AS "passwordHash" FROM app_user WHERE id=$1`, [user.id]);
+  if (!row || !verifyPassword(current, row.passwordHash)) redirect("/organization?pw=wrong");
+  if (next !== confirm) redirect("/organization?pw=Passwords%20do%20not%20match");
+  const pe = passwordError(next);
+  if (pe) redirect(`/organization?pw=${encodeURIComponent(pe)}`);
+  await q(`UPDATE app_user SET password_hash=$2, updated_at=now() WHERE id=$1`, [user.id, await hashPassword(next)]);
+  await writeAudit({ userId: user.id, action: "update", entity: "app_user", entityId: user.id, meta: { passwordChanged: true } });
+  redirect("/organization?pw=changed");
+}

@@ -4,6 +4,7 @@ import { getUserOrg } from "@/server/services/accounts";
 import { q, one } from "@/server/db";
 import { money, fmtDate } from "@/lib/format";
 import { PrintButton } from "@/components/print-button";
+import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
 
 export default async function PrintInvoice({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -28,13 +29,12 @@ export default async function PrintInvoice({ params }: { params: Promise<{ id: s
   const td: React.CSSProperties = { border: "1px solid #999", padding: "7px 10px" };
   const tdR: React.CSSProperties = { ...td, textAlign: "right", whiteSpace: "nowrap" };
 
+  const lh = await getLetterhead(inv.orgId);
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "40px 32px", fontSize: 14 }}>
-        <div style={{ textAlign: "center", borderBottom: "3px double #111", paddingBottom: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>{inv.orgName}</div>
-          <div style={{ fontSize: 16, fontWeight: 600, marginTop: 6, letterSpacing: 1 }}>INVOICE</div>
-        </div>
+        <PrintLetterhead lh={lh} />
+        <div style={{ textAlign: "center", fontSize: 16, fontWeight: 600, letterSpacing: 1, margin: "12px 0" }}>INVOICE</div>
         <div style={{ display: "flex", justifyContent: "space-between", marginTop: 16, fontSize: 13 }}>
           <div>
             <div style={{ color: "#666" }}>Bill to:</div>

@@ -5,6 +5,7 @@ import { one } from "@/server/db";
 import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { PrintButton } from "@/components/print-button";
+import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
 
 export default async function PrintReceipt({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -25,13 +26,12 @@ export default async function PrintReceipt({ params }: { params: Promise<{ id: s
   const td: React.CSSProperties = { border: "1px solid #999", padding: "7px 10px", width: 170, fontWeight: 600, background: "#f5f5f5" };
   const tv: React.CSSProperties = { border: "1px solid #999", padding: "7px 10px" };
 
+  const lh = await getLetterhead(r.orgId);
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>
       <div style={{ maxWidth: 640, margin: "0 auto", padding: "40px 32px", fontSize: 14 }}>
-        <div style={{ textAlign: "center", borderBottom: "3px double #111", paddingBottom: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>{r.orgName}</div>
-          <div style={{ fontSize: 16, fontWeight: 600, marginTop: 6, letterSpacing: 1 }}>OFFICIAL RECEIPT</div>
-        </div>
+        <PrintLetterhead lh={lh} />
+        <div style={{ textAlign: "center", fontSize: 16, fontWeight: 600, letterSpacing: 1, margin: "12px 0" }}>OFFICIAL RECEIPT</div>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#444", margin: "14px 0" }}>
           <span>No: <strong style={{ color: "#111" }}>{r.number}</strong></span>
           <span>Date: {fmtDate(r.receiptDate)}</span>

@@ -1116,4 +1116,22 @@ CREATE TABLE IF NOT EXISTS project_collaborator (
 
 -- Dual-currency display on the dashboard: a secondary display currency per org.
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS display_currency text;
+
+-- ===========================================================================
+-- ORGANIZATION PROFILE (managed by org admins; logo + address = letterhead)
+-- ===========================================================================
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS logo_data_url text;   -- uploaded logo (data URL, used on printouts)
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS address text;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS phone text;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS website text;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS slogan text;          -- motto / tagline
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS mission text;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS vision text;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS values_text text;     -- 'values' is reserved-ish; use values_text
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS objectives text;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS registration_no text;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS social_twitter text;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS social_linkedin text;
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS social_facebook text;
 `;

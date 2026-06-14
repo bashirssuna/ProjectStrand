@@ -46,13 +46,22 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <NavLink href="/portal/profile">◔ My profile &amp; CV</NavLink>
           </nav>
         ) : (
-          <nav className="p-3 space-y-1">
+          <nav className="p-3 space-y-1 overflow-y-auto">
             <NavLink href="/dashboard">▣ Dashboard</NavLink>
             <NavLink href="/projects">❏ Projects</NavLink>
-            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/finance">₿ Institution Finance</NavLink>}
-            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/hr">⚇ Human Resources</NavLink>}
-            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/procurement">⛁ Procurement</NavLink>}
-            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/collaborations">⚘ Collaborations</NavLink>}
+
+            {(org?.isOrgAdmin || user.isSuperAdmin) && (
+              <>
+                <div className="text-[10px] font-semibold uppercase tracking-wider px-3 pt-4 pb-1" style={{ color: "var(--muted)" }}>Institution</div>
+                <NavLink href="/finance">₿ Finance &amp; Accounting</NavLink>
+                <NavLink href="/hr">⚇ Human Resources</NavLink>
+                <NavLink href="/procurement">⛁ Procurement</NavLink>
+                <NavLink href="/collaborations">⚘ Collaborations</NavLink>
+              </>
+            )}
+
+            <div className="text-[10px] font-semibold uppercase tracking-wider px-3 pt-4 pb-1" style={{ color: "var(--muted)" }}>Account</div>
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization">⌂ Organisation</NavLink>}
             {user.isSuperAdmin && <NavLink href="/admin">⚙ Admin Center</NavLink>}
             <NavLink href="/profile">◔ My Profile</NavLink>
           </nav>

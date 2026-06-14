@@ -5,6 +5,7 @@ import { one } from "@/server/db";
 import { institutionalStatements } from "@/server/services/ledger";
 import { money } from "@/lib/format";
 import { PrintButton } from "@/components/print-button";
+import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
 
 export default async function PrintFinanceStatements() {
   const user = await requireUser();
@@ -12,6 +13,7 @@ export default async function PrintFinanceStatements() {
   if (!org || (!org.isOrgAdmin && !user.isSuperAdmin)) redirect("/dashboard");
   const c = (await one<{ currency: string }>(`SELECT currency FROM project WHERE org_id=$1 ORDER BY created_at LIMIT 1`, [org.id]))?.currency ?? "USD";
   const fs = await institutionalStatements(org.id);
+  const lh = await getLetterhead(org.id);
 
   const th: React.CSSProperties = { border: "1px solid #999", padding: "6px 9px", background: "#f5f5f5", textAlign: "left", fontSize: 12 };
   const td: React.CSSProperties = { border: "1px solid #999", padding: "6px 9px" };
@@ -21,10 +23,7 @@ export default async function PrintFinanceStatements() {
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>
       <div style={{ maxWidth: 800, margin: "0 auto", padding: "40px 32px", fontSize: 14 }}>
-        <div style={{ textAlign: "center", borderBottom: "3px double #111", paddingBottom: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>{fs.orgName}</div>
-          <div style={{ fontSize: 12, marginTop: 4, color: "#444" }}>Financial Statements · as at {fs.asOf} · all amounts in {c}</div>
-        </div>
+        <PrintLetterhead lh={lh} subtitle={`Financial Statements · as at ${fs.asOf} · all amounts in ${c}`} />
 
         <h2 style={{ fontSize: 15, marginTop: 24, marginBottom: 6 }}>Statement of Income &amp; Expenditure</h2>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>

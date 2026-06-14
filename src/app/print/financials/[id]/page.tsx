@@ -3,6 +3,8 @@ import { can } from "@/server/policy";
 import { getFinancialStatements } from "@/server/services/financials";
 import { money, fmtDate } from "@/lib/format";
 import { PrintButton } from "@/components/print-button";
+import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
+import { one } from "@/server/db";
 
 // Letterhead, print-to-PDF version of all financial statements.
 export default async function PrintFinancialsPage({ params }: { params: Promise<{ id: string }> }) {
@@ -10,6 +12,8 @@ export default async function PrintFinancialsPage({ params }: { params: Promise<
   if (!(await can(id, "project.view"))) redirect("/dashboard");
   const fs = await getFinancialStatements(id);
   const c = fs.currency;
+  const orgRow = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [id]);
+  const lh = await getLetterhead(orgRow?.orgId ?? "");
   const th: React.CSSProperties = { border: "1px solid #999", padding: "6px 9px", background: "#f5f5f5", textAlign: "left", fontSize: 12 };
   const td: React.CSSProperties = { border: "1px solid #999", padding: "6px 9px" };
   const tdR: React.CSSProperties = { ...td, textAlign: "right", whiteSpace: "nowrap" };
@@ -17,10 +21,7 @@ export default async function PrintFinancialsPage({ params }: { params: Promise<
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>
       <div style={{ maxWidth: 820, margin: "0 auto", padding: "40px 32px", fontSize: 14 }}>
-        <div style={{ textAlign: "center", borderBottom: "3px double #111", paddingBottom: 14 }}>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>{fs.projectCode} — {fs.projectTitle}</div>
-          <div style={{ fontSize: 12, marginTop: 4, color: "#444" }}>Financial Statements · as at {fmtDate(fs.asOf)} · all amounts in {c}</div>
-        </div>
+        <PrintLetterhead lh={lh} subtitle={`${fs.projectCode} — ${fs.projectTitle} · Financial Statements as at ${fmtDate(fs.asOf)} · all amounts in ${c}`} />
 
         {/* 1. Variance */}
         <h2 style={{ fontSize: 15, marginTop: 24, marginBottom: 6 }}>1. Budget vs Expenditure (Variance)</h2>

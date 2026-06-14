@@ -25,6 +25,8 @@ export default async function ProcurementHome() {
           ["/procurement/bills", "Vendor bills", "Payables raised from orders."],
           ["/procurement/vendors", "Vendors", "Supplier directory & details."],
           ["/procurement/config", "Thresholds", "Quotation rules by purchase value."],
+          ["/procurement/plan", "Procurement plan", "Planned purchases by period vs budget."],
+          ["/procurement/ethics", "Ethics register", "Conflict-of-interest & gifts log."],
         ].map(([href, t, d]) => (
           <Link key={href} href={href === "/procurement/orders/" ? "/procurement/requests" : href} className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
             <div className="font-display font-semibold">{t}</div>

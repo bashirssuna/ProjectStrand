@@ -1366,4 +1366,123 @@ CREATE TABLE IF NOT EXISTS procurement_config (
   enforce boolean NOT NULL DEFAULT true,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ===========================================================================
+-- ASSET CONDITION, VERIFICATION & DISPOSAL (Finance Policy §18)
+-- ===========================================================================
+ALTER TABLE fixed_asset ADD COLUMN IF NOT EXISTS condition text NOT NULL DEFAULT 'good'; -- good | fair | poor
+ALTER TABLE fixed_asset ADD COLUMN IF NOT EXISTS last_verified_on date;
+ALTER TABLE fixed_asset ADD COLUMN IF NOT EXISTS disposal_method text;        -- sold | donated | scrapped | transferred
+ALTER TABLE fixed_asset ADD COLUMN IF NOT EXISTS disposal_proceeds numeric(18,2);
+ALTER TABLE fixed_asset ADD COLUMN IF NOT EXISTS disposal_approved_by text;   -- PI / authority who approved
+ALTER TABLE fixed_asset ADD COLUMN IF NOT EXISTS disposal_note text;
+ALTER TABLE fixed_asset ADD COLUMN IF NOT EXISTS disposed_on date;
+
+CREATE TABLE IF NOT EXISTS asset_verification (
+  id text PRIMARY KEY,
+  asset_id text NOT NULL REFERENCES fixed_asset(id) ON DELETE CASCADE,
+  verified_on date NOT NULL,
+  verified_by text, verified_by_name text,
+  condition_found text,        -- good | fair | poor | missing
+  location_found text,
+  discrepancy_note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_assetverif_asset ON asset_verification(asset_id);
+
+-- ===========================================================================
+-- PER DIEM & TRAVEL (Finance Policy §14.2): rate schedule + claims that require
+-- an activity report before they can be approved or paid.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS perdiem_rate (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  category text NOT NULL,         -- e.g. 'In-country', 'Senior staff', 'Driver'
+  daily_rate numeric(18,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'UGX',
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS perdiem_claim (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
+  employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  traveller_name text NOT NULL,
+  purpose text,
+  destination text,
+  start_date date, end_date date,
+  days numeric(8,2) NOT NULL DEFAULT 0,
+  daily_rate numeric(18,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'UGX',
+  total numeric(18,2) NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'draft',  -- draft | approved | paid | rejected
+  activity_report text,
+  approved_by text, approved_by_name text, approved_at timestamptz,
+  paid_on date, payment_ref text,
+  created_by text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_perdiem_org ON perdiem_claim(org_id);
+CREATE TABLE IF NOT EXISTS perdiem_evidence (
+  id text PRIMARY KEY,
+  claim_id text NOT NULL REFERENCES perdiem_claim(id) ON DELETE CASCADE,
+  name text NOT NULL, storage_key text, mime_type text, size_bytes integer,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- ===========================================================================
+-- PROCUREMENT PLAN (Procurement Policy §5): consolidated planned purchases by
+-- period, reviewed against budget before procurement proceeds.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS procurement_plan_item (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
+  period text NOT NULL,          -- e.g. '2025-Q3' or 'FY2025/26'
+  description text NOT NULL,
+  category text,
+  quantity numeric(18,2) NOT NULL DEFAULT 1,
+  est_unit_cost numeric(18,2) NOT NULL DEFAULT 0,
+  est_total numeric(18,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'UGX',
+  needed_by date,
+  department text,
+  status text NOT NULL DEFAULT 'planned',  -- planned | requested | procured | cancelled
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_procplan_org ON procurement_plan_item(org_id);
+
+-- ===========================================================================
+-- ETHICS REGISTERS (Procurement Policy §7, §11): conflict-of-interest
+-- declarations and a gifts/inducements log.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS coi_declaration (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  person_name text NOT NULL,
+  role text,
+  related_to text,        -- supplier / procurement / vendor concerned
+  nature text NOT NULL,   -- description of the conflict
+  action text,            -- e.g. 'withdrew from evaluation'
+  declared_on date NOT NULL,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_coi_org ON coi_declaration(org_id);
+CREATE TABLE IF NOT EXISTS gift_log (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  person_name text NOT NULL,
+  supplier_name text,
+  description text NOT NULL,
+  est_value numeric(18,2),
+  currency text NOT NULL DEFAULT 'UGX',
+  received_on date NOT NULL,
+  action_taken text,      -- e.g. 'declined', 'surrendered to project'
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_gift_org ON gift_log(org_id);
 `;

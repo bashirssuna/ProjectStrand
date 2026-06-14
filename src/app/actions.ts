@@ -1476,13 +1476,14 @@ export async function createAssetAction(formData: FormData) {
   const cost = Number(formData.get("cost") || 0);
   if (!name || cost <= 0) redirect("/finance/assets?err=1");
   const aid = id("fa");
-  await q(`INSERT INTO fixed_asset (id, org_id, project_id, tag, name, category, acquired_on, cost, currency, useful_life_months, salvage_value, location, custodian, note)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+  await q(`INSERT INTO fixed_asset (id, org_id, project_id, tag, name, category, acquired_on, cost, currency, useful_life_months, salvage_value, location, custodian, note, condition)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     [aid, orgId, String(formData.get("projectId") || "") || null, String(formData.get("tag") || "") || null, name,
      String(formData.get("category") || "") || null, String(formData.get("acquiredOn") || new Date().toISOString().slice(0, 10)),
      cost, String(formData.get("currency") || "USD"), Number(formData.get("usefulLifeMonths") || 36),
      Number(formData.get("salvageValue") || 0), String(formData.get("location") || "") || null,
-     String(formData.get("custodian") || "") || null, String(formData.get("note") || "") || null]);
+     String(formData.get("custodian") || "") || null, String(formData.get("note") || "") || null,
+     String(formData.get("condition") || "good")]);
   if (formData.get("postAcquisition") === "on") await postAssetAcquisition(aid, { id: userId, name: userName });
   await writeAudit({ orgId, userId, action: "create", entity: "fixed_asset", entityId: aid, after: { name, cost } });
   redirect("/finance/assets?created=1");
@@ -1496,10 +1497,32 @@ export async function depreciateAssetAction(formData: FormData) {
   redirect(`/finance/assets?dep=${res ? "ok" : "none"}`);
 }
 export async function disposeAssetAction(formData: FormData) {
-  const { orgId } = await requireInstitutionFinance();
+  const { orgId, userId } = await requireInstitutionFinance();
   const aid = String(formData.get("assetId"));
-  await q(`UPDATE fixed_asset SET status='disposed' WHERE id=$1 AND org_id=$2`, [aid, orgId]);
-  revalidatePath("/finance/assets");
+  await q(`UPDATE fixed_asset SET status='disposed', disposal_method=$3, disposal_proceeds=$4,
+             disposal_approved_by=$5, disposal_note=$6, disposed_on=$7 WHERE id=$1 AND org_id=$2`,
+    [aid, orgId, String(formData.get("disposalMethod") || "") || null,
+     formData.get("disposalProceeds") ? Number(formData.get("disposalProceeds")) : null,
+     String(formData.get("disposalApprovedBy") || "") || null, String(formData.get("disposalNote") || "") || null,
+     String(formData.get("disposedOn") || "") || new Date().toISOString().slice(0, 10)]);
+  await writeAudit({ orgId, userId, action: "update", entity: "fixed_asset", entityId: aid, after: { disposed: true } });
+  redirect("/finance/assets?disposed=1");
+}
+
+export async function verifyAssetAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const aid = String(formData.get("assetId"));
+  if (!(await one(`SELECT id FROM fixed_asset WHERE id=$1 AND org_id=$2`, [aid, orgId]))) redirect("/finance/assets");
+  const conditionFound = String(formData.get("conditionFound") || "good");
+  const on = String(formData.get("verifiedOn") || "") || new Date().toISOString().slice(0, 10);
+  await q(`INSERT INTO asset_verification (id, asset_id, verified_on, verified_by, verified_by_name, condition_found, location_found, discrepancy_note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("av"), aid, on, userId, userName, conditionFound,
+     String(formData.get("locationFound") || "") || null, String(formData.get("discrepancyNote") || "") || null]);
+  if (conditionFound === "missing") await q(`UPDATE fixed_asset SET last_verified_on=$2 WHERE id=$1`, [aid, on]);
+  else await q(`UPDATE fixed_asset SET condition=$2, last_verified_on=$3 WHERE id=$1`, [aid, conditionFound, on]);
+  await writeAudit({ orgId, userId, action: "update", entity: "asset_verification", entityId: aid, after: { conditionFound } });
+  redirect("/finance/assets?verified=1");
 }
 
 // ---- Bank reconciliation ----
@@ -2557,4 +2580,167 @@ export async function saveProcurementConfigAction(formData: FormData) {
   await upsertProcurementConfig(orgId, cfg);
   await writeAudit({ orgId, userId, action: "update", entity: "procurement_config", entityId: orgId, after: cfg });
   redirect("/procurement/config?saved=1");
+}
+
+/* ===================== PER DIEM & TRAVEL (Finance Policy §14.2) ===================== */
+export async function addPerdiemRateAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const category = String(formData.get("category") || "").trim();
+  if (!category) redirect("/finance/perdiem?err=ratefields");
+  await q(`INSERT INTO perdiem_rate (id, org_id, category, daily_rate, currency, note) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id("pdr"), orgId, category, Number(formData.get("dailyRate") || 0),
+     String(formData.get("currency") || "UGX").trim() || "UGX", String(formData.get("note") || "") || null]);
+  redirect("/finance/perdiem?saved=1");
+}
+export async function deletePerdiemRateAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`DELETE FROM perdiem_rate WHERE id=$1 AND org_id=$2`, [String(formData.get("rateId")), orgId]);
+  redirect("/finance/perdiem?saved=1");
+}
+export async function createPerdiemClaimAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const traveller = String(formData.get("travellerName") || "").trim();
+  if (!traveller) redirect("/finance/perdiem?err=claimfields");
+  const days = Number(formData.get("days") || 0);
+  const rate = Number(formData.get("dailyRate") || 0);
+  const cid = id("pdc");
+  await q(`INSERT INTO perdiem_claim (id, org_id, project_id, employee_id, traveller_name, purpose, destination,
+             start_date, end_date, days, daily_rate, currency, total, status, activity_report, created_by, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'draft',$14,$15,$16)`,
+    [cid, orgId, String(formData.get("projectId") || "") || null, String(formData.get("employeeId") || "") || null,
+     traveller, String(formData.get("purpose") || "") || null, String(formData.get("destination") || "") || null,
+     String(formData.get("startDate") || "") || null, String(formData.get("endDate") || "") || null,
+     days, rate, String(formData.get("currency") || "UGX").trim() || "UGX", days * rate,
+     String(formData.get("activityReport") || "") || null, userId, userName]);
+  redirect(`/finance/perdiem/${cid}`);
+}
+export async function updatePerdiemReportAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const cid = String(formData.get("claimId"));
+  await q(`UPDATE perdiem_claim SET activity_report=$3, purpose=COALESCE($4,purpose), destination=COALESCE($5,destination),
+             days=$6, daily_rate=$7, total=$6*$7 WHERE id=$1 AND org_id=$2 AND status IN ('draft','rejected')`,
+    [cid, orgId, String(formData.get("activityReport") || "") || null,
+     String(formData.get("purpose") || "") || null, String(formData.get("destination") || "") || null,
+     Number(formData.get("days") || 0), Number(formData.get("dailyRate") || 0)]);
+  redirect(`/finance/perdiem/${cid}?saved=1`);
+}
+export async function approvePerdiemAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const cid = String(formData.get("claimId"));
+  // Gate: per-diem cannot be approved without an activity report (Policy §14.2).
+  const claim = await one<{ report: string | null; status: string }>(`SELECT activity_report AS report, status FROM perdiem_claim WHERE id=$1 AND org_id=$2`, [cid, orgId]);
+  if (!claim) redirect("/finance/perdiem");
+  if (!claim.report || !claim.report.trim()) redirect(`/finance/perdiem/${cid}?err=noreport`);
+  await q(`UPDATE perdiem_claim SET status='approved', approved_by=$3, approved_by_name=$4, approved_at=now() WHERE id=$1 AND org_id=$2`,
+    [cid, orgId, userId, userName]);
+  await writeAudit({ orgId, userId, action: "approve", entity: "perdiem_claim", entityId: cid });
+  redirect(`/finance/perdiem/${cid}?saved=1`);
+}
+export async function rejectPerdiemAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const cid = String(formData.get("claimId"));
+  await q(`UPDATE perdiem_claim SET status='rejected' WHERE id=$1 AND org_id=$2`, [cid, orgId]);
+  redirect(`/finance/perdiem/${cid}?saved=1`);
+}
+export async function markPerdiemPaidAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const cid = String(formData.get("claimId"));
+  await q(`UPDATE perdiem_claim SET status='paid', paid_on=$3, payment_ref=$4 WHERE id=$1 AND org_id=$2 AND status='approved'`,
+    [cid, orgId, String(formData.get("paidOn") || "") || new Date().toISOString().slice(0, 10), String(formData.get("paymentRef") || "") || null]);
+  redirect(`/finance/perdiem/${cid}?saved=1`);
+}
+export async function deletePerdiemClaimAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`DELETE FROM perdiem_claim WHERE id=$1 AND org_id=$2`, [String(formData.get("claimId")), orgId]);
+  redirect("/finance/perdiem");
+}
+export async function uploadPerdiemEvidenceAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const cid = String(formData.get("claimId"));
+  if (!(await one(`SELECT id FROM perdiem_claim WHERE id=$1 AND org_id=$2`, [cid, orgId]))) redirect("/finance/perdiem");
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) redirect(`/finance/perdiem/${cid}?err=file`);
+  const buf = Buffer.from(await file.arrayBuffer());
+  const evId = id("pde");
+  const key = await saveUpload(evId, file.name, buf);
+  await q(`INSERT INTO perdiem_evidence (id, claim_id, name, storage_key, mime_type, size_bytes) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [evId, cid, file.name, key, mimeFor(file.name), buf.length]);
+  redirect(`/finance/perdiem/${cid}?saved=1`);
+}
+export async function deletePerdiemEvidenceAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const cid = String(formData.get("claimId"));
+  const ev = await one<{ storageKey: string | null }>(
+    `SELECT pe.storage_key AS "storageKey" FROM perdiem_evidence pe JOIN perdiem_claim pc ON pc.id=pe.claim_id
+     WHERE pe.id=$1 AND pc.org_id=$2`, [String(formData.get("evidenceId")), orgId]);
+  if (ev?.storageKey) await deleteUpload(ev.storageKey);
+  await q(`DELETE FROM perdiem_evidence WHERE id=$1 AND claim_id IN (SELECT id FROM perdiem_claim WHERE org_id=$2)`,
+    [String(formData.get("evidenceId")), orgId]);
+  redirect(`/finance/perdiem/${cid}?saved=1`);
+}
+
+/* ===================== PROCUREMENT PLAN (Procurement Policy §5) ===================== */
+export async function addPlanItemAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const period = String(formData.get("period") || "").trim();
+  const description = String(formData.get("description") || "").trim();
+  if (!period || !description) redirect("/procurement/plan?err=fields");
+  const qty = Number(formData.get("quantity") || 1);
+  const unit = Number(formData.get("estUnitCost") || 0);
+  await q(`INSERT INTO procurement_plan_item (id, org_id, project_id, period, description, category, quantity, est_unit_cost, est_total, currency, needed_by, department, status, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'planned',$13)`,
+    [id("ppi"), orgId, String(formData.get("projectId") || "") || null, period, description,
+     String(formData.get("category") || "") || null, qty, unit, qty * unit,
+     String(formData.get("currency") || "UGX").trim() || "UGX", String(formData.get("neededBy") || "") || null,
+     String(formData.get("department") || "") || null, String(formData.get("note") || "") || null]);
+  redirect("/procurement/plan?saved=1");
+}
+export async function updatePlanItemStatusAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`UPDATE procurement_plan_item SET status=$3 WHERE id=$1 AND org_id=$2`,
+    [String(formData.get("itemId")), orgId, String(formData.get("status") || "planned")]);
+  redirect("/procurement/plan?saved=1");
+}
+export async function deletePlanItemAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`DELETE FROM procurement_plan_item WHERE id=$1 AND org_id=$2`, [String(formData.get("itemId")), orgId]);
+  redirect("/procurement/plan?saved=1");
+}
+
+/* ===================== ETHICS REGISTERS (Procurement Policy §7, §11) ===================== */
+export async function addCoiAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const person = String(formData.get("personName") || "").trim();
+  const nature = String(formData.get("nature") || "").trim();
+  if (!person || !nature) redirect("/procurement/ethics?err=coifields");
+  await q(`INSERT INTO coi_declaration (id, org_id, person_name, role, related_to, nature, action, declared_on, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [id("coi"), orgId, person, String(formData.get("role") || "") || null, String(formData.get("relatedTo") || "") || null,
+     nature, String(formData.get("action") || "") || null,
+     String(formData.get("declaredOn") || "") || new Date().toISOString().slice(0, 10), String(formData.get("note") || "") || null]);
+  redirect("/procurement/ethics?saved=1");
+}
+export async function deleteCoiAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`DELETE FROM coi_declaration WHERE id=$1 AND org_id=$2`, [String(formData.get("coiId")), orgId]);
+  redirect("/procurement/ethics?saved=1");
+}
+export async function addGiftAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const person = String(formData.get("personName") || "").trim();
+  const description = String(formData.get("description") || "").trim();
+  if (!person || !description) redirect("/procurement/ethics?err=giftfields");
+  await q(`INSERT INTO gift_log (id, org_id, person_name, supplier_name, description, est_value, currency, received_on, action_taken, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [id("gift"), orgId, person, String(formData.get("supplierName") || "") || null, description,
+     formData.get("estValue") ? Number(formData.get("estValue")) : null,
+     String(formData.get("currency") || "UGX").trim() || "UGX",
+     String(formData.get("receivedOn") || "") || new Date().toISOString().slice(0, 10),
+     String(formData.get("actionTaken") || "") || null, String(formData.get("note") || "") || null]);
+  redirect("/procurement/ethics?saved=1");
+}
+export async function deleteGiftAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`DELETE FROM gift_log WHERE id=$1 AND org_id=$2`, [String(formData.get("giftId")), orgId]);
+  redirect("/procurement/ethics?saved=1");
 }

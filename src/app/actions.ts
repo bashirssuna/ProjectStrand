@@ -2958,3 +2958,14 @@ export async function savePlatformSettingsAction(formData: FormData) {
   });
   redirect("/admin?settings=saved");
 }
+
+// Add a department to the org register directly from Access management, so it
+// becomes selectable in the bulk tool without leaving the page.
+export async function addDepartmentFromAccessAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/organization/access?dept=empty");
+  await q(`INSERT INTO department (id, org_id, name) VALUES ($1,$2,$3) ON CONFLICT (org_id, name) DO NOTHING`, [id("dept"), orgId, name]);
+  await writeAudit({ orgId, userId, action: "create", entity: "department", entityId: name, after: { name } });
+  redirect("/organization/access?dept=added");
+}

@@ -3,11 +3,11 @@ import { requireOrgAdmin } from "../_guard";
 import { q } from "@/server/db";
 import { PageHeader, SectionTitle, Field, Badge, Empty } from "@/components/ui";
 import { PROJECT_ROLES, label } from "@/lib/enums";
-import { bulkSetDepartmentAccessAction } from "@/app/actions";
+import { bulkSetDepartmentAccessAction, addDepartmentFromAccessAction } from "@/app/actions";
 
 type Person = { id: string; email: string; name: string; status: string; isStaff: boolean; isCollaborator: boolean; department: string | null; jobTitle: string | null; isOrgAdmin: boolean };
 
-export default async function AccessManagePage({ searchParams }: { searchParams: Promise<{ saved?: string; err?: string }> }) {
+export default async function AccessManagePage({ searchParams }: { searchParams: Promise<{ saved?: string; err?: string; dept?: string }> }) {
   const { orgId, orgName } = await requireOrgAdmin();
   const sp = await searchParams;
 
@@ -60,9 +60,18 @@ export default async function AccessManagePage({ searchParams }: { searchParams:
 
       {/* Department bulk assign */}
       <SectionTitle>Grant a department access to a project</SectionTitle>
+      <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>
+        This dropdown lists the departments that exist in <strong>{orgName}</strong> — {departments.length === 0 ? "none yet" : <><strong>{departments.length}</strong> so far ({departments.map((d) => d.name).join(", ")})</>}. Departments come from your HR register and from staff assignments; add one below or in <Link href="/hr/departments" className="hover:underline" style={{ color: "var(--brand)" }}>HR → Departments</Link>, then it appears here.
+      </p>
+      <form action={addDepartmentFromAccessAction} className="card p-3 mb-4 flex flex-wrap items-end gap-2">
+        <Field label="Add a department"><input name="name" required className="input" placeholder="e.g. Finance, Field Operations" /></Field>
+        <button className="btn btn-sm" type="submit">Add department</button>
+        {sp.dept === "added" && <span className="text-xs" style={{ color: "var(--ok)" }}>Department added — it&apos;s now selectable below.</span>}
+        {sp.dept === "empty" && <span className="text-xs" style={{ color: "var(--danger)" }}>Enter a department name.</span>}
+      </form>
       {departments.length === 0 || projects.length === 0 ? (
         <div className="card p-4 mb-6 text-sm" style={{ color: "var(--muted)" }}>
-          {departments.length === 0 ? "Create departments and assign staff to them (HR → Departments) " : "Create a project "}
+          {departments.length === 0 ? "Add a department above (or in HR → Departments) and assign staff to it " : "Create a project "}
           to use bulk department assignment.
         </div>
       ) : (
@@ -71,7 +80,7 @@ export default async function AccessManagePage({ searchParams }: { searchParams:
           <Field label="Project"><select name="projectId" required className="select">{projects.map((p) => <option key={p.id} value={p.id}>{p.code}</option>)}</select></Field>
           <Field label="Role"><select name="role" className="select">{PROJECT_ROLES.map((r) => <option key={r} value={r}>{label(r)}</option>)}<option value="none">Remove access</option></select></Field>
           <div className="flex justify-end"><button className="btn btn-primary" type="submit">Apply to department</button></div>
-          <p className="sm:col-span-4 text-xs" style={{ color: "var(--muted)" }}>Applies to every employee in the department who has a login. Existing fine-grained permissions are preserved when only the role changes.</p>
+          <p className="sm:col-span-4 text-xs" style={{ color: "var(--muted)" }}>Applies to every member of staff assigned to this department who has a login. Project collaborators without an HR record (shown under &ldquo;Unassigned / external&rdquo; below) aren&apos;t in a department — set their access individually with &ldquo;Manage&rdquo;. Existing fine-grained permissions are preserved when only the role changes.</p>
         </form>
       )}
 

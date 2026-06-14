@@ -4,6 +4,14 @@ import { q } from "@/server/db";
 import { PageHeader, SectionTitle, Field, Empty } from "@/components/ui";
 import { addDepartmentAction } from "@/app/actions";
 
+// Common organisational units offered as quick presets; users can still type a
+// custom name for anything not in the list.
+const COMMON_DEPARTMENTS = [
+  "Human Resources", "Finance", "Research", "Procurement", "Transport",
+  "Welfare", "Marketing", "Field Operations", "Customer Support",
+  "Legal", "Information Technology", "Administration",
+];
+
 export default async function DepartmentsPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string }> }) {
   const { orgId } = await requireHrOrg();
   const sp = await searchParams;
@@ -31,11 +39,23 @@ export default async function DepartmentsPage({ searchParams }: { searchParams: 
       )}
 
       <SectionTitle>Add a department</SectionTitle>
-      <form action={addDepartmentAction} className="card p-4 grid sm:grid-cols-3 gap-3">
-        <Field label="Name"><input name="name" required className="input" placeholder="e.g. Field Operations" /></Field>
+      <form action={addDepartmentAction} className="card p-4 grid sm:grid-cols-2 gap-3">
+        <Field label="Common department">
+          <select name="preset" className="select" defaultValue="">
+            <option value="">— select a common one —</option>
+            {COMMON_DEPARTMENTS.filter((name) => !departments.some((d) => d.name.toLowerCase() === name.toLowerCase())).map((name) => (
+              <option key={name} value={name}>{name}</option>
+            ))}
+            <option value="__other">Other — type a custom name →</option>
+          </select>
+        </Field>
+        <Field label="Or custom name"><input name="customName" className="input" placeholder="e.g. Data Science" /></Field>
         <Field label="Head (optional)"><select name="headEmployeeId" className="select"><option value="">— none —</option>{employees.map((e) => <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>)}</select></Field>
         <Field label="Description"><input name="description" className="input" /></Field>
-        <div className="sm:col-span-3 flex justify-end"><button className="btn btn-primary" type="submit">Add department</button></div>
+        <div className="sm:col-span-2 flex items-center justify-between">
+          <span className="text-xs" style={{ color: "var(--muted)" }}>Pick a common department or type a custom name. A custom name takes precedence if both are filled.</span>
+          <button className="btn btn-primary" type="submit">Add department</button>
+        </div>
       </form>
     </div>
   );

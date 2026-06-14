@@ -1192,4 +1192,17 @@ CREATE INDEX IF NOT EXISTS idx_empcomp_project ON employee_compensation(project_
 -- ===========================================================================
 ALTER TABLE collaborator ADD COLUMN IF NOT EXISTS user_id text REFERENCES app_user(id) ON DELETE SET NULL;
 ALTER TABLE app_user ADD COLUMN IF NOT EXISTS is_collaborator boolean NOT NULL DEFAULT false;
+
+-- ===========================================================================
+-- PURCHASE REQUEST → PROJECT BUDGET LINKAGE
+-- A purchase request can be charged to a specific project budget line. When the
+-- request is approved, its estimated total is committed against that line so it
+-- shows up in the project's budget as reserved funds (reducing the remaining
+-- balance). source/source_id on commitment give traceability and prevent a
+-- request from being committed twice.
+-- ===========================================================================
+ALTER TABLE purchase_request ADD COLUMN IF NOT EXISTS budget_line_id text REFERENCES budget_line(id) ON DELETE SET NULL;
+ALTER TABLE commitment ADD COLUMN IF NOT EXISTS source text;      -- e.g. 'purchase_request'
+ALTER TABLE commitment ADD COLUMN IF NOT EXISTS source_id text;   -- originating record id
+CREATE INDEX IF NOT EXISTS idx_commitment_source ON commitment(source, source_id);
 `;

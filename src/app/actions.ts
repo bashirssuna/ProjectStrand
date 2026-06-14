@@ -1668,18 +1668,30 @@ export async function createPurchaseRequestAction(formData: FormData) {
   const qty = Number(formData.get("quantity") || 1);
   const unitCost = Number(formData.get("unitCost") || 0);
   if (!title || !desc) redirect("/procurement/requests?err=1");
+  // A budget line, when chosen, charges this request to a specific project. The
+  // line uniquely determines its project, so we derive project_id from it to
+  // keep the two consistent (the line's project wins over the project select).
+  let projectId = String(formData.get("projectId") || "") || null;
+  const budgetLineId = String(formData.get("budgetLineId") || "") || null;
+  if (budgetLineId) {
+    const ln = await one<{ projectId: string }>(
+      `SELECT b.project_id AS "projectId" FROM budget_line bl JOIN budget b ON b.id=bl.budget_id
+       JOIN project p ON p.id=b.project_id WHERE bl.id=$1 AND p.org_id=$2`, [budgetLineId, orgId]
+    );
+    if (ln) projectId = ln.projectId;
+  }
   const prId = id("pr");
   const number = await nextNumProc(orgId, "purchase_request", "PR");
   const amount = Math.round((qty * unitCost + Number.EPSILON) * 100) / 100;
-  await q(`INSERT INTO purchase_request (id, org_id, project_id, number, title, justification, needed_by, currency, estimated_total, status, requested_by, requested_by_name)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'submitted',$10,$11)`,
-    [prId, orgId, String(formData.get("projectId") || "") || null, number, title,
+  await q(`INSERT INTO purchase_request (id, org_id, project_id, budget_line_id, number, title, justification, needed_by, currency, estimated_total, status, requested_by, requested_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'submitted',$11,$12)`,
+    [prId, orgId, projectId, budgetLineId, number, title,
      String(formData.get("justification") || "") || null, String(formData.get("neededBy") || "") || null,
      String(formData.get("currency") || "USD"), amount, userId, userName]);
   await q(`INSERT INTO purchase_request_item (id, request_id, description, quantity, unit, estimated_unit_cost, amount)
            VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [id("pri"), prId, desc, qty, String(formData.get("unit") || "") || null, unitCost, amount]);
-  await writeAudit({ orgId, userId, action: "create", entity: "purchase_request", entityId: number, after: { title, amount } });
+  await writeAudit({ orgId, userId, action: "create", entity: "purchase_request", entityId: number, after: { title, amount, projectId, budgetLineId } });
   redirect("/procurement/requests?created=1");
 }
 export async function decidePurchaseRequestAction(formData: FormData) {
@@ -1749,7 +1761,10 @@ import { createEmployeeLogin, employeeForUser } from "@/server/services/hr";
 
 export async function addDepartmentAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
-  const name = String(formData.get("name") || "").trim();
+  // Accept either a typed custom name (takes precedence) or a chosen preset.
+  const custom = String(formData.get("customName") || "").trim();
+  const preset = String(formData.get("preset") || "").trim();
+  const name = custom || (preset && preset !== "__other" ? preset : "");
   if (!name) redirect("/hr/departments?err=1");
   await q(`INSERT INTO department (id, org_id, name, head_employee_id, description) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (org_id, name) DO NOTHING`,
     [id("dept"), orgId, name, String(formData.get("headEmployeeId") || "") || null, String(formData.get("description") || "") || null]);

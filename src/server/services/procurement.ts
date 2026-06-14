@@ -11,11 +11,29 @@ async function nextNum(orgId: string, table: string, prefix: string): Promise<st
 
 /* --------- Purchase requests --------- */
 export async function decidePurchaseRequest(orgId: string, prId: string, decision: "approved" | "rejected", by: { id: string; name: string }, note?: string): Promise<void> {
-  const pr = await one<{ status: string }>(`SELECT status FROM purchase_request WHERE id=$1 AND org_id=$2`, [prId, orgId]);
+  const pr = await one<{ status: string; projectId: string | null; budgetLineId: string | null; estimatedTotal: number; number: string; title: string }>(
+    `SELECT status, project_id AS "projectId", budget_line_id AS "budgetLineId", estimated_total::float AS "estimatedTotal", number, title
+     FROM purchase_request WHERE id=$1 AND org_id=$2`, [prId, orgId]
+  );
   if (!pr) throw new Error("Purchase request not found.");
   if (pr.status !== "submitted") throw new Error("Only a submitted request can be decided.");
   await q(`UPDATE purchase_request SET status=$2, decided_by=$3, decided_by_name=$4, decided_at=now(), decision_note=$5 WHERE id=$1`,
     [prId, decision, by.id, by.name, note ?? null]);
+
+  // On approval, reserve the estimated total against the chosen project budget
+  // line as a commitment, so it reflects in the project's budget (reserved
+  // funds, reducing remaining). Guarded by source_id so it can never double-post.
+  if (decision === "approved" && pr.projectId && pr.budgetLineId && pr.estimatedTotal > 0) {
+    const already = await one<{ id: string }>(`SELECT id FROM commitment WHERE source=$1 AND source_id=$2`, ["purchase_request", prId]);
+    if (!already) {
+      await q(
+        `INSERT INTO commitment (id, project_id, budget_line_id, amount, date, note, source, source_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id("cmt"), pr.projectId, pr.budgetLineId, pr.estimatedTotal, new Date().toISOString().slice(0, 10),
+         `${pr.number}: ${pr.title}`, "purchase_request", prId]
+      );
+    }
+  }
 }
 
 /* --------- Purchase orders --------- */

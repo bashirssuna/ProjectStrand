@@ -16,12 +16,14 @@ export type CompConfigRow = {
   nssfEmployerPct: number; nssfEmployeePct: number; consultantWhtPct: number;
   payeMethod: PayeMethod; payeFlatPct: number; payeBands: string | null;
   nssfEmployerFromFringe: boolean; nssfEmployeeFromFringe: boolean;
+  lstEnabled: boolean; lstBands: string | null; lstDivisor: number;
 };
 
 export const COMP_CONFIG_DEFAULTS: CompConfigRow = {
-  nssfEmployerPct: 15, nssfEmployeePct: 5, consultantWhtPct: 6,
+  nssfEmployerPct: 10, nssfEmployeePct: 5, consultantWhtPct: 6,
   payeMethod: "uganda", payeFlatPct: 0, payeBands: null,
   nssfEmployerFromFringe: true, nssfEmployeeFromFringe: false,
+  lstEnabled: false, lstBands: null, lstDivisor: 12,
 };
 
 export async function getCompConfig(orgId: string): Promise<CompConfigRow> {
@@ -29,7 +31,8 @@ export async function getCompConfig(orgId: string): Promise<CompConfigRow> {
     `SELECT nssf_employer_pct::float AS "nssfEmployerPct", nssf_employee_pct::float AS "nssfEmployeePct",
             consultant_wht_pct::float AS "consultantWhtPct", paye_method AS "payeMethod",
             paye_flat_pct::float AS "payeFlatPct", paye_bands AS "payeBands",
-            nssf_employer_from_fringe AS "nssfEmployerFromFringe", nssf_employee_from_fringe AS "nssfEmployeeFromFringe"
+            nssf_employer_from_fringe AS "nssfEmployerFromFringe", nssf_employee_from_fringe AS "nssfEmployeeFromFringe",
+            lst_enabled AS "lstEnabled", lst_bands AS "lstBands", lst_divisor::int AS "lstDivisor"
      FROM comp_config WHERE org_id=$1`, [orgId]
   );
   return row ?? { ...COMP_CONFIG_DEFAULTS };
@@ -38,19 +41,23 @@ export async function getCompConfig(orgId: string): Promise<CompConfigRow> {
 export async function upsertCompConfig(orgId: string, c: CompConfigRow): Promise<void> {
   await q(
     `INSERT INTO comp_config
-       (org_id, nssf_employer_pct, nssf_employee_pct, consultant_wht_pct, paye_method, paye_flat_pct, paye_bands, nssf_employer_from_fringe, nssf_employee_from_fringe, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
+       (org_id, nssf_employer_pct, nssf_employee_pct, consultant_wht_pct, paye_method, paye_flat_pct, paye_bands, nssf_employer_from_fringe, nssf_employee_from_fringe, lst_enabled, lst_bands, lst_divisor, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())
      ON CONFLICT (org_id) DO UPDATE SET
        nssf_employer_pct=$2, nssf_employee_pct=$3, consultant_wht_pct=$4, paye_method=$5,
-       paye_flat_pct=$6, paye_bands=$7, nssf_employer_from_fringe=$8, nssf_employee_from_fringe=$9, updated_at=now()`,
+       paye_flat_pct=$6, paye_bands=$7, nssf_employer_from_fringe=$8, nssf_employee_from_fringe=$9,
+       lst_enabled=$10, lst_bands=$11, lst_divisor=$12, updated_at=now()`,
     [orgId, c.nssfEmployerPct, c.nssfEmployeePct, c.consultantWhtPct, c.payeMethod,
-     c.payeFlatPct, c.payeBands, c.nssfEmployerFromFringe, c.nssfEmployeeFromFringe]
+     c.payeFlatPct, c.payeBands, c.nssfEmployerFromFringe, c.nssfEmployeeFromFringe,
+     c.lstEnabled, c.lstBands, c.lstDivisor]
   );
 }
 
 function toEngineConfig(currency: string, c: CompConfigRow): CompensationConfig {
   let bands: CompensationConfig["payeBands"];
   if (c.payeBands) { try { bands = JSON.parse(c.payeBands); } catch { /* keep undefined → engine defaults */ } }
+  let lstBands: CompensationConfig["lstBands"];
+  if (c.lstBands) { try { lstBands = JSON.parse(c.lstBands); } catch { /* keep undefined → engine defaults */ } }
   return {
     currency,
     nssfEmployerRate: c.nssfEmployerPct / 100,
@@ -61,6 +68,9 @@ function toEngineConfig(currency: string, c: CompConfigRow): CompensationConfig 
     payeBands: bands,
     nssfEmployerFromFringe: c.nssfEmployerFromFringe,
     nssfEmployeeFromFringe: c.nssfEmployeeFromFringe,
+    lstEnabled: c.lstEnabled,
+    lstBands,
+    lstAnnualDivisor: c.lstDivisor,
   };
 }
 

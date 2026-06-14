@@ -23,6 +23,9 @@ export interface CompensationConfig {
   payeBands?: PayeBand[];           // optional override of the default Uganda bands
   nssfEmployerFromFringe: boolean;  // employer NSSF funded from the fringe pool (default true)
   nssfEmployeeFromFringe: boolean;  // employee NSSF funded from fringe instead of gross (default false)
+  lstEnabled?: boolean;             // compute Local Service Tax (default off)
+  lstBands?: LstBand[];             // optional override of the LST schedule
+  lstAnnualDivisor?: number;        // spread the annual LST over N months (default 12)
 }
 
 export interface PayeBand {
@@ -133,6 +136,33 @@ export function computePAYE(gross: number, cfg: CompensationConfig): number {
   return bandedPAYE(gross, cfg.payeBands ?? UGANDA_BANDS);
 }
 
+// ---- Uganda Local Service Tax (LST) ----
+// Annual LST by monthly-income band (UGX), capped at 100,000/yr. Disabled by
+// default; when enabled it is deducted monthly (annual ÷ divisor, default 12).
+export interface LstBand { upTo: number | null; annual: number }
+export const UGANDA_LST_BANDS: LstBand[] = [
+  { upTo: 100000, annual: 0 },
+  { upTo: 200000, annual: 5000 },
+  { upTo: 300000, annual: 10000 },
+  { upTo: 400000, annual: 20000 },
+  { upTo: 500000, annual: 30000 },
+  { upTo: 600000, annual: 40000 },
+  { upTo: 700000, annual: 60000 },
+  { upTo: 800000, annual: 70000 },
+  { upTo: 900000, annual: 80000 },
+  { upTo: 1000000, annual: 90000 },
+  { upTo: null, annual: 100000 },
+];
+
+export function computeLST(gross: number, cfg: CompensationConfig): number {
+  if (!cfg.lstEnabled) return 0;
+  const bands = cfg.lstBands ?? UGANDA_LST_BANDS;
+  let annual = 0;
+  for (const b of bands) { if (b.upTo == null || gross <= b.upTo) { annual = b.annual; break; } }
+  const divisor = cfg.lstAnnualDivisor && cfg.lstAnnualDivisor > 0 ? cfg.lstAnnualDivisor : 12;
+  return annual / divisor;
+}
+
 function computeStaff(e: StaffInput, cfg: CompensationConfig): CompResult {
   const base = e.baseSalary ?? e.grossSalary ?? 0;
   const effort = e.effortPct ?? 1;
@@ -146,6 +176,9 @@ function computeStaff(e: StaffInput, cfg: CompensationConfig): CompResult {
 
   // Additional deductions/savings (SACCO, levies…) — all reduce net take-home.
   const otherDeductions: Deduction[] = (e.otherDeductions ?? []).map((d) => ({ label: d.label, amount: Number(d.amount) || 0, saving: Boolean(d.saving) }));
+  // Local Service Tax (statutory) — prepended as a named deduction when enabled.
+  const lst = computeLST(gross, cfg);
+  if (lst > 0) otherDeductions.unshift({ label: "LST (statutory)", amount: lst, saving: false });
   const otherDeductionsTotal = otherDeductions.reduce((s, d) => s + d.amount, 0);
   const otherSavings = otherDeductions.filter((d) => d.saving).reduce((s, d) => s + d.amount, 0);
 

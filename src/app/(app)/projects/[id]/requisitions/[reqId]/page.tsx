@@ -15,7 +15,7 @@ const ROLE_LABEL: Record<string, string> = { finance_admin: "Finance review", pm
 
 export default async function RequisitionDetailPage({ params, searchParams }: {
   params: Promise<{ id: string; reqId: string }>;
-  searchParams: Promise<{ voucher?: string; edit?: string; retract?: string }>;
+  searchParams: Promise<{ voucher?: string; edit?: string; retract?: string; blocked?: string }>;
 }) {
   const { id, reqId } = await params;
   const sp = await searchParams;
@@ -25,10 +25,13 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
     id: string; number: string; title: string; amount: number; status: string;
     justification: string | null; neededBy: string | null; payee: string | null;
     disbursedAmount: number; budgetLine: string | null; requester: string | null; createdAt: string; requesterId: string | null; budgetLineId: string | null;
+    accountedAmount: number; accountabilityDue: string | null; daysOverdue: number;
   }>(
     `SELECT r.id, r.number, r.title, r.amount, r.status, r.justification,
             r.needed_by AS "neededBy", r.payee, r.disbursed_amount AS "disbursedAmount",
             r.budget_line_id AS "budgetLineId",
+            r.accounted_amount AS "accountedAmount", r.accountability_due AS "accountabilityDue",
+            GREATEST(0, (CURRENT_DATE - r.accountability_due))::int AS "daysOverdue",
             (SELECT code || ' · ' || description FROM budget_line WHERE id=r.budget_line_id) AS "budgetLine",
             (SELECT name FROM app_user WHERE id=r.requested_by_id) AS requester,
             r.created_at AS "createdAt", r.requested_by_id AS "requesterId"
@@ -104,6 +107,18 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
       {sp.edit === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This requisition can no longer be edited — it has already been submitted.</div>}
       {sp.retract === "ok" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Requisition retracted — it's back to draft and you can edit or re-submit it.</div>}
       {sp.retract === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Too late to retract — an approver has already acted on this requisition.</div>}
+      {sp.blocked === "accountability" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
+        Can&apos;t submit: the requester still has unaccounted advances exceeding 25% of their previous disbursement. At least 75% of prior funds must be accounted for first (Finance Policy §13.2). See &quot;Advances awaiting accountability&quot; on the requisitions list.
+      </div>}
+      {req.disbursedAmount > req.accountedAmount + 0.001 && (req.status === "disbursed" || req.status === "partially_funded") && (
+        <div className="card p-3 text-sm" style={req.daysOverdue > 14 ? { color: "var(--danger)", borderColor: "var(--danger)" } : req.daysOverdue > 0 ? { color: "var(--warn)", borderColor: "var(--warn)" } : { color: "var(--muted)" }}>
+          {req.daysOverdue > 14
+            ? `Accountability overdue by ${req.daysOverdue} days — this advance is now treated as a personal liability of ${req.requester ?? "the holder"}, and no further disbursements should be made until it is accounted for (Finance Policy §15.2).`
+            : req.daysOverdue > 0
+            ? `Accountability overdue by ${req.daysOverdue} days. ${money(req.disbursedAmount - req.accountedAmount, c)} of ${money(req.disbursedAmount, c)} is still unaccounted. After 14 days overdue it becomes a personal liability.`
+            : `Accountability due ${req.accountabilityDue ? fmtDate(req.accountabilityDue) : "—"} — ${money(req.disbursedAmount - req.accountedAmount, c)} of ${money(req.disbursedAmount, c)} still to be accounted for (record the expenditure below).`}
+        </div>
+      )}
       <div className="card p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>

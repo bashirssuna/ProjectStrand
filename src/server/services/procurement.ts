@@ -10,6 +10,65 @@ async function nextNum(orgId: string, table: string, prefix: string): Promise<st
 }
 
 /* --------- Purchase requests --------- */
+export type ProcurementConfig = {
+  currency: string; directMax: number; microMax: number;
+  quotesDirect: number; quotesMicro: number; quotesFormal: number; enforce: boolean;
+};
+const PROC_DEFAULTS: ProcurementConfig = {
+  currency: "UGX", directMax: 1000000, microMax: 5000000,
+  quotesDirect: 1, quotesMicro: 3, quotesFormal: 3, enforce: true,
+};
+
+export async function getProcurementConfig(orgId: string): Promise<ProcurementConfig> {
+  const row = await one<ProcurementConfig>(
+    `SELECT currency, direct_max::float AS "directMax", micro_max::float AS "microMax",
+            quotes_direct::int AS "quotesDirect", quotes_micro::int AS "quotesMicro",
+            quotes_formal::int AS "quotesFormal", enforce
+     FROM procurement_config WHERE org_id=$1`, [orgId]
+  );
+  return row ?? { ...PROC_DEFAULTS };
+}
+
+export async function upsertProcurementConfig(orgId: string, c: ProcurementConfig): Promise<void> {
+  await q(
+    `INSERT INTO procurement_config (org_id, currency, direct_max, micro_max, quotes_direct, quotes_micro, quotes_formal, enforce, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8, now())
+     ON CONFLICT (org_id) DO UPDATE SET currency=$2, direct_max=$3, micro_max=$4,
+       quotes_direct=$5, quotes_micro=$6, quotes_formal=$7, enforce=$8, updated_at=now()`,
+    [orgId, c.currency, c.directMax, c.microMax, c.quotesDirect, c.quotesMicro, c.quotesFormal, c.enforce]
+  );
+}
+
+// How many quotations a purchase of this value needs, and which tier it is in.
+export function requiredQuotations(cfg: ProcurementConfig, amount: number): { tier: "direct" | "micro" | "formal"; required: number; label: string } {
+  if (amount <= cfg.directMax) return { tier: "direct", required: cfg.quotesDirect, label: "Direct procurement" };
+  if (amount <= cfg.microMax) return { tier: "micro", required: cfg.quotesMicro, label: "Competitive quotation" };
+  return { tier: "formal", required: cfg.quotesFormal, label: "Formal competitive bidding" };
+}
+
+export type QuotationGate = { tier: string; tierLabel: string; required: number; have: number; ok: boolean; hasSingleSource: boolean; enforce: boolean };
+
+export async function quotationGate(orgId: string, prId: string): Promise<QuotationGate> {
+  const cfg = await getProcurementConfig(orgId);
+  const pr = await one<{ estimatedTotal: number; singleSource: string | null }>(
+    `SELECT estimated_total::float AS "estimatedTotal", single_source_justification AS "singleSource"
+     FROM purchase_request WHERE id=$1 AND org_id=$2`, [prId, orgId]
+  );
+  const amount = pr?.estimatedTotal ?? 0;
+  const tier = requiredQuotations(cfg, amount);
+  const have = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM pr_quotation WHERE request_id=$1`, [prId]))?.c ?? 0;
+  const hasSingleSource = Boolean(pr?.singleSource && pr.singleSource.trim());
+  return { tier: tier.tier, tierLabel: tier.label, required: tier.required, have, ok: have >= tier.required, hasSingleSource, enforce: cfg.enforce };
+}
+
+export async function listQuotations(prId: string) {
+  return q<{ id: string; vendorName: string; amount: number; currency: string; leadTimeDays: number | null; notes: string | null; selected: boolean }>(
+    `SELECT id, vendor_name AS "vendorName", amount::float AS amount, currency,
+            lead_time_days AS "leadTimeDays", notes, selected
+     FROM pr_quotation WHERE request_id=$1 ORDER BY selected DESC, amount ASC`, [prId]
+  );
+}
+
 export async function decidePurchaseRequest(orgId: string, prId: string, decision: "approved" | "rejected", by: { id: string; name: string }, note?: string): Promise<void> {
   const pr = await one<{ status: string; projectId: string | null; budgetLineId: string | null; estimatedTotal: number; number: string; title: string }>(
     `SELECT status, project_id AS "projectId", budget_line_id AS "budgetLineId", estimated_total::float AS "estimatedTotal", number, title
@@ -17,6 +76,16 @@ export async function decidePurchaseRequest(orgId: string, prId: string, decisio
   );
   if (!pr) throw new Error("Purchase request not found.");
   if (pr.status !== "submitted") throw new Error("Only a submitted request can be decided.");
+
+  // Competition gate (Procurement Policy §6): an approval needs the required
+  // number of quotations on file, or a written single-source justification.
+  if (decision === "approved") {
+    const gate = await quotationGate(orgId, prId);
+    if (gate.enforce && !gate.ok && !gate.hasSingleSource) {
+      throw new Error(`${gate.tierLabel} needs ${gate.required} quotation(s); ${gate.have} on file. Add more quotations or record a single-source justification before approving.`);
+    }
+  }
+
   await q(`UPDATE purchase_request SET status=$2, decided_by=$3, decided_by_name=$4, decided_at=now(), decision_note=$5 WHERE id=$1`,
     [prId, decision, by.id, by.name, note ?? null]);
 
@@ -104,6 +173,10 @@ export async function createBillFromPO(orgId: string, poId: string, by: { id: st
     `SELECT project_id AS "projectId", vendor_id AS "vendorId", currency, total::float, status FROM purchase_order WHERE id=$1 AND org_id=$2`, [poId, orgId]
   );
   if (!po) throw new Error("Purchase order not found.");
+  // Three-way match (Procurement Policy §9, §14.1): no bill/payment can be raised
+  // for a purchase order until goods have been received against it (a GRN exists).
+  const grn = await one<{ ok: number }>(`SELECT 1 AS ok FROM goods_received_note WHERE po_id=$1 LIMIT 1`, [poId]);
+  if (!grn) throw new Error("Three-way match: record a Goods Received Note for this order before raising a bill — you cannot pay for goods that have not been received.");
   const billId = id("bill");
   const number = await nextNum(orgId, "vendor_bill", "BILL");
   await q(`INSERT INTO vendor_bill (id, org_id, project_id, po_id, vendor_id, number, bill_date, due_date, currency, total, status, expense_account_id, created_by, created_by_name)

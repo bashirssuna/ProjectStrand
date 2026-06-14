@@ -2,8 +2,9 @@ import Link from "next/link";
 import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
 import { budgetLineRollups } from "@/server/services/budget";
+import { outstandingAdvances } from "@/server/services/requisitions";
 import { createRequisitionAction } from "@/app/actions";
-import { SectionTitle, Empty, StatusBadge, Field } from "@/components/ui";
+import { SectionTitle, Empty, StatusBadge, Field, Badge } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
 import { blockStaff } from "../_staffblock";
 
@@ -20,6 +21,7 @@ export default async function RequisitionsPage({ params }: { params: Promise<{ i
      FROM requisition r LEFT JOIN app_user u ON u.id = r.requested_by_id
      WHERE r.project_id=$1 ORDER BY r.created_at DESC`, [id]
   );
+  const advances = await outstandingAdvances(id);
 
   const bud = await one<{ id: string }>(`SELECT id FROM budget WHERE project_id=$1 ORDER BY version DESC LIMIT 1`, [id]);
   const lines = bud ? await budgetLineRollups(bud.id) : [];
@@ -29,6 +31,41 @@ export default async function RequisitionsPage({ params }: { params: Promise<{ i
 
   return (
     <div className="space-y-7">
+      {advances.length > 0 && (
+        <div>
+          <SectionTitle>Advances awaiting accountability</SectionTitle>
+          <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>
+            Disbursed funds must be fully accounted for within 60 days. Anyone whose unaccounted balance exceeds 25% of their last disbursement
+            cannot raise a new requisition until they account for at least 75% of it.
+          </p>
+          <div className="card overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr>
+                <th className="th text-left">Requisition</th><th className="th text-left">Holder</th>
+                <th className="th text-right">Disbursed</th><th className="th text-right">Accounted</th>
+                <th className="th text-right">Outstanding</th><th className="th text-left">Due</th><th className="th text-left">State</th>
+              </tr></thead>
+              <tbody>
+                {advances.map((a) => (
+                  <tr key={a.id}>
+                    <td className="td"><Link href={`/projects/${id}/requisitions/${a.id}`} className="hover:underline" style={{ color: "var(--brand)" }}>{a.number}</Link> <span style={{ color: "var(--muted)" }}>{a.title}</span></td>
+                    <td className="td">{a.requesterName ?? "—"}</td>
+                    <td className="td text-right tabular-nums">{money(a.disbursed, c)}</td>
+                    <td className="td text-right tabular-nums">{money(a.accounted, c)}</td>
+                    <td className="td text-right tabular-nums">{money(a.outstanding, c)}</td>
+                    <td className="td">{a.due ? fmtDate(a.due) : "—"}</td>
+                    <td className="td">
+                      {a.state === "liability" ? <Badge tone="danger">Personal liability ({a.daysOverdue}d over)</Badge>
+                        : a.state === "overdue" ? <Badge tone="warn">Overdue {a.daysOverdue}d</Badge>
+                        : <Badge tone="info">Open</Badge>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
       <div>
         <SectionTitle>Requisitions</SectionTitle>
         {reqs.length === 0 ? (

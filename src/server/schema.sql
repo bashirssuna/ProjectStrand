@@ -1148,7 +1148,7 @@ ALTER TABLE organization ADD COLUMN IF NOT EXISTS social_facebook text;
 -- numbers (15 = 15%). Defaults reflect the institution's stated practice.
 CREATE TABLE IF NOT EXISTS comp_config (
   org_id text PRIMARY KEY REFERENCES organization(id) ON DELETE CASCADE,
-  nssf_employer_pct numeric(7,4) NOT NULL DEFAULT 15,   -- employer NSSF, % of gross (a saving from fringe)
+  nssf_employer_pct numeric(7,4) NOT NULL DEFAULT 10,   -- employer NSSF, % of gross (statutory UG = 10; a saving from fringe)
   nssf_employee_pct numeric(7,4) NOT NULL DEFAULT 5,    -- employee NSSF, % of gross (a saving)
   consultant_wht_pct numeric(7,4) NOT NULL DEFAULT 6,   -- withholding tax on consultant funds, %
   paye_method text NOT NULL DEFAULT 'uganda',           -- uganda | flat | none
@@ -1291,3 +1291,77 @@ CREATE INDEX IF NOT EXISTS idx_subpay_award ON subaward_payment(subaward_id);
 -- Employees may record an alternative (personal) email; the primary email is
 -- managed by HR and stays read-only to the employee.
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS alternative_email text;
+
+-- ===========================================================================
+-- ADVANCE ACCOUNTABILITY CONTROLS (VITAL HMB Finance Policy §13.2, §15)
+-- Track how much of a disbursed advance has been accounted for, when it was
+-- disbursed, and the 60-day accountability deadline. Enables the "75% rule"
+-- (no new advance while >25% of the previous one is unaccounted) and overdue /
+-- personal-liability escalation.
+-- ===========================================================================
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS accounted_amount double precision NOT NULL DEFAULT 0;
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS disbursed_on timestamptz;
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS accountability_due date;
+
+-- ===========================================================================
+-- STATUTORY DEDUCTIONS & REMITTANCE (VITAL HMB Finance Policy §17)
+-- Employer NSSF default aligned to the statutory 10%, plus optional Local
+-- Service Tax, and a register that tracks PAYE/NSSF/LST/WHT remittances with
+-- their due dates (15th of the following month) and proof of payment.
+-- ===========================================================================
+ALTER TABLE comp_config ALTER COLUMN nssf_employer_pct SET DEFAULT 10;
+ALTER TABLE comp_config ADD COLUMN IF NOT EXISTS lst_enabled boolean NOT NULL DEFAULT false;
+ALTER TABLE comp_config ADD COLUMN IF NOT EXISTS lst_bands text;            -- optional JSON LST schedule
+ALTER TABLE comp_config ADD COLUMN IF NOT EXISTS lst_divisor integer NOT NULL DEFAULT 12;
+
+CREATE TABLE IF NOT EXISTS statutory_remittance (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  period text NOT NULL,                -- the pay period, e.g. '2026-05'
+  tax_type text NOT NULL,              -- paye | nssf | lst | wht
+  amount numeric(18,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'UGX',
+  due_date date NOT NULL,              -- statutory deadline (15th of following month)
+  paid_on date,                        -- when remitted (null = outstanding)
+  reference text,                      -- URA/NSSF receipt or transaction reference
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_remit_org ON statutory_remittance(org_id);
+
+-- ===========================================================================
+-- PROCUREMENT COMPETITION (VITAL HMB Procurement Policy §6, §7)
+-- Quotations captured against a purchase request, a configurable threshold
+-- matrix that sets how many quotes each value tier needs, and a single-source
+-- justification when fewer can be obtained. Plus the three-way-match gate
+-- (enforced in code: no vendor bill without a Goods Received Note).
+-- ===========================================================================
+ALTER TABLE purchase_request ADD COLUMN IF NOT EXISTS single_source_justification text;
+
+CREATE TABLE IF NOT EXISTS pr_quotation (
+  id text PRIMARY KEY,
+  request_id text NOT NULL REFERENCES purchase_request(id) ON DELETE CASCADE,
+  vendor_id text REFERENCES vendor(id),
+  vendor_name text NOT NULL,
+  amount numeric(18,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'UGX',
+  lead_time_days integer,
+  notes text,
+  selected boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_quotation_request ON pr_quotation(request_id);
+
+-- Org-level procurement thresholds (in the config currency). Defaults mirror the
+-- policy: ≤1,000,000 → 1 quote; ≤5,000,000 → 3 quotes; above → formal bids (3).
+CREATE TABLE IF NOT EXISTS procurement_config (
+  org_id text PRIMARY KEY REFERENCES organization(id) ON DELETE CASCADE,
+  currency text NOT NULL DEFAULT 'UGX',
+  direct_max numeric(18,2) NOT NULL DEFAULT 1000000,
+  micro_max numeric(18,2) NOT NULL DEFAULT 5000000,
+  quotes_direct integer NOT NULL DEFAULT 1,
+  quotes_micro integer NOT NULL DEFAULT 3,
+  quotes_formal integer NOT NULL DEFAULT 3,
+  enforce boolean NOT NULL DEFAULT true,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);

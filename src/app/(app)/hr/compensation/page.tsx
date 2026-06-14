@@ -32,6 +32,9 @@ export default async function CompensationPage({ searchParams }: { searchParams:
         <div />
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="nssfEmployerFromFringe" defaultChecked={cfg.nssfEmployerFromFringe} /> Employer NSSF drawn from fringe pool</label>
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="nssfEmployeeFromFringe" defaultChecked={cfg.nssfEmployeeFromFringe} /> Employee NSSF from fringe (not gross)</label>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="lstEnabled" defaultChecked={cfg.lstEnabled} /> Deduct Local Service Tax (LST)</label>
+        <Field label="LST spread over N months"><input type="number" step="1" name="lstDivisor" defaultValue={cfg.lstDivisor} className="input" /></Field>
+        <div className="sm:col-span-3 text-xs" style={{ color: "var(--muted)" }}>LST uses the standard Uganda annual schedule (capped UGX 100,000), spread across the chosen number of months. It only applies to UGX-denominated pay above the thresholds. Leave off if LST isn&apos;t applicable in your jurisdiction.</div>
         <div className="sm:col-span-3 flex items-center justify-between">
           <span className="text-xs" style={{ color: "var(--muted)" }}>Statutory NSSF in Uganda is 10% employer / 5% employee — adjust to match your policy. Nothing is hard-coded.</span>
           <button className="btn btn-primary" type="submit">Save rates</button>

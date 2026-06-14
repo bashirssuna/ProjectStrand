@@ -16,6 +16,7 @@ import { extractFile } from "@/server/services/extract";
 import { saveUpload, mimeFor, deleteUpload } from "@/server/services/storage";
 import {
   createRequisition, submitRequisition, decideRequisition, disburse, recordExpenditureForRequisition,
+  advanceGateFor,
 } from "@/server/services/requisitions";
 import { generateReport } from "@/server/services/reports";
 import { recomputeRollups } from "@/server/services/activities";
@@ -338,6 +339,13 @@ export async function submitRequisitionAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const reqId = String(formData.get("reqId"));
   await requirePermission(projectId, "requisitions.create");
+  // Accountability gate (Finance Policy §13.2): no new advance while >25% of the
+  // requester's previous disbursement is still unaccounted for.
+  const req = await one<{ requesterId: string | null }>(`SELECT requested_by_id AS "requesterId" FROM requisition WHERE id=$1`, [reqId]);
+  const gate = await advanceGateFor(projectId, req?.requesterId ?? user.id);
+  if (gate.blocked) {
+    redirect(`/projects/${projectId}/requisitions/${reqId}?blocked=accountability`);
+  }
   await submitRequisition(reqId, user.id);
   revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
   revalidatePath(`/projects/${projectId}/requisitions`);
@@ -1090,7 +1098,15 @@ async function recomputeDisbursement(reqId: string) {
   const req = await one<{ amount: number }>(`SELECT amount FROM requisition WHERE id=$1`, [reqId]);
   const tot = (await one<{ s: number }>(`SELECT COALESCE(SUM(amount),0) s FROM payment_voucher WHERE requisition_id=$1 AND status='approved'`, [reqId]))?.s ?? 0;
   const status = tot <= 0 ? "approved" : req && tot >= req.amount ? "disbursed" : "partially_funded";
-  await q(`UPDATE requisition SET disbursed_amount=$2, status=$3, updated_at=now() WHERE id=$1`, [reqId, tot, status]);
+  if (tot > 0) {
+    // First actual disbursement starts the 60-day accountability clock.
+    await q(`UPDATE requisition SET disbursed_amount=$2, status=$3,
+               disbursed_on=COALESCE(disbursed_on, now()),
+               accountability_due=COALESCE(accountability_due, (CURRENT_DATE + INTERVAL '60 days')::date),
+               updated_at=now() WHERE id=$1`, [reqId, tot, status]);
+  } else {
+    await q(`UPDATE requisition SET disbursed_amount=$2, status=$3, updated_at=now() WHERE id=$1`, [reqId, tot, status]);
+  }
 }
 
 export async function checkVoucherAction(formData: FormData) {
@@ -1655,7 +1671,7 @@ export async function finalisePayrollAction(formData: FormData) {
 }
 
 /* ============================ PROCUREMENT ============================ */
-import { decidePurchaseRequest, createPOFromRequest, createGRN, createBillFromPO } from "@/server/services/procurement";
+import { decidePurchaseRequest, createPOFromRequest, createGRN, createBillFromPO, upsertProcurementConfig, getProcurementConfig, type ProcurementConfig } from "@/server/services/procurement";
 
 // Vendors
 export async function addVendorAction(formData: FormData) {
@@ -2134,7 +2150,7 @@ function parseNum(v: FormDataEntryValue | null): number | null {
 export async function saveCompConfigAction(formData: FormData) {
   const { orgId, userId } = await requireInstitutionFinance();
   const cfg: CompConfigRow = {
-    nssfEmployerPct: parseNum(formData.get("nssfEmployerPct")) ?? 15,
+    nssfEmployerPct: parseNum(formData.get("nssfEmployerPct")) ?? 10,
     nssfEmployeePct: parseNum(formData.get("nssfEmployeePct")) ?? 5,
     consultantWhtPct: parseNum(formData.get("consultantWhtPct")) ?? 6,
     payeMethod: (String(formData.get("payeMethod") || "uganda") as CompConfigRow["payeMethod"]),
@@ -2142,6 +2158,9 @@ export async function saveCompConfigAction(formData: FormData) {
     payeBands: null,
     nssfEmployerFromFringe: formData.get("nssfEmployerFromFringe") === "on",
     nssfEmployeeFromFringe: formData.get("nssfEmployeeFromFringe") === "on",
+    lstEnabled: formData.get("lstEnabled") === "on",
+    lstBands: null,
+    lstDivisor: parseNum(formData.get("lstDivisor")) ?? 12,
   };
   await upsertCompConfig(orgId, cfg);
   await writeAudit({ orgId, userId, action: "update", entity: "comp_config", entityId: orgId, after: cfg });
@@ -2435,4 +2454,107 @@ export async function generateResponsibilitiesFromDocAction(formData: FormData) 
   );
   await writeAudit({ userId: access.user.id, action: "update", entity: "employee_project", entityId: `${employeeId}:${projectId}`, meta: { source: "docx", count: items.length } });
   redirect(`${back}?generated=${items.length}`);
+}
+
+/* ===================== STATUTORY REMITTANCES (Finance Policy §17) ===================== */
+// Default statutory deadline: the 15th of the month following the pay period.
+function remittanceDueDefault(period: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(period.trim());
+  if (!m) return new Date().toISOString().slice(0, 10);
+  let y = Number(m[1]); let mo = Number(m[2]); // 1..12
+  mo += 1; if (mo > 12) { mo = 1; y += 1; }
+  return `${y}-${String(mo).padStart(2, "0")}-15`;
+}
+
+export async function addStatutoryRemittanceAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const period = String(formData.get("period") || "").trim();
+  const taxType = String(formData.get("taxType") || "paye");
+  if (!period) redirect("/finance/remittances?err=fields");
+  const due = String(formData.get("dueDate") || "").trim() || remittanceDueDefault(period);
+  await q(`INSERT INTO statutory_remittance (id, org_id, period, tax_type, amount, currency, due_date, paid_on, reference, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [id("remit"), orgId, period, taxType, Number(formData.get("amount") || 0),
+     String(formData.get("currency") || "UGX").trim() || "UGX", due,
+     String(formData.get("paidOn") || "") || null, String(formData.get("reference") || "") || null,
+     String(formData.get("note") || "") || null]);
+  await writeAudit({ orgId, userId, action: "create", entity: "statutory_remittance", entityId: period, after: { taxType, period } });
+  redirect("/finance/remittances?saved=1");
+}
+
+export async function markRemittancePaidAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`UPDATE statutory_remittance SET paid_on=$3, reference=COALESCE($4, reference) WHERE id=$1 AND org_id=$2`,
+    [String(formData.get("remittanceId")), orgId,
+     String(formData.get("paidOn") || "") || new Date().toISOString().slice(0, 10),
+     String(formData.get("reference") || "") || null]);
+  redirect("/finance/remittances?saved=1");
+}
+
+export async function deleteStatutoryRemittanceAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`DELETE FROM statutory_remittance WHERE id=$1 AND org_id=$2`, [String(formData.get("remittanceId")), orgId]);
+  redirect("/finance/remittances?saved=1");
+}
+
+/* ===================== PROCUREMENT QUOTATIONS & CONFIG (Policy §6, §7) ===================== */
+async function prOwnedBy(orgId: string, prId: string): Promise<boolean> {
+  return Boolean(await one<{ id: string }>(`SELECT id FROM purchase_request WHERE id=$1 AND org_id=$2`, [prId, orgId]));
+}
+
+export async function addQuotationAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const prId = String(formData.get("requestId"));
+  if (!(await prOwnedBy(orgId, prId))) redirect("/procurement/requests");
+  const vendorName = String(formData.get("vendorName") || "").trim();
+  if (!vendorName) redirect(`/procurement/requests/${prId}?err=quotefields`);
+  await q(`INSERT INTO pr_quotation (id, request_id, vendor_id, vendor_name, amount, currency, lead_time_days, notes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("quote"), prId, String(formData.get("vendorId") || "") || null, vendorName,
+     Number(formData.get("amount") || 0), String(formData.get("currency") || "UGX").trim() || "UGX",
+     formData.get("leadTimeDays") ? Number(formData.get("leadTimeDays")) : null,
+     String(formData.get("notes") || "") || null]);
+  await writeAudit({ orgId, userId, action: "create", entity: "pr_quotation", entityId: prId });
+  redirect(`/procurement/requests/${prId}?saved=1`);
+}
+
+export async function selectQuotationAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const prId = String(formData.get("requestId"));
+  if (!(await prOwnedBy(orgId, prId))) redirect("/procurement/requests");
+  await q(`UPDATE pr_quotation SET selected=false WHERE request_id=$1`, [prId]);
+  await q(`UPDATE pr_quotation SET selected=true WHERE id=$1 AND request_id=$2`, [String(formData.get("quotationId")), prId]);
+  redirect(`/procurement/requests/${prId}?saved=1`);
+}
+
+export async function deleteQuotationAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const prId = String(formData.get("requestId"));
+  await q(`DELETE FROM pr_quotation WHERE id=$1 AND request_id IN (SELECT id FROM purchase_request WHERE org_id=$2)`,
+    [String(formData.get("quotationId")), orgId]);
+  redirect(`/procurement/requests/${prId}?saved=1`);
+}
+
+export async function saveSingleSourceJustificationAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const prId = String(formData.get("requestId"));
+  await q(`UPDATE purchase_request SET single_source_justification=$3 WHERE id=$1 AND org_id=$2`,
+    [prId, orgId, String(formData.get("justification") || "") || null]);
+  redirect(`/procurement/requests/${prId}?saved=1`);
+}
+
+export async function saveProcurementConfigAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const cfg: ProcurementConfig = {
+    currency: String(formData.get("currency") || "UGX").trim() || "UGX",
+    directMax: Number(formData.get("directMax") || 0),
+    microMax: Number(formData.get("microMax") || 0),
+    quotesDirect: Number(formData.get("quotesDirect") || 1),
+    quotesMicro: Number(formData.get("quotesMicro") || 3),
+    quotesFormal: Number(formData.get("quotesFormal") || 3),
+    enforce: formData.get("enforce") === "on",
+  };
+  await upsertProcurementConfig(orgId, cfg);
+  await writeAudit({ orgId, userId, action: "update", entity: "procurement_config", entityId: orgId, after: cfg });
+  redirect("/procurement/config?saved=1");
 }

@@ -1,15 +1,20 @@
 import Link from "next/link";
 import { requireProcOrg } from "../_guard";
 import { q } from "@/server/db";
-import { PageHeader, SectionTitle, Field, StatusBadge, Empty } from "@/components/ui";
+import { getProcurementConfig, requiredQuotations } from "@/server/services/procurement";
+import { PageHeader, SectionTitle, Field, StatusBadge, Empty, Badge } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
 import { createPurchaseRequestAction, decidePurchaseRequestAction, createPOAction } from "@/app/actions";
 
 export default async function RequestsPage({ searchParams }: { searchParams: Promise<{ created?: string; decided?: string; err?: string }> }) {
   const { orgId } = await requireProcOrg();
   const sp = await searchParams;
+  const procCfg = await getProcurementConfig(orgId);
   const projects = await q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY created_at DESC`, [orgId]);
   const vendors = await q<{ id: string; name: string }>(`SELECT id, name FROM vendor WHERE org_id=$1 AND active ORDER BY name`, [orgId]);
+  const quoteCounts = new Map((await q<{ requestId: string; c: number }>(
+    `SELECT request_id AS "requestId", COUNT(*)::int c FROM pr_quotation GROUP BY request_id`, []
+  )).map((r) => [r.requestId, r.c]));
   // Budget lines across the org's projects, for charging a request to a line.
   const budgetLines = await q<{ id: string; code: string; description: string; projectId: string; projectCode: string }>(
     `SELECT bl.id, bl.code, bl.description, b.project_id AS "projectId", p.code AS "projectCode"
@@ -33,7 +38,7 @@ export default async function RequestsPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="max-w-5xl">
-      <PageHeader title="Purchase requests" subtitle="Raise, approve, and convert to orders" actions={<Link href="/procurement" className="btn btn-sm">← Procurement</Link>} />
+      <PageHeader title="Purchase requests" subtitle="Raise, approve, and convert to orders" actions={<div className="flex gap-2"><Link href="/procurement/config" className="btn btn-sm">Thresholds</Link><Link href="/procurement" className="btn btn-sm">← Procurement</Link></div>} />
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Purchase request submitted.</div>}
       {sp.decided && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Decision recorded.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{sp.err === "vendor" ? "Choose a vendor to create the order." : sp.err === "1" ? "Title and item description are required." : decodeURIComponent(sp.err)}</div>}
@@ -59,6 +64,12 @@ export default async function RequestsPage({ searchParams }: { searchParams: Pro
                   {r.status === "approved" && r.lineCode ? " · committed to budget" : ""}
                 </div>
               )}
+              <div className="flex flex-wrap items-center gap-2 mt-2 text-xs">
+                {(() => { const req = requiredQuotations(procCfg, r.estimatedTotal); const have = quoteCounts.get(r.id) ?? 0; return (
+                  <Badge tone={have >= req.required ? "ok" : "warn"}>{req.label}: {have}/{req.required} quotes</Badge>
+                ); })()}
+                <Link href={`/procurement/requests/${r.id}`} className="hover:underline" style={{ color: "var(--brand)" }}>Open / quotations →</Link>
+              </div>
               <div className="flex flex-wrap gap-2 mt-3">
                 {r.status === "submitted" && (
                   <>

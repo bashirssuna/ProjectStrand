@@ -156,7 +156,12 @@ export async function disburse(reqId: string, userId: string, amount: number, re
   );
   if (!req) throw new Error("Requisition not found");
   const status = amount >= req.amount ? "disbursed" : "partially_funded";
-  await q(`UPDATE requisition SET status=$2, disbursed_amount=$3, disbursement_ref=$4, updated_at=now() WHERE id=$1`,
+  // Accountability clock starts at disbursement: 60 calendar days to account fully.
+  await q(`UPDATE requisition
+           SET status=$2, disbursed_amount=$3, disbursement_ref=$4,
+               disbursed_on=now(), accountability_due=(CURRENT_DATE + INTERVAL '60 days')::date,
+               updated_at=now()
+           WHERE id=$1`,
     [reqId, status, amount, ref]);
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
   await writeAudit({ orgId: org?.orgId, userId, action: "update", entity: "requisition", entityId: reqId, after: { status, disbursed: amount, ref } });
@@ -186,9 +191,72 @@ export async function recordExpenditureForRequisition(input: {
   // Post the expenditure to the general ledger (no-op if GL not enabled).
   const exOrg = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
   if (exOrg) await postExpenditureToLedger({ orgId: exOrg.orgId, projectId: req.projectId, expenditureId: eid, amount: input.amount, date: (input.date ?? new Date().toISOString()), reference: input.reference, payee: input.payee ?? null, postedBy: input.userId });
-  await q(`UPDATE requisition SET status='retired', updated_at=now() WHERE id=$1`, [input.reqId]);
+  // Accountability: accumulate the accounted amount. Only mark fully retired once
+  // the whole disbursed advance has been accounted for (supports partial returns).
+  const acct = await one<{ disbursed: number; accounted: number }>(
+    `SELECT disbursed_amount AS disbursed, accounted_amount AS accounted FROM requisition WHERE id=$1`, [input.reqId]
+  );
+  const newAccounted = (acct?.accounted ?? 0) + input.amount;
+  const fully = newAccounted >= (acct?.disbursed ?? 0) - 0.001;
+  await q(`UPDATE requisition SET accounted_amount=$2, status=$3, updated_at=now() WHERE id=$1`,
+    [input.reqId, newAccounted, fully ? "retired" : "disbursed"]);
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
   await writeAudit({ orgId: org?.orgId, userId: input.userId, action: "create", entity: "expenditure", entityId: eid, after: { amount: input.amount, reference: input.reference } });
   await evaluateProject(req.projectId);
   return eid;
+}
+
+/* ===================== ADVANCE ACCOUNTABILITY (Finance Policy §13.2, §15) ===================== */
+// Policy constants: account fully within 60 days; no new advance while >25% of
+// the previous disbursement is unaccounted; >14 days past due → personal liability.
+export const ACCOUNTABILITY_DAYS = 60;
+export const ADVANCE_OUTSTANDING_LIMIT = 0.25; // 25% — i.e. at least 75% must be accounted
+export const LIABILITY_GRACE_DAYS = 14;
+
+export type AdvanceItem = {
+  id: string; number: string; title: string; requesterId: string | null; requesterName: string | null;
+  disbursed: number; accounted: number; outstanding: number; due: string | null; daysOverdue: number;
+  state: "open" | "overdue" | "liability";
+};
+
+// Open (disbursed but not fully accounted) advances for a project, newest first.
+export async function outstandingAdvances(projectId: string): Promise<AdvanceItem[]> {
+  const rows = await q<{ id: string; number: string; title: string; requesterId: string | null; requesterName: string | null; disbursed: number; accounted: number; due: string | null; daysOverdue: number }>(
+    `SELECT r.id, r.number, r.title, r.requested_by_id AS "requesterId", u.name AS "requesterName",
+            r.disbursed_amount AS disbursed, r.accounted_amount AS accounted, r.accountability_due AS due,
+            GREATEST(0, (CURRENT_DATE - r.accountability_due))::int AS "daysOverdue"
+     FROM requisition r LEFT JOIN app_user u ON u.id = r.requested_by_id
+     WHERE r.project_id=$1 AND r.status IN ('disbursed','partially_funded')
+       AND r.disbursed_amount > r.accounted_amount + 0.001
+     ORDER BY r.accountability_due NULLS LAST, r.disbursed_on DESC`, [projectId]
+  );
+  return rows.map((r) => {
+    const outstanding = r.disbursed - r.accounted;
+    const state: AdvanceItem["state"] = r.daysOverdue > LIABILITY_GRACE_DAYS ? "liability" : r.daysOverdue > 0 ? "overdue" : "open";
+    return { ...r, outstanding, state };
+  });
+}
+
+export type AccountabilityGate = { outstanding: number; previousDisbursement: number; blocked: boolean; limit: number; openCount: number };
+
+// The "75% rule" gate for a given requester on a project. Blocks a new advance
+// when outstanding un-accounted advances exceed 25% of their previous disbursement.
+export async function advanceGateFor(projectId: string, requesterId: string | null): Promise<AccountabilityGate> {
+  const empty: AccountabilityGate = { outstanding: 0, previousDisbursement: 0, blocked: false, limit: ADVANCE_OUTSTANDING_LIMIT, openCount: 0 };
+  if (!requesterId) return empty;
+  const agg = await one<{ outstanding: number; openCount: number }>(
+    `SELECT COALESCE(SUM(disbursed_amount - accounted_amount),0)::float AS outstanding, COUNT(*)::int AS "openCount"
+     FROM requisition WHERE project_id=$1 AND requested_by_id=$2
+       AND status IN ('disbursed','partially_funded') AND disbursed_amount > accounted_amount + 0.001`,
+    [projectId, requesterId]
+  );
+  const prev = await one<{ amount: number }>(
+    `SELECT disbursed_amount AS amount FROM requisition
+     WHERE project_id=$1 AND requested_by_id=$2 AND disbursed_amount > 0
+     ORDER BY disbursed_on DESC NULLS LAST LIMIT 1`, [projectId, requesterId]
+  );
+  const outstanding = agg?.outstanding ?? 0;
+  const previousDisbursement = prev?.amount ?? 0;
+  const blocked = previousDisbursement > 0 && outstanding > ADVANCE_OUTSTANDING_LIMIT * previousDisbursement + 0.001;
+  return { outstanding, previousDisbursement, blocked, limit: ADVANCE_OUTSTANDING_LIMIT, openCount: agg?.openCount ?? 0 };
 }

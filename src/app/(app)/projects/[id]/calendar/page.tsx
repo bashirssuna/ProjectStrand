@@ -3,9 +3,11 @@ import { q } from "@/server/db";
 import { createMeetingAction } from "@/app/actions";
 import { SectionTitle, Empty, Badge, Field } from "@/components/ui";
 import { fmtDateTime } from "@/lib/format";
+import { blockStaff } from "../_staffblock";
 
 export default async function CalendarPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  await blockStaff(id);
   const access = await getProjectAccess(id);
   const canEdit = access.permissions.has("project.edit");
 

@@ -3,9 +3,11 @@ import { q } from "@/server/db";
 import { addMemberAction, updateMemberRoleAction, removeMemberAction } from "@/app/actions";
 import { SectionTitle, Badge, Field } from "@/components/ui";
 import { PROJECT_ROLES, ROLE_PERMISSIONS, label } from "@/lib/enums";
+import { blockStaff } from "../_staffblock";
 
 export default async function TeamPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ invite?: string; why?: string }> }) {
   const { id } = await params;
+  await blockStaff(id);
   const sp = await searchParams;
   const access = await getProjectAccess(id);
   const canManage = access.permissions.has("members.manage");

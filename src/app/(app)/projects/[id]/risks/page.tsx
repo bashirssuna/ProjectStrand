@@ -4,6 +4,7 @@ import { addRiskAction, updateRiskStatusAction, closeRiskAction } from "@/app/ac
 import { SectionTitle, Empty, Badge, Field, severityTone } from "@/components/ui";
 import { label } from "@/lib/enums";
 import { fmtDate } from "@/lib/format";
+import { blockStaff } from "../_staffblock";
 
 type Risk = {
   id: string; kind: string; title: string; detail: string | null; severity: string;
@@ -13,6 +14,7 @@ type Risk = {
 
 export default async function RisksPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  await blockStaff(id);
   const access = await getProjectAccess(id);
   const canEdit = access.permissions.has("project.edit");
 

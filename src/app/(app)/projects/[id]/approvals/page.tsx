@@ -4,12 +4,14 @@ import { q, one } from "@/server/db";
 import { SectionTitle, Empty, Badge } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
+import { blockStaff } from "../_staffblock";
 
 type Req = { id: string; number: string; title: string; amount: number; status: string };
 type Appr = { reqId: string; step: number; role: string; decision: string; approverName: string | null; decidedAt: string | null };
 
 export default async function ApprovalsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  await blockStaff(id);
   const access = await getProjectAccess(id);
 
   const project = await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [id]);

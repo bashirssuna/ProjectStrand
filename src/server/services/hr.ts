@@ -129,3 +129,45 @@ export async function finalisePayrollRun(orgId: string, runId: string): Promise<
   await q(`UPDATE payroll_run SET status='finalised' WHERE id=$1`, [runId]);
   // FINANCE HOOK (deferred): post salary expense + statutory liabilities here.
 }
+
+// ---------------------------------------------------------------------------
+// Create a restricted self-service login for an employee and email them an
+// invite (set-password) link. The account is flagged is_staff=true so the app
+// shows them only the staff portal. Reuses the existing invite token flow.
+// ---------------------------------------------------------------------------
+export async function createEmployeeLogin(employeeId: string): Promise<{ emailStatus: "sent" | "failed" | "exists"; emailError?: string }> {
+  const emp = await one<{ orgId: string; first: string; last: string; email: string | null; userId: string | null }>(
+    `SELECT org_id AS "orgId", first_name AS first, last_name AS last, email, user_id AS "userId" FROM employee WHERE id=$1`, [employeeId]
+  );
+  if (!emp) throw new Error("Employee not found.");
+  if (emp.userId) return { emailStatus: "exists" };
+  if (!emp.email) throw new Error("Add an email address to this employee before creating a login.");
+
+  // reuse an existing account with this email, or create one
+  let target = await one<{ id: string }>(`SELECT id FROM app_user WHERE email=$1`, [emp.email]);
+  if (!target) {
+    const uid = id("usr");
+    await q(`INSERT INTO app_user (id, email, name, status, is_staff) VALUES ($1,$2,$3,'invited',true)`,
+      [uid, emp.email, `${emp.first} ${emp.last}`]);
+    await q(`INSERT INTO user_profile (id, user_id) VALUES ($1,$2)`, [id("up"), uid]);
+    target = { id: uid };
+  } else {
+    await q(`UPDATE app_user SET is_staff=true WHERE id=$1`, [target.id]);
+  }
+  // ensure org membership (as a plain member role)
+  const memberRole = await one<{ id: string }>(`SELECT id FROM role WHERE org_id=$1 AND key='member' LIMIT 1`, [emp.orgId]);
+  if (memberRole) {
+    await q(`INSERT INTO org_membership (id, org_id, user_id, role_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+      [id("om"), emp.orgId, target.id, memberRole.id]);
+  }
+  await q(`UPDATE employee SET user_id=$2 WHERE id=$1`, [employeeId, target.id]);
+
+  const { issuePasswordToken } = await import("@/server/services/accounts");
+  const issued = await issuePasswordToken(target.id, "invite", emp.email, `${emp.first} ${emp.last}`);
+  return { emailStatus: issued.emailStatus, emailError: issued.emailError };
+}
+
+// Look up the employee record for a logged-in staff user (if any).
+export async function employeeForUser(userId: string): Promise<{ id: string; orgId: string; firstName: string; lastName: string } | null> {
+  return one(`SELECT id, org_id AS "orgId", first_name AS "firstName", last_name AS "lastName" FROM employee WHERE user_id=$1`, [userId]);
+}

@@ -34,20 +34,30 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <Link href="/dashboard" className="block font-display text-lg font-semibold" style={{ color: "var(--brand)" }}>
             Project Strand
           </Link>
-          <div className="text-xs mt-1.5" style={{ color: "var(--muted)" }}>{user.isSuperAdmin ? "Platform administrator" : (org?.name ?? "")}</div>
+          <div className="text-xs mt-1.5" style={{ color: "var(--muted)" }}>{user.isSuperAdmin ? "Platform administrator" : user.isStaff ? "Staff portal" : (org?.name ?? "")}</div>
         </div>
 
-        <nav className="p-3 space-y-1">
-          <NavLink href="/dashboard">▣ Dashboard</NavLink>
-          <NavLink href="/projects">❏ Projects</NavLink>
-          {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/finance">₿ Institution Finance</NavLink>}
-          {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/hr">⚇ Human Resources</NavLink>}
-          {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/procurement">⛁ Procurement</NavLink>}
-          {user.isSuperAdmin && <NavLink href="/admin">⚙ Admin Center</NavLink>}
-          <NavLink href="/profile">◔ My Profile</NavLink>
-        </nav>
+        {user.isStaff ? (
+          <nav className="p-3 space-y-1">
+            <NavLink href="/portal">▣ Portal home</NavLink>
+            <NavLink href="/portal/timesheets">◷ Timesheets</NavLink>
+            <NavLink href="/portal/leave">☂ Leave</NavLink>
+            <NavLink href="/portal/requests">🛒 Purchase requests</NavLink>
+            <NavLink href="/portal/profile">◔ My profile &amp; CV</NavLink>
+          </nav>
+        ) : (
+          <nav className="p-3 space-y-1">
+            <NavLink href="/dashboard">▣ Dashboard</NavLink>
+            <NavLink href="/projects">❏ Projects</NavLink>
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/finance">₿ Institution Finance</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/hr">⚇ Human Resources</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/procurement">⛁ Procurement</NavLink>}
+            {user.isSuperAdmin && <NavLink href="/admin">⚙ Admin Center</NavLink>}
+            <NavLink href="/profile">◔ My Profile</NavLink>
+          </nav>
+        )}
 
-        <div className="px-3 mt-2">
+        {!user.isStaff && <div className="px-3 mt-2">
           <div className="text-xs font-medium uppercase tracking-wide px-3 mb-1" style={{ color: "var(--muted)" }}>Your projects</div>
           <nav className="space-y-1 max-h-[42vh] overflow-auto">
             {projects.length === 0 && <div className="px-3 py-2 text-xs" style={{ color: "var(--muted)" }}>No projects yet.</div>}
@@ -57,9 +67,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               </NavLink>
             ))}
           </nav>
-        </div>
+        </div>}
 
-        {mayCreate && (
+        {mayCreate && !user.isStaff && (
           <div className="mt-auto p-3 border-t" style={{ borderColor: "var(--border)" }}>
             <Link href="/projects/new" className="btn btn-primary w-full">+ New project</Link>
           </div>

@@ -4,9 +4,11 @@ import { one } from "@/server/db";
 import { can } from "@/server/policy";
 import { PageHeader } from "@/components/ui";
 import { ImportForm } from "@/components/import-form";
+import { blockStaff } from "../_staffblock";
 
 export default async function ImportPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  await blockStaff(id);
   if (!(await can(id, "project.edit"))) redirect(`/projects/${id}`);
   const project = await one<{ title: string; code: string }>(`SELECT title, code FROM project WHERE id=$1`, [id]);
   if (!project) redirect("/projects");

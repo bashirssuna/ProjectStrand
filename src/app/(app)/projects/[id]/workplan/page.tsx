@@ -1,12 +1,12 @@
 import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
-import { updateActivityAction, addActivityAction, uploadWorkplanAction, workplanFromBudgetAction, editActivityDetailsAction, deleteActivityAction, uploadActivityEvidenceAction } from "@/app/actions";
+import { updateActivityAction, addActivityAction, uploadWorkplanAction, workplanFromBudgetAction, editActivityDetailsAction, deleteActivityAction, uploadActivityEvidenceAction, assignActivityLeadAction } from "@/app/actions";
 import { Gantt, type GanttRow } from "@/components/gantt";
 import { StatusBadge, SectionTitle, Empty, Field, ProgressBar, progressTone } from "@/components/ui";
 import { ACTIVITY_STATUS, label } from "@/lib/enums";
 import { fmtDate, dateInput } from "@/lib/format";
 
-type Row = GanttRow & { parentId: string | null; ownerName: string | null };
+type Row = GanttRow & { parentId: string | null; ownerName: string | null; ownerId: string | null };
 
 export default async function WorkplanPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -27,10 +27,15 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
     const arr = evidByAct.get(e.activityId) ?? []; arr.push({ docId: e.docId, name: e.name }); evidByAct.set(e.activityId, arr);
   }
 
+  const members = await q<{ userId: string; name: string }>(
+    `SELECT pm.user_id AS "userId", u.name FROM project_member pm JOIN app_user u ON u.id=pm.user_id WHERE pm.project_id=$1 ORDER BY u.name`, [id]
+  );
+  const canAssign = access.permissions.has("project.edit");
+
   const rows = await q<Row>(
     `SELECT a.id, a.code, a.title, a.type, a.status, a.progress,
             a.start_date AS "startDate", a.end_date AS "endDate", a.parent_id AS "parentId",
-            u.name AS "ownerName"
+            u.name AS "ownerName", a.owner_id AS "ownerId"
      FROM activity a LEFT JOIN app_user u ON u.id = a.owner_id
      WHERE a.project_id=$1 ORDER BY a."order", a.created_at`, [id]
   );
@@ -130,6 +135,20 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
                               </div>
                               <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
                             </form>
+                            {canAssign && (
+                              <form action={assignActivityLeadAction} className="grid gap-2 mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                                <input type="hidden" name="projectId" value={id} />
+                                <input type="hidden" name="activityId" value={r.id} />
+                                <Field label="Activity lead">
+                                  <select name="ownerId" defaultValue={r.ownerId ?? ""} className="select">
+                                    <option value="">— Unassigned —</option>
+                                    {members.map((m) => <option key={m.userId} value={m.userId}>{m.name}</option>)}
+                                  </select>
+                                </Field>
+                                <button className="btn btn-sm" type="submit">Assign lead</button>
+                              </form>
+                            )}
+                            <div className="hidden" />
                             <form action={deleteActivityAction} className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
                               <input type="hidden" name="projectId" value={id} />
                               <input type="hidden" name="activityId" value={r.id} />

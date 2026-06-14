@@ -1523,12 +1523,14 @@ export async function addEmployeeAction(formData: FormData) {
   const last = String(formData.get("lastName") || "").trim();
   if (!first || !last) redirect("/hr/employees?err=name");
   const eid = id("emp");
-  await q(`INSERT INTO employee (id, org_id, user_id, staff_no, first_name, last_name, email, phone, job_title, department,
+  const deptId = String(formData.get("departmentId") || "") || null;
+  const deptName = deptId ? (await one<{ name: string }>(`SELECT name FROM department WHERE id=$1`, [deptId]))?.name ?? null : (String(formData.get("department") || "") || null);
+  await q(`INSERT INTO employee (id, org_id, user_id, staff_no, first_name, last_name, email, phone, job_title, department, department_id,
              contract_type, start_date, end_date, basic_salary, currency, pay_frequency, bank_name, bank_account, bank_branch, mobile_money, annual_leave_days, note)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
     [eid, orgId, String(formData.get("userId") || "") || null, String(formData.get("staffNo") || "") || null,
      first, last, String(formData.get("email") || "") || null, String(formData.get("phone") || "") || null,
-     String(formData.get("jobTitle") || "") || null, String(formData.get("department") || "") || null,
+     String(formData.get("jobTitle") || "") || null, deptName, deptId,
      String(formData.get("contractType") || "permanent"),
      String(formData.get("startDate") || "") || null, String(formData.get("endDate") || "") || null,
      Number(formData.get("basicSalary") || 0), String(formData.get("currency") || "USD"),
@@ -1537,6 +1539,11 @@ export async function addEmployeeAction(formData: FormData) {
      String(formData.get("bankBranch") || "") || null, String(formData.get("mobileMoney") || "") || null,
      Number(formData.get("annualLeaveDays") || 21), String(formData.get("note") || "") || null]);
   await writeAudit({ orgId, userId, action: "create", entity: "employee", entityId: eid, after: { name: `${first} ${last}` } });
+  // optional: create a self-service login immediately
+  if (formData.get("createLogin") === "on" && String(formData.get("email") || "").trim()) {
+    try { await createEmployeeLogin(eid); } catch { /* surfaced on the employee page if needed */ }
+    redirect(`/hr/employees/${eid}?login=sent`);
+  }
   redirect("/hr/employees?created=1");
 }
 
@@ -1734,4 +1741,124 @@ async function nextNumProc(orgId: string, table: string, prefix: string): Promis
   const t = allowed[table] ?? table;
   const n = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ${t} WHERE org_id=$1`, [orgId]))?.c ?? 0;
   return `${prefix}-${String(n + 1).padStart(4, "0")}`;
+}
+
+/* ==================== DEPARTMENTS + EMPLOYEE PORTAL ==================== */
+import { createEmployeeLogin, employeeForUser } from "@/server/services/hr";
+
+export async function addDepartmentAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/hr/departments?err=1");
+  await q(`INSERT INTO department (id, org_id, name, head_employee_id, description) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (org_id, name) DO NOTHING`,
+    [id("dept"), orgId, name, String(formData.get("headEmployeeId") || "") || null, String(formData.get("description") || "") || null]);
+  redirect("/hr/departments?created=1");
+}
+export async function assignEmployeeDepartmentAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const empId = String(formData.get("employeeId"));
+  const deptId = String(formData.get("departmentId") || "") || null;
+  await q(`UPDATE employee SET department_id=$2, department=(SELECT name FROM department WHERE id=$2) WHERE id=$1 AND org_id=$3`, [empId, deptId, orgId]);
+  revalidatePath(`/hr/employees/${empId}`);
+}
+
+// Create the self-service login for an employee (the optional toggle / button).
+export async function createEmployeeLoginAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const empId = String(formData.get("employeeId"));
+  let res;
+  try { res = await createEmployeeLogin(empId); }
+  catch (e) { redirect(`/hr/employees/${empId}?loginerr=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  redirect(`/hr/employees/${empId}?login=${res.emailStatus}`);
+}
+
+/* ---- Employee self-service (the logged-in staff member acting on their OWN record) ---- */
+async function requireOwnEmployee(): Promise<{ employeeId: string; orgId: string; userId: string; userName: string }> {
+  const user = await requireUser();
+  const emp = await employeeForUser(user.id);
+  if (!emp) redirect("/dashboard");
+  return { employeeId: emp.id, orgId: emp.orgId, userId: user.id, userName: user.name };
+}
+
+export async function updateMyProfileAction(formData: FormData) {
+  const { employeeId } = await requireOwnEmployee();
+  await q(`UPDATE employee SET phone=$2, address=$3, date_of_birth=$4, national_id=$5, emergency_contact=$6,
+             cv_summary=$7, qualifications=$8, skills=$9 WHERE id=$1`,
+    [employeeId, String(formData.get("phone") || "") || null, String(formData.get("address") || "") || null,
+     String(formData.get("dateOfBirth") || "") || null, String(formData.get("nationalId") || "") || null,
+     String(formData.get("emergencyContact") || "") || null, String(formData.get("cvSummary") || "") || null,
+     String(formData.get("qualifications") || "") || null, String(formData.get("skills") || "") || null]);
+  redirect("/portal/profile?saved=1");
+}
+
+export async function uploadMyDocumentAction(formData: FormData) {
+  const { employeeId, userId } = await requireOwnEmployee();
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) redirect("/portal/profile?err=file");
+  const buf = Buffer.from(await file.arrayBuffer());
+  const docId = id("edoc");
+  const key = await saveUpload(docId, file.name, buf);
+  await q(`INSERT INTO employee_document (id, employee_id, name, doc_type, storage_key, mime_type, size_bytes, uploaded_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [docId, employeeId, file.name, String(formData.get("docType") || "other"), key, mimeFor(file.name), buf.length, userId]);
+  redirect("/portal/profile?uploaded=1");
+}
+export async function deleteMyDocumentAction(formData: FormData) {
+  const { employeeId } = await requireOwnEmployee();
+  // only allow deleting the employee's OWN documents
+  await q(`DELETE FROM employee_document WHERE id=$1 AND employee_id=$2`, [String(formData.get("documentId")), employeeId]);
+  revalidatePath("/portal/profile");
+}
+
+// Staff self-service versions of leave / timesheet / purchase request (scoped to self)
+export async function myRequestLeaveAction(formData: FormData) {
+  const { employeeId, orgId } = await requireOwnEmployee();
+  const start = String(formData.get("startDate") || ""); const end = String(formData.get("endDate") || "");
+  const days = Number(formData.get("days") || 0);
+  if (!start || !end || days <= 0) redirect("/portal/leave?err=1");
+  await q(`INSERT INTO leave_request (id, org_id, employee_id, leave_type, start_date, end_date, days, reason)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("lv"), orgId, employeeId, String(formData.get("leaveType") || "annual"), start, end, days, String(formData.get("reason") || "") || null]);
+  redirect("/portal/leave?requested=1");
+}
+export async function myAddTimesheetAction(formData: FormData) {
+  const { employeeId, orgId } = await requireOwnEmployee();
+  const hours = Number(formData.get("hours") || 0);
+  if (hours <= 0) redirect("/portal/timesheets?err=1");
+  await q(`INSERT INTO timesheet (id, org_id, employee_id, project_id, work_date, hours, description)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id("ts"), orgId, employeeId, String(formData.get("projectId") || "") || null,
+     String(formData.get("workDate") || new Date().toISOString().slice(0, 10)), hours, String(formData.get("description") || "") || null]);
+  redirect("/portal/timesheets?added=1");
+}
+export async function myCreatePurchaseRequestAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireOwnEmployee();
+  const title = String(formData.get("title") || "").trim();
+  const desc = String(formData.get("itemDescription") || "").trim();
+  const qty = Number(formData.get("quantity") || 1);
+  const unitCost = Number(formData.get("unitCost") || 0);
+  if (!title || !desc) redirect("/portal/requests?err=1");
+  const prId = id("pr");
+  const number = await nextNumProc(orgId, "purchase_request", "PR");
+  const amount = Math.round((qty * unitCost + Number.EPSILON) * 100) / 100;
+  await q(`INSERT INTO purchase_request (id, org_id, project_id, number, title, justification, needed_by, currency, estimated_total, status, requested_by, requested_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'submitted',$10,$11)`,
+    [prId, orgId, String(formData.get("projectId") || "") || null, number, title,
+     String(formData.get("justification") || "") || null, String(formData.get("neededBy") || "") || null,
+     String(formData.get("currency") || "USD"), amount, userId, userName]);
+  await q(`INSERT INTO purchase_request_item (id, request_id, description, quantity, unit, estimated_unit_cost, amount)
+           VALUES ($1,$2,$3,$4,$5,$6,$7)`, [id("pri"), prId, desc, qty, String(formData.get("unit") || "") || null, unitCost, amount]);
+  redirect("/portal/requests?created=1");
+}
+
+/* ---- Activity lead assignment (PI / coordinator / manager assign any member) ---- */
+export async function assignActivityLeadAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const activityId = String(formData.get("activityId"));
+  await requirePermission(projectId, "project.edit");
+  const ownerId = String(formData.get("ownerId") || "") || null;
+  await q(`UPDATE activity SET owner_id=$3, updated_at=now() WHERE id=$1 AND project_id=$2`, [activityId, projectId, ownerId]);
+  await writeAudit({ userId: user.id, action: "update", entity: "activity", entityId: activityId, after: { ownerId } });
+  revalidatePath(`/projects/${projectId}/workplan`);
 }

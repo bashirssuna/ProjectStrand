@@ -3,9 +3,11 @@ import { q } from "@/server/db";
 import { SectionTitle, Empty, Badge} from "@/components/ui";
 import { fmtDate, num } from "@/lib/format";
 import { label } from "@/lib/enums";
+import { blockStaff } from "../_staffblock";
 
 export default async function DocumentsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  await blockStaff(id);
   const access = await getProjectAccess(id);
 
   const folders = await q<{ id: string; name: string; category: string }>(

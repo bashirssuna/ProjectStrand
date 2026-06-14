@@ -9,6 +9,7 @@ import { money, pct, fmtDateTime, fmtDate } from "@/lib/format";
 
 export default async function DashboardPage() {
   const user = await requireUser();
+  if (user.isStaff) { const { redirect } = await import("next/navigation"); redirect("/portal"); }
   const org = user.isSuperAdmin ? null : await getUserOrg(user.id);
   const trialDaysLeft = org?.plan === "trial" && org.trialEndsAt
     ? Math.ceil((new Date(org.trialEndsAt).getTime() - Date.now()) / 86400000) : null;

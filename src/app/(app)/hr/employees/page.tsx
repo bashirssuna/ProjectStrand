@@ -15,6 +15,7 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
      FROM employee WHERE org_id=$1 ORDER BY last_name, first_name`, [orgId]
   );
   const users = await q<{ id: string; name: string; email: string }>(`SELECT u.id, u.name, u.email FROM app_user u JOIN org_membership m ON m.user_id=u.id WHERE m.org_id=$1 ORDER BY u.name`, [orgId]);
+  const departments = await q<{ id: string; name: string }>(`SELECT id, name FROM department WHERE org_id=$1 ORDER BY name`, [orgId]);
 
   return (
     <div className="max-w-5xl">
@@ -50,7 +51,7 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
         <Field label="Last name"><input name="lastName" required className="input" /></Field>
         <Field label="Staff no."><input name="staffNo" className="input" /></Field>
         <Field label="Job title"><input name="jobTitle" className="input" /></Field>
-        <Field label="Department"><input name="department" className="input" /></Field>
+        <Field label="Department"><select name="departmentId" className="select"><option value="">— none —</option>{departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</select></Field>
         <Field label="Contract type">
           <select name="contractType" className="select"><option value="permanent">Permanent</option><option value="fixed_term">Fixed term</option><option value="casual">Casual</option><option value="consultant">Consultant</option><option value="intern">Intern</option></select>
         </Field>
@@ -69,6 +70,9 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
         <Field label="Link to login (optional)">
           <select name="userId" className="select"><option value="">— not linked —</option>{users.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}</select>
         </Field>
+        <label className="flex items-center gap-2 text-sm self-end pb-2">
+          <input type="checkbox" name="createLogin" /> Create self-service login &amp; email invite
+        </label>
         <div className="sm:col-span-3 flex justify-end"><button className="btn btn-primary" type="submit">Add employee</button></div>
       </form>
     </div>

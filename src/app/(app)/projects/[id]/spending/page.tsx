@@ -4,9 +4,11 @@ import { budgetLineRollups } from "@/server/services/budget";
 import { addExpenditureAction } from "@/app/actions";
 import { SectionTitle, Empty, Badge, Field } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
+import { blockStaff } from "../_staffblock";
 
 export default async function SpendingPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  await blockStaff(id);
   const access = await getProjectAccess(id);
   const canManage = access.permissions.has("budget.manage");
   const proj = await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [id]);

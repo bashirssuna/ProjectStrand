@@ -5,26 +5,27 @@ import { leaveBalance, computePay } from "@/server/services/hr";
 import { PageHeader, SectionTitle, Field, Badge, Empty } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
-import { updateEmployeeAction } from "@/app/actions";
+import { updateEmployeeAction, assignEmployeeDepartmentAction, createEmployeeLoginAction } from "@/app/actions";
 import { dateInput } from "@/lib/format";
 
-export default async function EmployeeDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ saved?: string }> }) {
+export default async function EmployeeDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ saved?: string; login?: string; loginerr?: string }> }) {
   const { id } = await params;
   const { orgId } = await requireHrOrg();
   const sp = await searchParams;
   const e = await one<{
     id: string; staffNo: string | null; firstName: string; lastName: string; email: string | null; phone: string | null;
-    jobTitle: string | null; department: string | null; contractType: string; startDate: string | null; endDate: string | null;
+    jobTitle: string | null; department: string | null; departmentId: string | null; contractType: string; startDate: string | null; endDate: string | null;
     basicSalary: number; currency: string; bankName: string | null; bankAccount: string | null; bankBranch: string | null;
-    mobileMoney: string | null; annualLeaveDays: number; status: string;
+    mobileMoney: string | null; annualLeaveDays: number; status: string; userId: string | null;
   }>(
     `SELECT id, staff_no AS "staffNo", first_name AS "firstName", last_name AS "lastName", email, phone,
-            job_title AS "jobTitle", department, contract_type AS "contractType", start_date AS "startDate", end_date AS "endDate",
+            job_title AS "jobTitle", department, department_id AS "departmentId", contract_type AS "contractType", start_date AS "startDate", end_date AS "endDate",
             basic_salary::float AS "basicSalary", currency, bank_name AS "bankName", bank_account AS "bankAccount",
-            bank_branch AS "bankBranch", mobile_money AS "mobileMoney", annual_leave_days::float AS "annualLeaveDays", status
+            bank_branch AS "bankBranch", mobile_money AS "mobileMoney", annual_leave_days::float AS "annualLeaveDays", status, user_id AS "userId"
      FROM employee WHERE id=$1 AND org_id=$2`, [id, orgId]
   );
   if (!e) return <Empty title="Employee not found" hint="They may have been removed." />;
+  const departments = await q<{ id: string; name: string }>(`SELECT id, name FROM department WHERE org_id=$1 ORDER BY name`, [orgId]);
   const lb = await leaveBalance(id);
   const pay = await computePay(id);
   const recentLeave = await q<{ leaveType: string; startDate: string; endDate: string; days: number; status: string }>(
@@ -35,6 +36,37 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
     <div className="max-w-4xl">
       <PageHeader title={`${e.firstName} ${e.lastName}`} subtitle={`${e.jobTitle ?? "—"}${e.department ? ` · ${e.department}` : ""}`} actions={<Link href="/hr/employees" className="btn btn-sm">← Employees</Link>} />
       {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved.</div>}
+      {sp.login === "sent" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Self-service login created — an invite email with a set-password link has been sent.</div>}
+      {sp.login === "exists" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>This employee already has a login.</div>}
+      {sp.login === "failed" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>Login created, but the invite email could not be sent. They can use “forgot password” to set one.</div>}
+      {sp.loginerr && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{decodeURIComponent(sp.loginerr)}</div>}
+
+      {/* Login + department */}
+      <div className="grid sm:grid-cols-2 gap-4 mb-6">
+        <div className="card p-4">
+          <div className="font-medium mb-2">Self-service login</div>
+          {e.userId ? (
+            <p className="text-sm" style={{ color: "var(--muted)" }}>This employee has a portal login linked. They can sign in to fill timesheets, request leave, raise purchase requests, and manage their own profile &amp; documents.</p>
+          ) : (
+            <>
+              <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>{e.email ? "Create a restricted portal login and email them an invite to set a password." : "Add an email address (below) before creating a login."}</p>
+              {e.email && <form action={createEmployeeLoginAction}><input type="hidden" name="employeeId" value={e.id} /><button className="btn btn-primary btn-sm" type="submit">Create portal login</button></form>}
+            </>
+          )}
+        </div>
+        <div className="card p-4">
+          <div className="font-medium mb-2">Department</div>
+          <form action={assignEmployeeDepartmentAction} className="flex items-end gap-2">
+            <input type="hidden" name="employeeId" value={e.id} />
+            <select name="departmentId" defaultValue={e.departmentId ?? ""} className="select">
+              <option value="">— unassigned —</option>
+              {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+            <button className="btn btn-sm" type="submit">Assign</button>
+          </form>
+          {departments.length === 0 && <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>No departments yet — create them under HR → Departments.</p>}
+        </div>
+      </div>
 
       <div className="grid sm:grid-cols-4 gap-3 mb-6">
         <div className="card p-3"><div className="label">Basic salary</div><div className="font-semibold tabular-nums">{money(e.basicSalary, e.currency)}</div></div>

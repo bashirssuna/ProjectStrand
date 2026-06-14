@@ -18,13 +18,18 @@ export default async function ProjectLayout({
   if (!project) redirect("/projects");
 
   const base = `/projects/${id}`;
-  const tabs: [string, string][] = [
+  // Staff (self-service) logins get a deliberately limited view of a project:
+  // only Overview, Statement of Work, Work plan, Gantt and Objectives — never
+  // budget, spending, requisitions, documents, team, etc.
+  const STAFF_TABS = new Set(["", "/sow", "/workplan", "/gantt", "/logframe"]);
+  const allTabs: [string, string][] = [
     ["", "Overview"], ["/sow", "Statement of Work"], ["/workplan", "Work plan"],
     ["/gantt", "Gantt"], ["/logframe", "Objectives"], ["/budget", "Budget"],
     ["/spending", "Spending"], ["/requisitions", "Requisitions"], ["/reports", "Reports"],
     ["/documents", "Documents"], ["/team", "Team"], ["/calendar", "Calendar"],
     ["/risks", "Risks"], ["/approvals", "Approvals"], ["/audit", "Audit Log"],
   ];
+  const tabs = access.user.isStaff ? allTabs.filter(([p]) => STAFF_TABS.has(p)) : allTabs;
 
   return (
     <div>
@@ -49,9 +54,11 @@ export default async function ProjectLayout({
       {children}
 
       <div className="mt-8 pt-4 border-t text-xs" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-        Your role: {access.role ?? (access.isSuperAdmin ? "Administrator" : "—")}
-        {" · "}
-        <Link href={`${base}/import`} className="hover:underline">Import more documents</Link>
+        Your role: {access.role ?? (access.isSuperAdmin ? "Administrator" : access.user.isStaff ? "Staff (limited access)" : "—")}
+        {!access.user.isStaff && <>
+          {" · "}
+          <Link href={`${base}/import`} className="hover:underline">Import more documents</Link>
+        </>}
       </div>
     </div>
   );

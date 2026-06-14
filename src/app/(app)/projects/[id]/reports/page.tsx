@@ -9,11 +9,13 @@ import { generateReportAction, emailReportAction } from "@/app/actions";
 import { SectionTitle, Empty, Badge, Field, StatusBadge } from "@/components/ui";
 import { fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
+import { blockStaff } from "../_staffblock";
 
 export default async function ReportsPage({
   params, searchParams,
 }: { params: Promise<{ id: string }>; searchParams: Promise<{ r?: string; fin?: string }> }) {
   const { id } = await params;
+  await blockStaff(id);
   const { r, fin } = await searchParams;
   const detailed = fin === "detailed";
   const access = await getProjectAccess(id);

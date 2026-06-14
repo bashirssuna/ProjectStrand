@@ -2,11 +2,13 @@ import { q } from "@/server/db";
 import { SectionTitle, Empty, Badge } from "@/components/ui";
 import { fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
+import { blockStaff } from "../_staffblock";
 
 type Entry = { action: string; entity: string; entityId: string | null; createdAt: string; actor: string | null };
 
 export default async function AuditPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  await blockStaff(id);
   const entries = await q<Entry>(
     `SELECT a.action, a.entity, a.entity_id AS "entityId", a.created_at AS "createdAt", u.name AS actor
      FROM audit_log a LEFT JOIN app_user u ON u.id = a.user_id

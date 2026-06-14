@@ -5,9 +5,11 @@ import { budgetLineRollups, budgetSummary } from "@/server/services/budget";
 import { addBudgetLineAction, convertBudgetCurrencyAction, updateBudgetLineAction, deleteBudgetLineAction, clearBudgetLinesAction } from "@/app/actions";
 import { Stat, SectionTitle, Empty, ProgressBar, Field, Badge } from "@/components/ui";
 import { money, pct, fmtDate } from "@/lib/format";
+import { blockStaff } from "../_staffblock";
 
 export default async function BudgetPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
+  await blockStaff(id);
   const access = await getProjectAccess(id);
   const canManage = access.permissions.has("budget.manage");
   const proj = await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [id]);

@@ -986,4 +986,47 @@ CREATE TABLE IF NOT EXISTS vendor_bill (
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (org_id, number)
 );
+
+-- ===========================================================================
+-- DEPARTMENTS + EMPLOYEE SELF-SERVICE
+-- ===========================================================================
+-- A restricted self-service login flag. Staff logins can fill timesheets/leave/
+-- purchase requests, see limited project tabs, and manage only their own docs.
+ALTER TABLE app_user ADD COLUMN IF NOT EXISTS is_staff boolean NOT NULL DEFAULT false;
+
+-- Departments are real records staff are assigned to.
+CREATE TABLE IF NOT EXISTS department (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  head_employee_id text,               -- optional department head
+  description text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name)
+);
+-- link employee -> department (replaces the free-text department column for scoping)
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
+
+-- Employee personal documents (CV, certificates) — visible only to the
+-- employee themselves and HR admins, NEVER mixed with project documents.
+CREATE TABLE IF NOT EXISTS employee_document (
+  id text PRIMARY KEY,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  doc_type text NOT NULL DEFAULT 'other', -- cv | certificate | id | contract | other
+  storage_key text,
+  mime_type text,
+  size_bytes integer,
+  uploaded_by text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Extended CV/profile fields employees populate themselves.
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS cv_summary text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS qualifications text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS skills text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS date_of_birth date;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS national_id text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS address text;
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS emergency_contact text;
 `;

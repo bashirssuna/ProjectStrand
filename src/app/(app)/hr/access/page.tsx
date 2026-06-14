@@ -40,7 +40,12 @@ export default async function AccessOverviewPage() {
 
   return (
     <div className="max-w-5xl">
-      <PageHeader title="Access overview" subtitle="Who can see and do what" actions={<Link href="/hr" className="btn btn-sm">← HR</Link>} />
+      <PageHeader title="Access overview" subtitle="Who can see and do what" actions={<div className="flex gap-2"><Link href="/hr/access/manage" className="btn btn-sm btn-primary">Manage access</Link><Link href="/hr" className="btn btn-sm">← HR</Link></div>} />
+
+      <div className="card p-4 mb-5" style={{ borderColor: "var(--brand)" }}>
+        <div className="font-display font-semibold">Manage who has access</div>
+        <p className="text-sm mt-1" style={{ color: "var(--muted)" }}>This page explains what each role can do. To see every user&apos;s actual rights and change roles or fine-grained permissions — for an individual or a whole department — open <Link href="/hr/access/manage" className="hover:underline" style={{ color: "var(--brand)" }}>Access management</Link>.</p>
+      </div>
 
       <SectionTitle>Organisation modules</SectionTitle>
       <div className="card p-4 mb-3">

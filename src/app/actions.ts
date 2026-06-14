@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
-import { PROJECT_STATUS } from "@/lib/enums";
+import { PROJECT_STATUS, PROJECT_ROLES, PERMISSIONS, ROLE_PERMISSIONS, type Permission, type ProjectRole } from "@/lib/enums";
 import { createSession, destroySession, requireUser, verifyPassword } from "@/server/auth";
 import { requirePermission, getProjectAccess, canCreateProjects } from "@/server/policy";
 import { createProject } from "@/server/services/projects";
@@ -2743,4 +2743,86 @@ export async function deleteGiftAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
   await q(`DELETE FROM gift_log WHERE id=$1 AND org_id=$2`, [String(formData.get("giftId")), orgId]);
   redirect("/procurement/ethics?saved=1");
+}
+
+/* ===================== ACCESS MANAGEMENT (org admin) ===================== */
+// Ensures the organisation has an 'org_admin' role row and returns its id.
+async function orgAdminRoleId(orgId: string): Promise<string> {
+  const found = await one<{ id: string }>(`SELECT id FROM role WHERE org_id=$1 AND key='org_admin'`, [orgId]);
+  if (found) return found.id;
+  await q(`INSERT INTO role (id, org_id, key, name, is_system) VALUES ($1,$2,'org_admin','Organisation Admin', true)
+           ON CONFLICT (org_id, key) DO NOTHING`, [id("role"), orgId]);
+  return (await one<{ id: string }>(`SELECT id FROM role WHERE org_id=$1 AND key='org_admin'`, [orgId]))!.id;
+}
+
+// Set (or clear) a user's role + granular permission grants on one project.
+// role='none' removes them from the project. Granular permissions are stored as
+// the EXTRAS beyond what the role already grants, matching how policy resolves them.
+export async function saveUserProjectAccessAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const targetId = String(formData.get("userId"));
+  const projectId = String(formData.get("projectId"));
+  const role = String(formData.get("role") || "none");
+  if (!(await one(`SELECT id FROM project WHERE id=$1 AND org_id=$2`, [projectId, orgId]))) redirect(`/hr/access/manage/${targetId}?err=proj`);
+
+  if (role === "none") {
+    await q(`DELETE FROM project_member WHERE project_id=$1 AND user_id=$2`, [projectId, targetId]);
+  } else {
+    if (!(PROJECT_ROLES as readonly string[]).includes(role)) redirect(`/hr/access/manage/${targetId}?err=role`);
+    const submitted = (formData.getAll("perms") as string[]).filter((p) => (PERMISSIONS as readonly string[]).includes(p));
+    const roleGrants = new Set<Permission>(ROLE_PERMISSIONS[role as ProjectRole]);
+    const extras = submitted.filter((p) => !roleGrants.has(p as Permission));
+    await q(`INSERT INTO org_membership (id, org_id, user_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [id("om"), orgId, targetId]);
+    await q(`INSERT INTO project_member (id, project_id, user_id, role, permissions) VALUES ($1,$2,$3,$4,$5)
+             ON CONFLICT (project_id, user_id) DO UPDATE SET role=$4, permissions=$5`,
+      [id("pm"), projectId, targetId, role, JSON.stringify(extras)]);
+  }
+  await writeAudit({ orgId, userId, action: "update", entity: "project_member", entityId: `${projectId}:${targetId}`, after: { role } });
+  redirect(`/hr/access/manage/${targetId}?saved=1`);
+}
+
+// Promote/demote an organisation administrator. Guarded against self-change and
+// against removing the last remaining admin.
+export async function setOrgAdminAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const targetId = String(formData.get("userId"));
+  const makeAdmin = String(formData.get("makeAdmin")) === "1";
+  if (targetId === userId) redirect(`/hr/access/manage/${targetId}?err=self`);
+  if (!makeAdmin) {
+    const admins = await q(`SELECT m.user_id FROM org_membership m JOIN role r ON r.id=m.role_id
+                            WHERE m.org_id=$1 AND r.key='org_admin'`, [orgId]);
+    if (admins.length <= 1) redirect(`/hr/access/manage/${targetId}?err=lastadmin`);
+    await q(`UPDATE org_membership SET role_id=NULL WHERE org_id=$1 AND user_id=$2`, [orgId, targetId]);
+  } else {
+    const roleId = await orgAdminRoleId(orgId);
+    await q(`INSERT INTO org_membership (id, org_id, user_id, role_id) VALUES ($1,$2,$3,$4)
+             ON CONFLICT (org_id, user_id) DO UPDATE SET role_id=$4`, [id("om"), orgId, targetId, roleId]);
+  }
+  await writeAudit({ orgId, userId, action: "update", entity: "org_membership", entityId: targetId, after: { orgAdmin: makeAdmin } });
+  redirect(`/hr/access/manage/${targetId}?saved=1`);
+}
+
+// Apply a project role to every employee in a department in one action.
+export async function bulkSetDepartmentAccessAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const department = String(formData.get("department") || "").trim();
+  const projectId = String(formData.get("projectId"));
+  const role = String(formData.get("role") || "none");
+  if (!department || !projectId) redirect("/hr/access/manage?err=fields");
+  if (!(await one(`SELECT id FROM project WHERE id=$1 AND org_id=$2`, [projectId, orgId]))) redirect("/hr/access/manage?err=proj");
+  const emps = await q<{ userId: string }>(
+    `SELECT user_id AS "userId" FROM employee WHERE org_id=$1 AND department=$2 AND user_id IS NOT NULL`, [orgId, department]
+  );
+  let n = 0;
+  for (const e of emps) {
+    if (role === "none") { await q(`DELETE FROM project_member WHERE project_id=$1 AND user_id=$2`, [projectId, e.userId]); n++; }
+    else if ((PROJECT_ROLES as readonly string[]).includes(role)) {
+      await q(`INSERT INTO org_membership (id, org_id, user_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, [id("om"), orgId, e.userId]);
+      await q(`INSERT INTO project_member (id, project_id, user_id, role) VALUES ($1,$2,$3,$4)
+               ON CONFLICT (project_id, user_id) DO UPDATE SET role=$4`, [id("pm"), projectId, e.userId, role]);
+      n++;
+    }
+  }
+  await writeAudit({ orgId, userId, action: "update", entity: "project_member", entityId: projectId, after: { department, role, count: n } });
+  redirect(`/hr/access/manage?saved=${n}`);
 }

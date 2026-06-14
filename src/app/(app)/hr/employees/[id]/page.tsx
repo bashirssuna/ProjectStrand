@@ -9,11 +9,12 @@ import { label } from "@/lib/enums";
 import { updateEmployeeAction, assignEmployeeDepartmentAction, createEmployeeLoginAction,
   updateEmployeeProfileAction, addEmployeeEducationAction, deleteEmployeeEducationAction,
   addEmployeePolicyAction, deleteEmployeePolicyAction, requestHrActionAction, decideHrActionAction,
-  upsertEmployeeCompAction, upsertEmployeeProjectAction, removeEmployeeProjectAction } from "@/app/actions";
+  upsertEmployeeCompAction, upsertEmployeeProjectAction, removeEmployeeProjectAction,
+  generateResponsibilitiesFromDocAction, uploadEmployeeDocumentAction, deleteEmployeeDocumentAction } from "@/app/actions";
 import { dateInput } from "@/lib/format";
 import { COMMON_DEPARTMENTS } from "@/lib/departments";
 
-export default async function EmployeeDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ saved?: string; login?: string; loginerr?: string; hra?: string; err?: string }> }) {
+export default async function EmployeeDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ saved?: string; login?: string; loginerr?: string; hra?: string; err?: string; docuploaded?: string; docdeleted?: string; docerr?: string; generated?: string; generr?: string }> }) {
   const { id } = await params;
   const { orgId } = await requireHrOrg();
   const sp = await searchParams;
@@ -63,6 +64,9 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
   const assignedProjectIds = new Set(employeeProjects.map((a) => a.projectId));
   const assignableProjects = projects.filter((p) => !assignedProjectIds.has(p.id));
   const deptOptions = Array.from(new Map([...departments.map((d) => d.name), ...COMMON_DEPARTMENTS].map((n) => [n.toLowerCase(), n])).values());
+  const empDocs = await q<{ id: string; name: string; docType: string; createdAt: string }>(
+    `SELECT id, name, doc_type AS "docType", created_at AS "createdAt" FROM employee_document WHERE employee_id=$1 ORDER BY created_at DESC`, [id]
+  );
   const recentLeave = await q<{ leaveType: string; startDate: string; endDate: string; days: number; status: string }>(
     `SELECT leave_type AS "leaveType", start_date AS "startDate", end_date AS "endDate", days::float, status FROM leave_request WHERE employee_id=$1 ORDER BY start_date DESC LIMIT 5`, [id]
   );
@@ -226,32 +230,80 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
 
       {/* project assignments — which projects this person works on, role & responsibilities */}
       <SectionTitle>Project assignments</SectionTitle>
+      {sp.generated && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Generated {sp.generated} responsibilit{sp.generated === "1" ? "y" : "ies"} from the document — review and edit, then Save.</div>}
+      {sp.generr === "type" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Please upload a Word .docx file.</div>}
+      {sp.generr === "empty" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Couldn&apos;t find a responsibilities/duties list in that document. Add a heading like &quot;Responsibilities&quot; or bullet points, or type them manually.</div>}
+      {sp.generr === "file" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Please choose a file to upload.</div>}
       {employeeProjects.length === 0 ? (
         <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>Not assigned to any project yet. Assign this person to one or more projects with a role and responsibilities below.</p>
       ) : (
+        <div className="space-y-3 mb-3">
+          {employeeProjects.map((a) => (
+            <div key={a.id} className="card p-4">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div className="font-medium"><Link href={`/projects/${a.projectId}`} className="hover:underline" style={{ color: "var(--brand)" }}>{a.code}</Link> {a.title}</div>
+                <form action={removeEmployeeProjectAction}>
+                  <input type="hidden" name="employeeId" value={e.id} />
+                  <input type="hidden" name="projectId" value={a.projectId} />
+                  <input type="hidden" name="back" value={`/hr/employees/${e.id}`} />
+                  <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Remove</button>
+                </form>
+              </div>
+              <form action={upsertEmployeeProjectAction} className="grid sm:grid-cols-4 gap-3 items-start">
+                <input type="hidden" name="employeeId" value={e.id} />
+                <input type="hidden" name="projectId" value={a.projectId} />
+                <input type="hidden" name="back" value={`/hr/employees/${e.id}`} />
+                <Field label="Role"><input name="role" defaultValue={a.role ?? ""} className="input" placeholder="e.g. Data Manager" /></Field>
+                <div className="sm:col-span-3"><Field label="Responsibilities"><textarea name="responsibilities" rows={5} defaultValue={a.responsibilities ?? ""} className="textarea" placeholder="One responsibility per line…" /></Field></div>
+                <div className="sm:col-span-4 flex justify-end"><button className="btn btn-sm btn-primary" type="submit">Save</button></div>
+              </form>
+              <form action={generateResponsibilitiesFromDocAction} className="flex flex-wrap items-end gap-2 mt-3 pt-3 border-t" style={{ borderColor: "var(--border)" }}>
+                <input type="hidden" name="employeeId" value={e.id} />
+                <input type="hidden" name="projectId" value={a.projectId} />
+                <input type="hidden" name="back" value={`/hr/employees/${e.id}`} />
+                <Field label="…or generate them from a Word contract / ToR (.docx)"><input type="file" name="file" accept=".docx" className="input" /></Field>
+                <button className="btn btn-sm" type="submit">Upload &amp; generate</button>
+              </form>
+            </div>
+          ))}
+        </div>
+      )}
+      {assignableProjects.length > 0 ? (
+        <form action={upsertEmployeeProjectAction} className="card p-4 grid sm:grid-cols-4 gap-3 items-start mb-6">
+          <input type="hidden" name="employeeId" value={e.id} />
+          <input type="hidden" name="back" value={`/hr/employees/${e.id}`} />
+          <Field label="Project"><select name="projectId" required className="select"><option value="">— choose —</option>{assignableProjects.map((p) => <option key={p.id} value={p.id}>{p.code} {p.title}</option>)}</select></Field>
+          <Field label="Role"><input name="role" className="input" placeholder="e.g. Data Manager" /></Field>
+          <div className="sm:col-span-2"><Field label="Responsibilities"><textarea name="responsibilities" rows={2} className="textarea" placeholder="One per line — or add the assignment, then upload a contract to generate them" /></Field></div>
+          <div className="sm:col-span-4 flex justify-end"><button className="btn btn-primary" type="submit">Assign to project</button></div>
+        </form>
+      ) : projects.length > 0 ? (
+        <p className="text-sm mb-6" style={{ color: "var(--muted)" }}>This person is assigned to all available projects.</p>
+      ) : (
+        <p className="text-sm mb-6" style={{ color: "var(--muted)" }}>No projects exist yet to assign.</p>
+      )}
+
+      {/* documents — HR uploads (contracts) + employee-uploaded CV/certs */}
+      <SectionTitle>Documents</SectionTitle>
+      {sp.docuploaded && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Document uploaded.</div>}
+      {sp.docdeleted && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Document deleted.</div>}
+      {sp.docerr === "file" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Please choose a file.</div>}
+      <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>Employee contracts and HR documents you upload here, together with the CV and certificates the employee uploads in their own portal. Visible to HR and admins only.</p>
+      {empDocs.length === 0 ? <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>No documents yet.</p> : (
         <div className="card overflow-x-auto mb-3">
           <table className="w-full text-sm">
-            <thead><tr><th className="th text-left">Project</th><th className="th text-left" style={{ minWidth: 360 }}>Role &amp; responsibilities</th><th className="th" /></tr></thead>
+            <thead><tr><th className="th text-left">Document</th><th className="th text-left">Type</th><th className="th text-left">Uploaded</th><th className="th" /></tr></thead>
             <tbody>
-              {employeeProjects.map((a) => (
-                <tr key={a.id}>
-                  <td className="td"><Link href={`/projects/${a.projectId}`} className="hover:underline" style={{ color: "var(--brand)" }}>{a.code}</Link> {a.title}</td>
-                  <td className="td">
-                    <form action={upsertEmployeeProjectAction} className="flex flex-wrap items-end gap-2">
-                      <input type="hidden" name="employeeId" value={e.id} />
-                      <input type="hidden" name="projectId" value={a.projectId} />
-                      <input type="hidden" name="back" value={`/hr/employees/${e.id}`} />
-                      <input name="role" defaultValue={a.role ?? ""} className="input" placeholder="Role" style={{ width: 150 }} />
-                      <input name="responsibilities" defaultValue={a.responsibilities ?? ""} className="input" placeholder="Responsibilities" style={{ minWidth: 200, flex: 1 }} />
-                      <button className="btn btn-sm" type="submit">Save</button>
-                    </form>
-                  </td>
+              {empDocs.map((d) => (
+                <tr key={d.id}>
+                  <td className="td"><a href={`/api/employee-files/${d.id}`} className="hover:underline" style={{ color: "var(--brand)" }}>📎 {d.name}</a></td>
+                  <td className="td"><Badge tone="muted">{label(d.docType)}</Badge></td>
+                  <td className="td">{fmtDate(d.createdAt)}</td>
                   <td className="td text-right">
-                    <form action={removeEmployeeProjectAction}>
+                    <form action={deleteEmployeeDocumentAction}>
+                      <input type="hidden" name="documentId" value={d.id} />
                       <input type="hidden" name="employeeId" value={e.id} />
-                      <input type="hidden" name="projectId" value={a.projectId} />
-                      <input type="hidden" name="back" value={`/hr/employees/${e.id}`} />
-                      <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Remove</button>
+                      <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete</button>
                     </form>
                   </td>
                 </tr>
@@ -260,20 +312,12 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
           </table>
         </div>
       )}
-      {assignableProjects.length > 0 ? (
-        <form action={upsertEmployeeProjectAction} className="card p-4 grid sm:grid-cols-4 gap-3 items-end mb-6">
-          <input type="hidden" name="employeeId" value={e.id} />
-          <input type="hidden" name="back" value={`/hr/employees/${e.id}`} />
-          <Field label="Project"><select name="projectId" required className="select"><option value="">— choose —</option>{assignableProjects.map((p) => <option key={p.id} value={p.id}>{p.code} {p.title}</option>)}</select></Field>
-          <Field label="Role"><input name="role" className="input" placeholder="e.g. Data Manager" /></Field>
-          <Field label="Responsibilities"><input name="responsibilities" className="input" /></Field>
-          <button className="btn btn-primary" type="submit">Assign to project</button>
-        </form>
-      ) : projects.length > 0 ? (
-        <p className="text-sm mb-6" style={{ color: "var(--muted)" }}>This person is assigned to all available projects.</p>
-      ) : (
-        <p className="text-sm mb-6" style={{ color: "var(--muted)" }}>No projects exist yet to assign.</p>
-      )}
+      <form action={uploadEmployeeDocumentAction} className="card p-4 flex flex-wrap items-end gap-3 mb-6">
+        <input type="hidden" name="employeeId" value={e.id} />
+        <Field label="Upload a document"><input type="file" name="file" required className="input" /></Field>
+        <Field label="Type"><select name="docType" className="select"><option value="contract">Employee contract</option><option value="cv">CV / Résumé</option><option value="certificate">Certificate</option><option value="id">ID document</option><option value="other">Other</option></select></Field>
+        <button className="btn btn-primary" type="submit">Upload</button>
+      </form>
 
       {/* recent leave */}
       <SectionTitle>Recent leave</SectionTitle>

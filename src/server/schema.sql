@@ -1228,3 +1228,66 @@ CREATE TABLE IF NOT EXISTS employee_project (
 );
 CREATE INDEX IF NOT EXISTS idx_empproj_employee ON employee_project(employee_id);
 CREATE INDEX IF NOT EXISTS idx_empproj_project ON employee_project(project_id);
+
+-- ===========================================================================
+-- FINANCIAL YEARS
+-- Org-defined accounting periods (begin/end). Finance summaries can be scoped
+-- to a financial year. One year may be flagged as the current/active period.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS financial_year (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,                 -- e.g. "FY2025/26"
+  start_date date NOT NULL,
+  end_date date NOT NULL,
+  is_current boolean NOT NULL DEFAULT false,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_fy_org ON financial_year(org_id);
+
+-- ===========================================================================
+-- SUB-AWARDS  (sub-grants / pass-through awards)
+-- When the organisation passes a portion of a project's funding to an external
+-- organisation (a sub-grantee) to run some activities, that relationship is a
+-- sub-award. Tracked here with its source project, amount, period and status,
+-- plus disbursement tranches. Surfaced both as its own module and in Finance.
+-- ===========================================================================
+CREATE TABLE IF NOT EXISTS subaward (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,   -- funded from this project
+  collaborator_id text REFERENCES collaborator(id) ON DELETE SET NULL, -- if the grantee is a registered partner
+  grantee_name text NOT NULL,         -- the sub-grantee organisation
+  title text NOT NULL,                -- scope / purpose of the sub-award
+  reference text,                     -- agreement / contract number
+  description text,                   -- activities the grantee will run
+  deliverables text,                  -- expected outputs / milestones
+  amount numeric(18,2) NOT NULL DEFAULT 0,
+  currency text NOT NULL DEFAULT 'USD',
+  start_date date,
+  end_date date,
+  status text NOT NULL DEFAULT 'draft', -- draft | active | suspended | completed | closed
+  contact_name text,
+  contact_email text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_subaward_org ON subaward(org_id);
+CREATE INDEX IF NOT EXISTS idx_subaward_project ON subaward(project_id);
+
+-- Disbursement tranches paid to the sub-grantee against a sub-award.
+CREATE TABLE IF NOT EXISTS subaward_payment (
+  id text PRIMARY KEY,
+  subaward_id text NOT NULL REFERENCES subaward(id) ON DELETE CASCADE,
+  paid_on date NOT NULL,
+  amount numeric(18,2) NOT NULL DEFAULT 0,
+  reference text,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_subpay_award ON subaward_payment(subaward_id);
+
+-- Employees may record an alternative (personal) email; the primary email is
+-- managed by HR and stays read-only to the employee.
+ALTER TABLE employee ADD COLUMN IF NOT EXISTS alternative_email text;

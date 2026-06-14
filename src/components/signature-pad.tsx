@@ -2,7 +2,7 @@
 import { useRef, useState, useEffect } from "react";
 import { saveSignatureAction } from "@/app/actions";
 
-export function SignaturePad({ existing }: { existing: string | null }) {
+export function SignaturePad({ existing, back }: { existing: string | null; back?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [drawing, setDrawing] = useState(false);
   const [dataUrl, setDataUrl] = useState("");
@@ -63,6 +63,7 @@ export function SignaturePad({ existing }: { existing: string | null }) {
       />
       <form action={saveSignatureAction} className="flex items-center gap-2">
         <input type="hidden" name="dataUrl" value={dataUrl} />
+        {back && <input type="hidden" name="back" value={back} />}
         <button className="btn btn-primary btn-sm" type="submit" disabled={!dirty}>Save signature</button>
         <button type="button" className="btn btn-sm" onClick={clear}>Clear</button>
       </form>

@@ -459,31 +459,33 @@ export async function updateProfileAction(formData: FormData) {
 
 export async function changePasswordAction(formData: FormData) {
   const user = await requireUser();
+  const back = String(formData.get("back") || "/profile");
   const current = String(formData.get("currentPassword") || "");
   const next = String(formData.get("newPassword") || "");
   const confirm = String(formData.get("confirmPassword") || "");
   const row = await one<{ passwordHash: string | null }>(`SELECT password_hash AS "passwordHash" FROM app_user WHERE id=$1`, [user.id]);
-  if (!row || !verifyPassword(current, row.passwordHash)) redirect("/profile?pw=wrong");
-  if (next !== confirm) redirect("/profile?pw=match");
+  if (!row || !verifyPassword(current, row.passwordHash)) redirect(`${back}?pw=wrong`);
+  if (next !== confirm) redirect(`${back}?pw=match`);
   const pe = passwordError(next);
-  if (pe) redirect(`/profile?pw=${encodeURIComponent(pe)}`);
+  if (pe) redirect(`${back}?pw=${encodeURIComponent(pe)}`);
   await q(`UPDATE app_user SET password_hash=$2, updated_at=now() WHERE id=$1`, [user.id, await hashPassword(next)]);
   await writeAudit({ userId: user.id, action: "update", entity: "app_user", entityId: user.id, meta: { passwordChanged: true } });
-  redirect("/profile?pw=ok");
+  redirect(`${back}?pw=ok`);
 }
 
 export async function uploadAvatarAction(formData: FormData) {
   const user = await requireUser();
+  const back = String(formData.get("back") || "/profile");
   const file = formData.get("file") as File | null;
-  if (!file || file.size === 0) redirect("/profile");
-  if (!file.type.startsWith("image/")) redirect("/profile?avatar=type");
-  if (file.size > 2_000_000) redirect("/profile?avatar=size"); // 2 MB cap (stored inline)
+  if (!file || file.size === 0) redirect(back);
+  if (!file.type.startsWith("image/")) redirect(`${back}?avatar=type`);
+  if (file.size > 2_000_000) redirect(`${back}?avatar=size`); // 2 MB cap (stored inline)
   const buf = Buffer.from(await file.arrayBuffer());
   const dataUrl = `data:${file.type};base64,${buf.toString("base64")}`;
   await q(`INSERT INTO user_profile (id, user_id, avatar_url) VALUES ($1,$2,$3)
            ON CONFLICT (user_id) DO UPDATE SET avatar_url=$3`, [id("up"), user.id, dataUrl]);
   await writeAudit({ userId: user.id, action: "update", entity: "user_profile", entityId: user.id, meta: { avatar: true } });
-  redirect("/profile?avatar=ok");
+  redirect(`${back}?avatar=ok`);
 }
 
 export async function saveSignatureAction(formData: FormData) {
@@ -492,7 +494,7 @@ export async function saveSignatureAction(formData: FormData) {
   if (dataUrl) {
     await q(`INSERT INTO signature_asset (id, user_id, data_url) VALUES ($1,$2,$3)`, [id("sig"), user.id, dataUrl]);
   }
-  revalidatePath("/profile");
+  revalidatePath(String(formData.get("back") || "/profile"));
 }
 
 /* ---------------- Meetings ---------------- */
@@ -1810,11 +1812,18 @@ async function requireOwnEmployee(): Promise<{ employeeId: string; orgId: string
 export async function updateMyProfileAction(formData: FormData) {
   const { employeeId } = await requireOwnEmployee();
   await q(`UPDATE employee SET phone=$2, address=$3, date_of_birth=$4, national_id=$5, emergency_contact=$6,
-             cv_summary=$7, qualifications=$8, skills=$9 WHERE id=$1`,
+             cv_summary=$7, qualifications=$8, skills=$9, gender=$10, marital_status=$11, nationality=$12,
+             nssf_number=$13, tin_number=$14, next_of_kin=$15, next_of_kin_relationship=$16, next_of_kin_phone=$17,
+             next_of_kin_address=$18, alternative_email=$19 WHERE id=$1`,
     [employeeId, String(formData.get("phone") || "") || null, String(formData.get("address") || "") || null,
      String(formData.get("dateOfBirth") || "") || null, String(formData.get("nationalId") || "") || null,
      String(formData.get("emergencyContact") || "") || null, String(formData.get("cvSummary") || "") || null,
-     String(formData.get("qualifications") || "") || null, String(formData.get("skills") || "") || null]);
+     String(formData.get("qualifications") || "") || null, String(formData.get("skills") || "") || null,
+     String(formData.get("gender") || "") || null, String(formData.get("maritalStatus") || "") || null,
+     String(formData.get("nationality") || "") || null, String(formData.get("nssfNumber") || "") || null,
+     String(formData.get("tinNumber") || "") || null, String(formData.get("nextOfKin") || "") || null,
+     String(formData.get("nextOfKinRelationship") || "") || null, String(formData.get("nextOfKinPhone") || "") || null,
+     String(formData.get("nextOfKinAddress") || "") || null, String(formData.get("alternativeEmail") || "") || null]);
   redirect("/portal/profile?saved=1");
 }
 
@@ -2265,4 +2274,165 @@ export async function removeEmployeeProjectAction(formData: FormData) {
   const back = String(formData.get("back") || `/hr/employees/${employeeId}`);
   revalidatePath(back);
   redirect(`${back}?saved=1`);
+}
+
+/* ===================== FINANCIAL YEARS ===================== */
+export async function addFinancialYearAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  const start = String(formData.get("startDate") || "");
+  const end = String(formData.get("endDate") || "");
+  if (!name || !start || !end) redirect("/finance/years?err=fields");
+  const makeCurrent = formData.get("isCurrent") === "on";
+  if (makeCurrent) await q(`UPDATE financial_year SET is_current=false WHERE org_id=$1`, [orgId]);
+  await q(`INSERT INTO financial_year (id, org_id, name, start_date, end_date, is_current, note)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (org_id, name) DO NOTHING`,
+    [id("fy"), orgId, name, start, end, makeCurrent, String(formData.get("note") || "") || null]);
+  redirect("/finance/years?saved=1");
+}
+
+export async function setCurrentFinancialYearAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const fyId = String(formData.get("yearId"));
+  await q(`UPDATE financial_year SET is_current=false WHERE org_id=$1`, [orgId]);
+  await q(`UPDATE financial_year SET is_current=true WHERE id=$1 AND org_id=$2`, [fyId, orgId]);
+  redirect("/finance/years?saved=1");
+}
+
+export async function deleteFinancialYearAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`DELETE FROM financial_year WHERE id=$1 AND org_id=$2`, [String(formData.get("yearId")), orgId]);
+  redirect("/finance/years?saved=1");
+}
+
+/* ===================== SUB-AWARDS ===================== */
+function subawardFields(formData: FormData) {
+  return {
+    projectId: String(formData.get("projectId") || "") || null,
+    collaboratorId: String(formData.get("collaboratorId") || "") || null,
+    granteeName: String(formData.get("granteeName") || "").trim(),
+    title: String(formData.get("title") || "").trim(),
+    reference: String(formData.get("reference") || "") || null,
+    description: String(formData.get("description") || "") || null,
+    deliverables: String(formData.get("deliverables") || "") || null,
+    amount: Number(formData.get("amount") || 0),
+    currency: String(formData.get("currency") || "USD").trim() || "USD",
+    startDate: String(formData.get("startDate") || "") || null,
+    endDate: String(formData.get("endDate") || "") || null,
+    status: String(formData.get("status") || "draft"),
+    contactName: String(formData.get("contactName") || "") || null,
+    contactEmail: String(formData.get("contactEmail") || "") || null,
+  };
+}
+
+export async function createSubawardAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const f = subawardFields(formData);
+  if (!f.granteeName || !f.title) redirect("/subawards?err=fields");
+  const sid = id("suba");
+  await q(`INSERT INTO subaward (id, org_id, project_id, collaborator_id, grantee_name, title, reference, description,
+             deliverables, amount, currency, start_date, end_date, status, contact_name, contact_email)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+    [sid, orgId, f.projectId, f.collaboratorId, f.granteeName, f.title, f.reference, f.description,
+     f.deliverables, f.amount, f.currency, f.startDate, f.endDate, f.status, f.contactName, f.contactEmail]);
+  await writeAudit({ orgId, userId, action: "create", entity: "subaward", entityId: sid, after: { granteeName: f.granteeName, amount: f.amount } });
+  redirect(`/subawards/${sid}`);
+}
+
+export async function updateSubawardAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const sid = String(formData.get("subawardId"));
+  const f = subawardFields(formData);
+  if (!f.granteeName || !f.title) redirect(`/subawards/${sid}?err=fields`);
+  await q(`UPDATE subaward SET project_id=$3, collaborator_id=$4, grantee_name=$5, title=$6, reference=$7, description=$8,
+             deliverables=$9, amount=$10, currency=$11, start_date=$12, end_date=$13, status=$14, contact_name=$15, contact_email=$16
+           WHERE id=$1 AND org_id=$2`,
+    [sid, orgId, f.projectId, f.collaboratorId, f.granteeName, f.title, f.reference, f.description,
+     f.deliverables, f.amount, f.currency, f.startDate, f.endDate, f.status, f.contactName, f.contactEmail]);
+  await writeAudit({ orgId, userId, action: "update", entity: "subaward", entityId: sid });
+  redirect(`/subawards/${sid}?saved=1`);
+}
+
+export async function deleteSubawardAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`DELETE FROM subaward WHERE id=$1 AND org_id=$2`, [String(formData.get("subawardId")), orgId]);
+  redirect("/subawards");
+}
+
+export async function addSubawardPaymentAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const sid = String(formData.get("subawardId"));
+  const owner = await one<{ id: string }>(`SELECT id FROM subaward WHERE id=$1 AND org_id=$2`, [sid, orgId]);
+  if (!owner) redirect("/subawards");
+  await q(`INSERT INTO subaward_payment (id, subaward_id, paid_on, amount, reference, note) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id("subpay"), sid, String(formData.get("paidOn") || "") || new Date().toISOString().slice(0, 10),
+     Number(formData.get("amount") || 0), String(formData.get("reference") || "") || null, String(formData.get("note") || "") || null]);
+  await writeAudit({ orgId, userId, action: "create", entity: "subaward_payment", entityId: sid });
+  redirect(`/subawards/${sid}?saved=1`);
+}
+
+export async function deleteSubawardPaymentAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const sid = String(formData.get("subawardId"));
+  await q(`DELETE FROM subaward_payment WHERE id=$1 AND subaward_id IN (SELECT id FROM subaward WHERE org_id=$2)`,
+    [String(formData.get("paymentId")), orgId]);
+  redirect(`/subawards/${sid}?saved=1`);
+}
+
+/* ===================== HR EMPLOYEE DOCUMENTS ===================== */
+// HR uploads documents (contracts etc.) onto an employee record.
+export async function uploadEmployeeDocumentAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const empId = String(formData.get("employeeId"));
+  const owner = await one<{ id: string }>(`SELECT id FROM employee WHERE id=$1 AND org_id=$2`, [empId, orgId]);
+  if (!owner) redirect("/hr/employees");
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) redirect(`/hr/employees/${empId}?docerr=file`);
+  const buf = Buffer.from(await file.arrayBuffer());
+  const docId = id("edoc");
+  const key = await saveUpload(docId, file.name, buf);
+  await q(`INSERT INTO employee_document (id, employee_id, name, doc_type, storage_key, mime_type, size_bytes, uploaded_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [docId, empId, file.name, String(formData.get("docType") || "contract"), key, mimeFor(file.name), buf.length, userId]);
+  await writeAudit({ orgId, userId, action: "create", entity: "employee_document", entityId: docId, after: { name: file.name } });
+  redirect(`/hr/employees/${empId}?docuploaded=1`);
+}
+
+export async function deleteEmployeeDocumentAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const empId = String(formData.get("employeeId"));
+  const doc = await one<{ storageKey: string | null }>(
+    `SELECT ed.storage_key AS "storageKey" FROM employee_document ed JOIN employee e ON e.id=ed.employee_id
+     WHERE ed.id=$1 AND e.org_id=$2`, [String(formData.get("documentId")), orgId]);
+  if (doc?.storageKey) await deleteUpload(doc.storageKey);
+  await q(`DELETE FROM employee_document WHERE id=$1 AND employee_id IN (SELECT id FROM employee WHERE org_id=$2)`,
+    [String(formData.get("documentId")), orgId]);
+  redirect(`/hr/employees/${empId}?docdeleted=1`);
+}
+
+/* ===================== RESPONSIBILITIES FROM A WORD DOC ===================== */
+import { extractResponsibilities } from "@/server/services/docparse";
+// Upload a contract / ToR (.docx) and auto-populate the responsibilities for a
+// staff project assignment. Always editable afterwards — never auto-finalised.
+export async function generateResponsibilitiesFromDocAction(formData: FormData) {
+  const projectId = String(formData.get("projectId"));
+  const employeeId = String(formData.get("employeeId"));
+  const access = await requirePermission(projectId, "members.manage");
+  const back = String(formData.get("back") || `/hr/employees/${employeeId}`);
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) { redirect(`${back}?generr=file`); }
+  const name = file.name.toLowerCase();
+  if (!name.endsWith(".docx")) { redirect(`${back}?generr=type`); }
+  const buf = Buffer.from(await file.arrayBuffer());
+  const items = await extractResponsibilities(buf);
+  if (items.length === 0) { redirect(`${back}?generr=empty`); }
+  const text = items.map((i) => `• ${i}`).join("\n");
+  await q(
+    `INSERT INTO employee_project (id, employee_id, project_id, responsibilities)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (employee_id, project_id) DO UPDATE SET responsibilities=$4`,
+    [id("epj"), employeeId, projectId, text]
+  );
+  await writeAudit({ userId: access.user.id, action: "update", entity: "employee_project", entityId: `${employeeId}:${projectId}`, meta: { source: "docx", count: items.length } });
+  redirect(`${back}?generated=${items.length}`);
 }

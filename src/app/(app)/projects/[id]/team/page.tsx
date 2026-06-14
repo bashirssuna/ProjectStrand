@@ -2,6 +2,7 @@ import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
 import { addMemberAction, updateMemberRoleAction, removeMemberAction,
   upsertEmployeeProjectAction, removeEmployeeProjectAction,
+  generateResponsibilitiesFromDocAction,
   updateCollaboratorProjectRoleAction, removeCollaboratorProjectLinkAction } from "@/app/actions";
 import { SectionTitle, Badge, Field } from "@/components/ui";
 import { PROJECT_ROLES, ROLE_PERMISSIONS, label } from "@/lib/enums";
@@ -9,7 +10,7 @@ import { blockStaff } from "../_staffblock";
 
 const COLLAB_ROLES = [["co_investigator", "Co-Investigator"], ["partner", "Partner"], ["funder", "Funder"], ["advisor", "Advisor"], ["sub_grantee", "Sub-grantee"], ["collaborator", "Collaborator"]];
 
-export default async function TeamPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ invite?: string; why?: string; saved?: string }> }) {
+export default async function TeamPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ invite?: string; why?: string; saved?: string; generated?: string; generr?: string }> }) {
   const { id } = await params;
   await blockStaff(id);
   const sp = await searchParams;
@@ -112,6 +113,10 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
       <div>
         <SectionTitle>Staff on this project</SectionTitle>
         {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved.</div>}
+        {sp.generated && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Generated {sp.generated} responsibilit{sp.generated === "1" ? "y" : "ies"} from the document — review and Save.</div>}
+        {sp.generr === "type" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Please upload a Word .docx file.</div>}
+        {sp.generr === "empty" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Couldn&apos;t find a responsibilities list in that document.</div>}
+        {sp.generr === "file" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Please choose a file to upload.</div>}
         {staff.length === 0 ? (
           <p className="text-sm" style={{ color: "var(--muted)" }}>No staff assigned yet.{canManage ? " Assign employees and their responsibilities below." : ""}</p>
         ) : (
@@ -121,23 +126,32 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
               <tbody>
                 {staff.map((s) => (
                   <tr key={s.id}>
-                    <td className="td font-medium">{s.name}</td>
+                    <td className="td font-medium align-top">{s.name}</td>
                     <td className="td">
                       {canManage ? (
-                        <form action={upsertEmployeeProjectAction} className="flex flex-wrap items-end gap-2">
-                          <input type="hidden" name="projectId" value={id} />
-                          <input type="hidden" name="employeeId" value={s.employeeId} />
-                          <input type="hidden" name="back" value={`/projects/${id}/team`} />
-                          <input name="role" defaultValue={s.role ?? ""} className="input" placeholder="Role" style={{ width: 150 }} />
-                          <input name="responsibilities" defaultValue={s.responsibilities ?? ""} className="input" placeholder="Responsibilities" style={{ minWidth: 200, flex: 1 }} />
-                          <button className="btn btn-sm" type="submit">Save</button>
-                        </form>
+                        <div className="space-y-2">
+                          <form action={upsertEmployeeProjectAction} className="space-y-2">
+                            <input type="hidden" name="projectId" value={id} />
+                            <input type="hidden" name="employeeId" value={s.employeeId} />
+                            <input type="hidden" name="back" value={`/projects/${id}/team`} />
+                            <input name="role" defaultValue={s.role ?? ""} className="input" placeholder="Role" style={{ maxWidth: 220 }} />
+                            <textarea name="responsibilities" defaultValue={s.responsibilities ?? ""} rows={3} className="textarea" placeholder="Responsibilities — one per line" />
+                            <button className="btn btn-sm" type="submit">Save</button>
+                          </form>
+                          <form action={generateResponsibilitiesFromDocAction} className="flex flex-wrap items-end gap-2 pt-2 border-t" style={{ borderColor: "var(--border)" }}>
+                            <input type="hidden" name="projectId" value={id} />
+                            <input type="hidden" name="employeeId" value={s.employeeId} />
+                            <input type="hidden" name="back" value={`/projects/${id}/team`} />
+                            <Field label="Generate from a contract / ToR (.docx)"><input type="file" name="file" accept=".docx" className="input" /></Field>
+                            <button className="btn btn-sm" type="submit">Upload &amp; generate</button>
+                          </form>
+                        </div>
                       ) : (
                         <span>{s.role ? <Badge tone="brand">{label(s.role)}</Badge> : null} <span style={{ color: "var(--muted)" }}>{s.responsibilities ?? ""}</span></span>
                       )}
                     </td>
                     {canManage && (
-                      <td className="td text-right">
+                      <td className="td text-right align-top">
                         <form action={removeEmployeeProjectAction}>
                           <input type="hidden" name="projectId" value={id} />
                           <input type="hidden" name="employeeId" value={s.employeeId} />
@@ -153,13 +167,13 @@ export default async function TeamPage({ params, searchParams }: { params: Promi
           </div>
         )}
         {canManage && assignableEmployees.length > 0 && (
-          <form action={upsertEmployeeProjectAction} className="card p-4 grid sm:grid-cols-4 gap-3 items-end mt-3">
+          <form action={upsertEmployeeProjectAction} className="card p-4 grid sm:grid-cols-4 gap-3 items-start mt-3">
             <input type="hidden" name="projectId" value={id} />
             <input type="hidden" name="back" value={`/projects/${id}/team`} />
             <Field label="Employee"><select name="employeeId" required className="select"><option value="">— choose —</option>{assignableEmployees.map((emp) => <option key={emp.id} value={emp.id}>{emp.name}</option>)}</select></Field>
             <Field label="Role"><input name="role" className="input" placeholder="e.g. Field Coordinator" /></Field>
-            <Field label="Responsibilities"><input name="responsibilities" className="input" /></Field>
-            <button className="btn btn-primary" type="submit">Assign staff</button>
+            <div className="sm:col-span-2"><Field label="Responsibilities"><textarea name="responsibilities" rows={2} className="textarea" placeholder="One per line — or assign first, then upload a contract to generate them" /></Field></div>
+            <div className="sm:col-span-4 flex justify-end"><button className="btn btn-primary" type="submit">Assign staff</button></div>
           </form>
         )}
         {canManage && orgEmployees.length === 0 && <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>No employees in HR yet — add staff under HR → Employees first.</p>}

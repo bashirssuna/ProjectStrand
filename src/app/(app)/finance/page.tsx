@@ -74,6 +74,14 @@ export default async function FinanceHome() {
           <div className="font-display font-semibold">Currency &amp; FX rates</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Set the base currency and exchange rates for conversion.</div>
         </Link>
+        <Link href="/finance/years" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Financial years</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Define accounting periods and see spend &amp; disbursements per year.</div>
+        </Link>
+        <Link href="/subawards" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Sub-awards</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Pass-through grants to partner organisations and their disbursements.</div>
+        </Link>
       </div>
     </div>
   );

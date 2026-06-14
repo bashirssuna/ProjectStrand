@@ -7,9 +7,10 @@ import { label } from "@/lib/enums";
 import { addEmployeeAction } from "@/app/actions";
 import { COMMON_DEPARTMENTS } from "@/lib/departments";
 
-export default async function EmployeesPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string }> }) {
+export default async function EmployeesPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string; view?: string }> }) {
   const { orgId } = await requireHrOrg();
   const sp = await searchParams;
+  const view = sp.view === "department" || sp.view === "project" ? sp.view : "list";
   const employees = await q<{ id: string; staffNo: string | null; firstName: string; lastName: string; jobTitle: string | null; department: string | null; contractType: string; basicSalary: number; currency: string; status: string }>(
     `SELECT id, staff_no AS "staffNo", first_name AS "firstName", last_name AS "lastName", job_title AS "jobTitle",
             department, contract_type AS "contractType", basic_salary::float AS "basicSalary", currency, status
@@ -18,14 +19,43 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
   const users = await q<{ id: string; name: string; email: string }>(`SELECT u.id, u.name, u.email FROM app_user u JOIN org_membership m ON m.user_id=u.id WHERE m.org_id=$1 ORDER BY u.name`, [orgId]);
   const departments = await q<{ id: string; name: string }>(`SELECT id, name FROM department WHERE org_id=$1 ORDER BY name`, [orgId]);
 
+  // For the grouped views.
+  const projAssign = await q<{ projectId: string; code: string; title: string; empId: string; firstName: string; lastName: string; jobTitle: string | null; role: string | null }>(
+    `SELECT ep.project_id AS "projectId", p.code, p.title, e.id AS "empId", e.first_name AS "firstName",
+            e.last_name AS "lastName", e.job_title AS "jobTitle", ep.role
+     FROM employee_project ep JOIN project p ON p.id=ep.project_id JOIN employee e ON e.id=ep.employee_id
+     WHERE e.org_id=$1 ORDER BY p.code, e.last_name, e.first_name`, [orgId]
+  );
+  const byDept = new Map<string, typeof employees>();
+  for (const e of employees) {
+    const k = e.department?.trim() || "— Unassigned —";
+    if (!byDept.has(k)) byDept.set(k, []);
+    byDept.get(k)!.push(e);
+  }
+  const byProj = new Map<string, { code: string; title: string; members: typeof projAssign }>();
+  for (const a of projAssign) {
+    if (!byProj.has(a.projectId)) byProj.set(a.projectId, { code: a.code, title: a.title, members: [] });
+    byProj.get(a.projectId)!.members.push(a);
+  }
+  const assignedIds = new Set(projAssign.map((a) => a.empId));
+  const unassignedToProject = employees.filter((e) => !assignedIds.has(e.id));
+
   return (
     <div className="max-w-5xl">
       <PageHeader title="Employees" subtitle="Staff records and employment details" actions={<Link href="/hr" className="btn btn-sm">← HR</Link>} />
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Employee added.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>First and last name are required.</div>}
 
-      <SectionTitle>Staff</SectionTitle>
-      {employees.length === 0 ? <Empty title="No employees yet" hint="Add your first staff member below." /> : (
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <SectionTitle>Staff</SectionTitle>
+        <div className="flex gap-1">
+          <Link href="/hr/employees" className="btn btn-sm" style={view === "list" ? { background: "var(--brand)", color: "var(--brand-fg)" } : undefined}>List</Link>
+          <Link href="/hr/employees?view=department" className="btn btn-sm" style={view === "department" ? { background: "var(--brand)", color: "var(--brand-fg)" } : undefined}>By department</Link>
+          <Link href="/hr/employees?view=project" className="btn btn-sm" style={view === "project" ? { background: "var(--brand)", color: "var(--brand-fg)" } : undefined}>By project</Link>
+        </div>
+      </div>
+
+      {employees.length === 0 ? <Empty title="No employees yet" hint="Add your first staff member below." /> : view === "list" ? (
         <div className="card overflow-x-auto mb-6">
           <table className="w-full text-sm">
             <thead><tr><th className="th text-left">Staff no.</th><th className="th text-left">Name</th><th className="th text-left">Title</th><th className="th text-left">Contract</th><th className="th text-right">Basic</th><th className="th text-left">Status</th><th className="th" /></tr></thead>
@@ -43,6 +73,52 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
               ))}
             </tbody>
           </table>
+        </div>
+      ) : view === "department" ? (
+        <div className="space-y-3 mb-6">
+          {[...byDept.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([dept, list]) => (
+            <div key={dept} className="card p-4">
+              <div className="font-display font-semibold mb-2">{dept} <span className="text-xs font-normal" style={{ color: "var(--muted)" }}>· {list.length} {list.length === 1 ? "person" : "people"}</span></div>
+              <div>
+                {list.map((e) => (
+                  <div key={e.id} className="flex items-center justify-between py-1.5 border-t" style={{ borderColor: "var(--border)" }}>
+                    <div><span className="font-medium">{e.firstName} {e.lastName}</span>{e.jobTitle && <span className="text-xs" style={{ color: "var(--muted)" }}> · {e.jobTitle}</span>}</div>
+                    <Link href={`/hr/employees/${e.id}`} className="btn btn-sm">Open</Link>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-3 mb-6">
+          {[...byProj.values()].map((p) => (
+            <div key={p.code} className="card p-4">
+              <div className="font-display font-semibold mb-2"><span style={{ color: "var(--brand)" }}>{p.code}</span> {p.title} <span className="text-xs font-normal" style={{ color: "var(--muted)" }}>· {p.members.length} {p.members.length === 1 ? "person" : "people"}</span></div>
+              <div>
+                {p.members.map((m) => (
+                  <div key={m.empId} className="flex items-center justify-between py-1.5 border-t" style={{ borderColor: "var(--border)" }}>
+                    <div><span className="font-medium">{m.firstName} {m.lastName}</span>{m.role && <span className="text-xs" style={{ color: "var(--muted)" }}> · {m.role}</span>}</div>
+                    <Link href={`/hr/employees/${m.empId}`} className="btn btn-sm">Open</Link>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          {byProj.size === 0 && <p className="text-sm" style={{ color: "var(--muted)" }}>No project assignments yet.</p>}
+          {unassignedToProject.length > 0 && (
+            <div className="card p-4">
+              <div className="font-display font-semibold mb-2">— Not on any project — <span className="text-xs font-normal" style={{ color: "var(--muted)" }}>· {unassignedToProject.length}</span></div>
+              <div>
+                {unassignedToProject.map((e) => (
+                  <div key={e.id} className="flex items-center justify-between py-1.5 border-t" style={{ borderColor: "var(--border)" }}>
+                    <div><span className="font-medium">{e.firstName} {e.lastName}</span>{e.jobTitle && <span className="text-xs" style={{ color: "var(--muted)" }}> · {e.jobTitle}</span>}</div>
+                    <Link href={`/hr/employees/${e.id}`} className="btn btn-sm">Open</Link>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 

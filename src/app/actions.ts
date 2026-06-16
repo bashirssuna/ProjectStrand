@@ -1093,6 +1093,43 @@ export async function createVoucherAction(formData: FormData) {
   redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=ok`);
 }
 
+// Record a STANDALONE payment voucher (not tied to a requisition) and post it to the
+// general ledger so it flows into the monthly bank reconciliation as a cash payment.
+export async function createStandaloneVoucherAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const payee = String(formData.get("payee") || "").trim();
+  const amount = Number(formData.get("amount") || 0);
+  const accountId = String(formData.get("accountId") || "");          // cash/bank credited
+  const expenseAccountId = String(formData.get("expenseAccountId") || ""); // debited
+  const date = String(formData.get("voucherDate") || new Date().toISOString().slice(0, 10));
+  if (!payee || amount <= 0 || !accountId || !expenseAccountId) redirect("/finance/vouchers?err=invalid");
+  const projectId = String(formData.get("projectId") || "") || null;
+  const purpose = String(formData.get("purpose") || "") || null;
+  const reference = String(formData.get("reference") || "") || null;
+  const method = String(formData.get("method") || "bank_transfer");
+  const num = await nextNum(orgId, "voucher", "PV");
+  const vid = id("pv");
+  let entryId: string | null = null;
+  try {
+    const posted = await postJournal({
+      orgId, entryDate: date, memo: `Voucher ${num} — ${payee}${purpose ? ` · ${purpose}` : ""}`,
+      reference: num, sourceType: "voucher", sourceId: vid, projectId, postedBy: userId, postedByName: userName,
+      lines: [
+        { accountId: expenseAccountId, debit: amount, description: purpose ?? payee, projectId },
+        { accountId, credit: amount, description: `Payment to ${payee}`, projectId },
+      ],
+    });
+    entryId = posted.entryId;
+  } catch (e) {
+    redirect(`/finance/vouchers?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`);
+  }
+  await q(`INSERT INTO payment_voucher (id, org_id, project_id, requisition_id, number, voucher_date, payee, amount, method, reference, purpose, account_id, expense_account_id, journal_entry_id, prepared_by, prepared_by_name, status)
+           VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'paid')`,
+    [vid, orgId, projectId, num, date, payee, amount, method, reference, purpose, accountId, expenseAccountId, entryId, userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "payment_voucher", entityId: num, after: { payee, amount } });
+  redirect(`/finance/vouchers?created=${num}`);
+}
+
 // Recomputes a requisition's disbursed amount + status from APPROVED vouchers only.
 async function recomputeDisbursement(reqId: string) {
   const req = await one<{ amount: number }>(`SELECT amount FROM requisition WHERE id=$1`, [reqId]);
@@ -1496,6 +1533,34 @@ export async function voidInvoiceAction(formData: FormData) {
   catch (e) { redirect(`/finance/invoices?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
   revalidatePath("/finance/invoices");
   redirect("/finance/invoices?voided=1");
+}
+
+// Delete a draft or void invoice (these never affected the live ledger, so removal
+// is safe). Issued/paid invoices can never be deleted — they must be voided.
+export async function deleteInvoiceAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const invId = String(formData.get("invoiceId"));
+  const inv = await one<{ number: string; status: string; amountPaid: number }>(
+    `SELECT number, status, amount_paid::float AS "amountPaid" FROM invoice WHERE id=$1 AND org_id=$2`, [invId, orgId]
+  );
+  if (!inv) redirect("/finance/invoices");
+  if (!(inv.status === "draft" || inv.status === "void") || inv.amountPaid > 0) redirect("/finance/invoices?err=Only+draft+or+void+invoices+can+be+deleted");
+  await q(`DELETE FROM invoice WHERE id=$1 AND org_id=$2`, [invId, orgId]); // invoice_line cascades
+  await writeAudit({ orgId, userId, action: "delete", entity: "invoice", entityId: inv.number });
+  redirect("/finance/invoices?deleted=1");
+}
+
+// Archive / unarchive a draft or void invoice (keeps the record but hides it).
+export async function archiveInvoiceAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const invId = String(formData.get("invoiceId"));
+  const archive = String(formData.get("archive") || "1") === "1";
+  const inv = await one<{ number: string; status: string }>(`SELECT number, status FROM invoice WHERE id=$1 AND org_id=$2`, [invId, orgId]);
+  if (!inv) redirect("/finance/invoices");
+  if (archive && !(inv.status === "draft" || inv.status === "void")) redirect("/finance/invoices?err=Only+draft+or+void+invoices+can+be+archived");
+  await q(`UPDATE invoice SET archived=$2 WHERE id=$1 AND org_id=$3`, [invId, archive, orgId]);
+  await writeAudit({ orgId, userId, action: archive ? "archive" : "unarchive", entity: "invoice", entityId: inv.number });
+  redirect(`/finance/invoices${archive ? "?archived_ok=1" : "?unarchived=1&showArchived=1"}`);
 }
 
 // ---- Receipts ----

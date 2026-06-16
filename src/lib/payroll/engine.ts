@@ -136,6 +136,36 @@ export function computePAYE(gross: number, cfg: CompensationConfig): number {
   return bandedPAYE(gross, cfg.payeBands ?? UGANDA_BANDS);
 }
 
+export interface PayeBandRow { from: number; to: number | null; rate: number; amountInBand: number; tax: number; note?: string }
+
+// Marginal PAYE broken down band by band, so the calculation is transparent on a payslip.
+export function payeBreakdown(gross: number, cfg: CompensationConfig): { rows: PayeBandRow[]; total: number; method: PayeMethod } {
+  if (cfg.payeMethod === "none") return { rows: [], total: 0, method: "none" };
+  if (cfg.payeMethod === "flat") {
+    const r = cfg.payeFlatRate ?? 0;
+    return { rows: [{ from: 0, to: null, rate: r, amountInBand: gross, tax: gross * r, note: "flat rate" }], total: gross * r, method: "flat" };
+  }
+  const bands = cfg.payeBands ?? UGANDA_BANDS;
+  const rows: PayeBandRow[] = [];
+  let lower = 0;
+  let total = 0;
+  for (const b of bands) {
+    const upper = b.upTo ?? Infinity;
+    const amountInBand = gross > lower ? Math.min(gross, upper) - lower : 0;
+    let tax = amountInBand * b.rate;
+    let note: string | undefined;
+    if (b.surchargeOver && b.surchargeThreshold && gross > b.surchargeThreshold) {
+      tax += (gross - b.surchargeThreshold) * b.surchargeOver;
+      note = `+${Math.round(b.surchargeOver * 100)}% surcharge over ${b.surchargeThreshold.toLocaleString()}`;
+    }
+    if (amountInBand > 0) rows.push({ from: lower, to: b.upTo, rate: b.rate, amountInBand, tax, note });
+    total += tax;
+    lower = upper;
+    if (gross <= upper) break;
+  }
+  return { rows, total, method: "uganda" };
+}
+
 // ---- Uganda Local Service Tax (LST) ----
 // Annual LST by monthly-income band (UGX), capped at 100,000/yr. Disabled by
 // default; when enabled it is deducted monthly (annual ÷ divisor, default 12).

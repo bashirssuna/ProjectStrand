@@ -1,23 +1,25 @@
 import Link from "next/link";
 import { requireFinanceOrg } from "../_guard";
 import { q, one } from "@/server/db";
-import { PageHeader, SectionTitle, Field, StatusBadge, Empty } from "@/components/ui";
+import { PageHeader, SectionTitle, Field, StatusBadge, Badge, Empty } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
 import { currencyOptions } from "@/lib/currencies";
-import { createInvoiceAction, issueInvoiceAction, voidInvoiceAction, addCustomerAction } from "@/app/actions";
+import { createInvoiceAction, issueInvoiceAction, voidInvoiceAction, addCustomerAction, deleteInvoiceAction, archiveInvoiceAction } from "@/app/actions";
 
-export default async function InvoicesPage({ searchParams }: { searchParams: Promise<{ created?: string; issued?: string; voided?: string; cust?: string; err?: string }> }) {
+export default async function InvoicesPage({ searchParams }: { searchParams: Promise<{ created?: string; issued?: string; voided?: string; cust?: string; err?: string; deleted?: string; archived_ok?: string; unarchived?: string; showArchived?: string }> }) {
   const { orgId } = await requireFinanceOrg();
   const sp = await searchParams;
   const base = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+  const showArchived = sp.showArchived === "1";
 
   const customers = await q<{ id: string; name: string }>(`SELECT id, name FROM finance_customer WHERE org_id=$1 ORDER BY name`, [orgId]);
   const incomeAccts = await q<{ id: string; code: string; name: string }>(`SELECT id, code, name FROM ledger_account WHERE org_id=$1 AND account_type='income' AND is_active ORDER BY code`, [orgId]);
   const projects = await q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY created_at DESC`, [orgId]);
-  const invoices = await q<{ id: string; number: string; invoiceDate: string; customer: string | null; currency: string; total: number; amountPaid: number; status: string }>(
-    `SELECT i.id, i.number, i.invoice_date AS "invoiceDate", c.name AS customer, i.currency, i.total::float, i.amount_paid::float AS "amountPaid", i.status
-     FROM invoice i LEFT JOIN finance_customer c ON c.id=i.customer_id WHERE i.org_id=$1 ORDER BY i.created_at DESC`, [orgId]
+  const invoices = await q<{ id: string; number: string; invoiceDate: string; customer: string | null; currency: string; total: number; amountPaid: number; status: string; archived: boolean }>(
+    `SELECT i.id, i.number, i.invoice_date AS "invoiceDate", c.name AS customer, i.currency, i.total::float, i.amount_paid::float AS "amountPaid", i.status, i.archived
+     FROM invoice i LEFT JOIN finance_customer c ON c.id=i.customer_id WHERE i.org_id=$1 AND (i.archived=false OR $2) ORDER BY i.created_at DESC`, [orgId, showArchived]
   );
+  const archivedCount = (await one<{ n: number }>(`SELECT COUNT(*)::int n FROM invoice WHERE org_id=$1 AND archived=true`, [orgId]))?.n ?? 0;
 
   return (
     <div className="max-w-5xl">
@@ -25,10 +27,16 @@ export default async function InvoicesPage({ searchParams }: { searchParams: Pro
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Invoice {sp.created} created as a draft. Issue it to post the receivable.</div>}
       {sp.issued && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Invoice issued — receivable posted to the ledger.</div>}
       {sp.voided && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Invoice voided and its posting reversed.</div>}
+      {sp.deleted && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Invoice deleted.</div>}
+      {sp.archived_ok && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Invoice archived.</div>}
+      {sp.unarchived && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Invoice restored.</div>}
       {sp.cust && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Customer added.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{sp.err === "amount" ? "Amount must be positive." : sp.err === "cust" ? "Customer name required." : decodeURIComponent(sp.err)}</div>}
 
-      <SectionTitle>Invoices</SectionTitle>
+      <div className="flex items-center justify-between">
+        <SectionTitle>Invoices</SectionTitle>
+        {archivedCount > 0 && <Link href={showArchived ? "/finance/invoices" : "/finance/invoices?showArchived=1"} className="text-xs hover:underline" style={{ color: "var(--muted)" }}>{showArchived ? "Hide archived" : `Show archived (${archivedCount})`}</Link>}
+      </div>
       {invoices.length === 0 ? <Empty title="No invoices yet" hint="Create one below; issuing it posts a receivable to the ledger." /> : (
         <div className="card overflow-x-auto mb-6">
           <table className="w-full text-sm">
@@ -44,12 +52,22 @@ export default async function InvoicesPage({ searchParams }: { searchParams: Pro
                   <td className="td text-right tabular-nums">{money(i.amountPaid, i.currency)}</td>
                   <td className="td text-right whitespace-nowrap">
                     <div className="flex gap-1 justify-end">
-                      {i.status === "draft" && <Link href={`/finance/invoices/${i.id}`} className="btn btn-sm">Edit</Link>}
-                      {i.status === "draft" && (
+                      {i.archived && <Badge tone="muted">Archived</Badge>}
+                      {i.status === "draft" && !i.archived && <Link href={`/finance/invoices/${i.id}`} className="btn btn-sm">Edit</Link>}
+                      {i.status === "draft" && !i.archived && (
                         <form action={issueInvoiceAction}><input type="hidden" name="invoiceId" value={i.id} /><button className="btn btn-sm btn-primary" type="submit">Issue</button></form>
                       )}
-                      {(i.status === "draft" || i.status === "issued") && i.amountPaid === 0 && (
+                      {(i.status === "draft" || i.status === "issued") && i.amountPaid === 0 && !i.archived && (
                         <form action={voidInvoiceAction}><input type="hidden" name="invoiceId" value={i.id} /><button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Void</button></form>
+                      )}
+                      {(i.status === "draft" || i.status === "void") && !i.archived && (
+                        <form action={archiveInvoiceAction}><input type="hidden" name="invoiceId" value={i.id} /><input type="hidden" name="archive" value="1" /><button className="btn btn-sm" type="submit">Archive</button></form>
+                      )}
+                      {i.archived && (
+                        <form action={archiveInvoiceAction}><input type="hidden" name="invoiceId" value={i.id} /><input type="hidden" name="archive" value="0" /><button className="btn btn-sm" type="submit">Restore</button></form>
+                      )}
+                      {(i.status === "draft" || i.status === "void") && i.amountPaid === 0 && (
+                        <form action={deleteInvoiceAction}><input type="hidden" name="invoiceId" value={i.id} /><button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete</button></form>
                       )}
                       <a href={`/print/invoice/${i.id}`} target="_blank" rel="noopener" className="btn btn-sm">🖨</a>
                     </div>

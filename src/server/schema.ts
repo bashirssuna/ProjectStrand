@@ -1636,4 +1636,30 @@ CREATE TABLE IF NOT EXISTS bank_reconciliation (
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (org_id, account_id, period)
 );
+
+-- Standalone bank-payment vouchers (direct payments not tied to a requisition),
+-- for bank reconciliation. Loosen the requisition/project requirement and add scoping.
+ALTER TABLE payment_voucher ALTER COLUMN requisition_id DROP NOT NULL;
+ALTER TABLE payment_voucher ALTER COLUMN project_id DROP NOT NULL;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS org_id text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS voucher_date date;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS journal_entry_id text;
+
+-- Payment vouchers as first-class documents: recordable standalone (not only from a
+-- requisition), with an explicit date and the cash/expense accounts for ledger posting,
+-- so they flow into the monthly bank reconciliation.
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS org_id text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS voucher_date date;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS account_id text;          -- cash/bank account credited
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS expense_account_id text;  -- account debited
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS journal_entry_id text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS status text DEFAULT 'prepared';
+ALTER TABLE payment_voucher ALTER COLUMN requisition_id DROP NOT NULL;
+ALTER TABLE payment_voucher ALTER COLUMN project_id DROP NOT NULL;
+-- Backfill org_id + voucher_date for vouchers created before these columns existed.
+UPDATE payment_voucher SET org_id = (SELECT p.org_id FROM project p WHERE p.id = payment_voucher.project_id) WHERE org_id IS NULL AND project_id IS NOT NULL;
+UPDATE payment_voucher SET voucher_date = created_at::date WHERE voucher_date IS NULL;
+
+-- Draft/void invoices can be archived (hidden from the working list) or deleted.
+ALTER TABLE invoice ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
 `;

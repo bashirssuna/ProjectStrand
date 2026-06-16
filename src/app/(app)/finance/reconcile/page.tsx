@@ -44,7 +44,7 @@ export default async function ReconcilePage({ searchParams }: { searchParams: Pr
   return (
     <div className="max-w-4xl">
       <PageHeader title="Bank reconciliation" subtitle={`${rec.accountName} · monthly`}
-        actions={<div className="flex gap-2 items-center">{locked ? <Badge tone="ok">Finalised</Badge> : reconciled ? <Badge tone="ok">Reconciled</Badge> : <Badge tone="warn">In progress</Badge>}<Link href="/finance" className="btn btn-sm">← Finance</Link></div>} />
+        actions={<div className="flex gap-2 items-center">{locked ? <Badge tone="ok">Finalised</Badge> : reconciled ? <Badge tone="ok">Reconciled</Badge> : <Badge tone="warn">In progress</Badge>}<Link href="/finance/vouchers" className="btn btn-sm">+ Voucher</Link><Link href="/finance/receipts" className="btn btn-sm">+ Receipt</Link><Link href="/finance" className="btn btn-sm">← Finance</Link></div>} />
 
       {/* Account + month pickers */}
       <div className="flex flex-wrap gap-2 mb-3">

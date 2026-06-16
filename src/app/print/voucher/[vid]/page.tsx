@@ -1,42 +1,49 @@
 import { redirect } from "next/navigation";
 import { one } from "@/server/db";
+import { requireUser } from "@/server/auth";
 import { getProjectAccess } from "@/server/policy";
+import { getUserOrg } from "@/server/services/accounts";
 import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { PrintButton } from "@/components/print-button";
 import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
 
-// Print-friendly payment voucher on the institution's letterhead.
-// Shows the three-stage workflow: Prepared by → Checked by → Approved by.
-// Payment (cash/bank) is only made at the Approved stage.
+// Print-friendly payment voucher on the institution's letterhead. Works for both
+// requisition-linked vouchers (three-stage sign-off) and standalone vouchers.
 export default async function PrintVoucherPage({ params }: { params: Promise<{ vid: string }> }) {
   const { vid } = await params;
+  const user = await requireUser();
   const v = await one<{
-    projectId: string; number: string; payee: string; amount: number; method: string;
-    reference: string | null; purpose: string | null; createdAt: string; status: string;
+    projectId: string | null; orgId: string; number: string; payee: string; amount: number; method: string;
+    reference: string | null; purpose: string | null; voucherDate: string; status: string;
     preparedByName: string | null; preparedById: string | null; preparedAt: string;
     checkedByName: string | null; checkedById: string | null; checkedAt: string | null;
     approvedByName: string | null; approvedById: string | null; approvedAt: string | null;
-    reqNumber: string; reqTitle: string; org: string; orgId: string; projectTitle: string; projectCode: string; currency: string;
+    reqNumber: string | null; reqTitle: string | null; projectTitle: string | null; projectCode: string | null; currency: string;
   }>(
-    `SELECT pv.project_id AS "projectId", pv.number, pv.payee, pv.amount, pv.method, pv.reference,
-            pv.purpose, pv.created_at AS "createdAt", pv.status,
+    `SELECT pv.project_id AS "projectId", COALESCE(pv.org_id, p.org_id) AS "orgId", pv.number, pv.payee, pv.amount, pv.method, pv.reference,
+            pv.purpose, COALESCE(pv.voucher_date::text, pv.created_at::text) AS "voucherDate", COALESCE(pv.status,'prepared') AS status,
             pv.prepared_by_name AS "preparedByName", pv.prepared_by AS "preparedById", pv.created_at AS "preparedAt",
             pv.checked_by_name AS "checkedByName", pv.checked_by AS "checkedById", pv.checked_at AS "checkedAt",
             pv.approved_by_name AS "approvedByName", pv.approved_by AS "approvedById", pv.approved_at AS "approvedAt",
             r.number AS "reqNumber", r.title AS "reqTitle",
-            o.name AS org, p.org_id AS "orgId", p.title AS "projectTitle", p.code AS "projectCode", p.currency
+            p.title AS "projectTitle", p.code AS "projectCode", COALESCE(p.currency, o.base_currency, 'USD') AS currency
      FROM payment_voucher pv
-     JOIN requisition r ON r.id=pv.requisition_id
-     JOIN project p ON p.id=pv.project_id
-     JOIN organization o ON o.id=p.org_id
+     LEFT JOIN requisition r ON r.id=pv.requisition_id
+     LEFT JOIN project p ON p.id=pv.project_id
+     LEFT JOIN organization o ON o.id=COALESCE(pv.org_id, p.org_id)
      WHERE pv.id=$1`, [vid]
   );
   if (!v) redirect("/dashboard");
-  const access = await getProjectAccess(v.projectId);
-  if (!access.permissions.has("project.view")) redirect("/dashboard");
+  // Authorise: project members (with view) for project vouchers; org admins for standalone.
+  if (v.projectId) {
+    const access = await getProjectAccess(v.projectId);
+    if (!access.permissions.has("project.view")) redirect("/dashboard");
+  } else {
+    const org = await getUserOrg(user.id);
+    if (!org || org.id !== v.orgId || (!org.isOrgAdmin && !user.isSuperAdmin)) redirect("/dashboard");
+  }
 
-  // fetch each stage signer's signature image
   async function sigFor(userId: string | null): Promise<string | null> {
     if (!userId) return null;
     const r = await one<{ s: string }>(`SELECT data_url AS s FROM signature_asset WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, [userId]);
@@ -52,26 +59,27 @@ export default async function PrintVoucherPage({ params }: { params: Promise<{ v
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "40px 32px", fontSize: 14 }}>
-        <PrintLetterhead lh={lh} subtitle={`Project: ${v.projectCode} — ${v.projectTitle}`} />
+        <PrintLetterhead lh={lh} subtitle={v.projectCode ? `Project: ${v.projectCode} — ${v.projectTitle}` : undefined} />
 
         <div style={{ textAlign: "center", margin: "18px 0 6px", fontSize: 17, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
           Payment Voucher
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#444", marginBottom: 4 }}>
           <span>No: <strong style={{ color: "#111" }}>{v.number}</strong></span>
-          <span>Date: {fmtDate(v.createdAt)}</span>
-          <span>Requisition: {v.reqNumber}</span>
+          <span>Date: {fmtDate(v.voucherDate)}</span>
+          {v.reqNumber && <span>Requisition: {v.reqNumber}</span>}
         </div>
         <div style={{ textAlign: "center", marginBottom: 14, fontSize: 12 }}>
           Status: <strong>{label(v.status)}</strong>
-          {v.status === "approved" && v.approvedAt ? <> · Paid on {fmtDate(v.approvedAt)}</> : <> · <em>payment pending approval</em></>}
+          {(v.status === "approved" || v.status === "paid") && v.approvedAt ? <> · Paid on {fmtDate(v.approvedAt)}</> : v.status === "paid" ? <> · Paid</> : <> · <em>payment pending approval</em></>}
         </div>
 
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <tbody>
             {[
               ["Pay to", v.payee],
-              ["Purpose", v.purpose ?? v.reqTitle],
+              ["Purpose", v.purpose ?? v.reqTitle ?? "—"],
+              ["Project", v.projectCode ? `${v.projectCode} — ${v.projectTitle}` : "—"],
               ["Payment method", label(v.method)],
               ["Reference", v.reference ?? "—"],
             ].map(([k, val]) => (
@@ -87,7 +95,7 @@ export default async function PrintVoucherPage({ params }: { params: Promise<{ v
           </tbody>
         </table>
 
-        {/* Three-stage sign-off */}
+        {/* Sign-off */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 18, marginTop: 34 }}>
           {stages.map((st) => (
             <div key={st.label} style={{ borderTop: "1px solid #111", paddingTop: 6, fontSize: 12 }}>
@@ -106,7 +114,7 @@ export default async function PrintVoucherPage({ params }: { params: Promise<{ v
         </div>
 
         <div style={{ marginTop: 26, fontSize: 11, color: "#555", borderTop: "1px solid #999", paddingTop: 8 }}>
-          System reference: {v.number} · ID {vid} — linked to requisition {v.reqNumber} in Project Strand.
+          System reference: {v.number}{v.reqNumber ? ` · linked to requisition ${v.reqNumber}` : ""} · generated from Project Strand.
         </div>
         <div style={{ marginTop: 18 }} className="no-print"><PrintButton label="Print / Save as PDF" /></div>
       </div>

@@ -2,8 +2,8 @@ import "server-only";
 import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
 import {
-  computeCompensation, rollupCompensation,
-  type CompensationConfig, type EmployeeInput, type CompResult, type CompRollup, type PayeMethod,
+  computeCompensation, rollupCompensation, payeBreakdown,
+  type CompensationConfig, type EmployeeInput, type CompResult, type CompRollup, type PayeMethod, type PayeBandRow,
 } from "@/lib/payroll/engine";
 
 // ---------------------------------------------------------------------------
@@ -163,15 +163,17 @@ function toEngineInput(r: EmpCompRow): EmployeeInput {
   };
 }
 
-export type EmpCompComputed = { row: EmpCompRow; result: CompResult; benefits: ParsedBenefit[]; deductionDefs: ParsedDeduction[] };
+export type EmpCompComputed = { row: EmpCompRow; result: CompResult; benefits: ParsedBenefit[]; deductionDefs: ParsedDeduction[]; paye: { rows: PayeBandRow[]; total: number; method: PayeMethod } };
 
 export async function getEmployeeComp(employeeId: string): Promise<(EmpCompComputed & { config: CompConfigRow }) | null> {
   const row = await one<EmpCompRow>(`${EMP_COMP_SELECT} WHERE ec.employee_id=$1`, [employeeId]);
   if (!row) return null;
   const owner = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM employee WHERE id=$1`, [employeeId]);
   const config = await getCompConfig(owner!.orgId);
-  const result = computeCompensation(toEngineInput(row), toEngineConfig(row.currency, config));
-  return { row, result, benefits: parseBenefits(row.benefits), deductionDefs: parseDeductionDefs(row.deductions), config };
+  const engineCfg = toEngineConfig(row.currency, config);
+  const result = computeCompensation(toEngineInput(row), engineCfg);
+  const paye = payeBreakdown(result.gross, engineCfg);
+  return { row, result, benefits: parseBenefits(row.benefits), deductionDefs: parseDeductionDefs(row.deductions), config, paye };
 }
 
 export type UpsertCompInput = {
@@ -238,7 +240,11 @@ async function computeRows(where: string, param: string): Promise<EmpCompCompute
   if (rows.length === 0) return [];
   const orgId = (await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM employee WHERE id=$1`, [rows[0].employeeId]))!.orgId;
   const config = await getCompConfig(orgId);
-  return rows.map((row) => ({ row, result: computeCompensation(toEngineInput(row), toEngineConfig(row.currency, config)), benefits: parseBenefits(row.benefits), deductionDefs: parseDeductionDefs(row.deductions) }));
+  return rows.map((row) => {
+    const engineCfg = toEngineConfig(row.currency, config);
+    const result = computeCompensation(toEngineInput(row), engineCfg);
+    return { row, result, benefits: parseBenefits(row.benefits), deductionDefs: parseDeductionDefs(row.deductions), paye: payeBreakdown(result.gross, engineCfg) };
+  });
 }
 
 export async function orgCompensation(orgId: string): Promise<{ byCurrency: CompRollup[]; rows: EmpCompComputed[] }> {

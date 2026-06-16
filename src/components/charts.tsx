@@ -1,4 +1,46 @@
 // Dependency-free SVG charts (server-renderable).
+export function Donut({ segments, size = 132, thickness = 20, centerLabel, centerSub }: {
+  segments: { label: string; value: number; color: string }[];
+  size?: number; thickness?: number; centerLabel?: string; centerSub?: string;
+}) {
+  const shown = segments.filter((s) => s.value > 0);
+  const total = shown.reduce((s, x) => s + x.value, 0);
+  const r = (size - thickness) / 2;
+  const cx = size / 2, cy = size / 2;
+  const circ = 2 * Math.PI * r;
+  let cum = 0;
+  return (
+    <div className="flex items-center gap-4">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" style={{ flexShrink: 0 }}>
+        {total === 0 ? (
+          <circle cx={cx} cy={cy} r={r} fill="none" stroke="var(--surface)" strokeWidth={thickness} />
+        ) : shown.map((s, i) => {
+          const len = (s.value / total) * circ;
+          const el = (
+            <circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={s.color} strokeWidth={thickness}
+              strokeDasharray={`${len} ${circ - len}`} strokeDashoffset={-cum} transform={`rotate(-90 ${cx} ${cy})`}>
+              <title>{s.label}: {s.value}</title>
+            </circle>
+          );
+          cum += len;
+          return el;
+        })}
+        {centerLabel && <text x={cx} y={cy - 1} textAnchor="middle" style={{ fontSize: 18, fontWeight: 700, fill: "var(--fg)" }}>{centerLabel}</text>}
+        {centerSub && <text x={cx} y={cy + 15} textAnchor="middle" style={{ fontSize: 9, fill: "var(--muted)" }}>{centerSub}</text>}
+      </svg>
+      <div className="space-y-1 min-w-0 flex-1">
+        {shown.length === 0 ? <div className="text-xs" style={{ color: "var(--muted)" }}>No data yet</div> : shown.map((s, i) => (
+          <div key={i} className="flex items-center gap-1.5 text-xs">
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: s.color, display: "inline-block", flexShrink: 0 }} />
+            <span className="truncate">{s.label}</span>
+            <span className="tabular-nums ml-auto pl-2" style={{ color: "var(--muted)" }}>{s.value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function HBar({ label, value, max, money: moneyText, tone = "var(--brand)" }: {
   label: string; value: number; max: number; money?: string; tone?: string;
 }) {

@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { requireUser } from "@/server/auth";
 import { listProjectsForUser, getProjectSummary, healthScore } from "@/server/services/projects";
-import { HBar } from "@/components/charts";
+import { HBar, Donut } from "@/components/charts";
 import { q } from "@/server/db";
 import { getUserOrg } from "@/server/services/accounts";
 import { PageHeader, Stat, Badge, StatusBadge, ProgressBar, Empty } from "@/components/ui";
 import { money, pct, fmtDateTime, fmtDate } from "@/lib/format";
+import { label } from "@/lib/enums";
 import { setDisplayCurrencyAction } from "@/app/actions";
 
 export default async function DashboardPage() {
@@ -69,6 +70,30 @@ export default async function DashboardPage() {
      WHERE m.starts_at > now() ORDER BY m.starts_at LIMIT 5`, [user.id]
   );
 
+  // ---- Institution-wide summaries (illustrations that link to detail pages) ----
+  const projStatusDefs: [string, string][] = [["active", "var(--ok)"], ["on_hold", "var(--warn)"], ["completed", "var(--brand)"], ["draft", "#a8a29e"], ["archived", "#d6d3d1"]];
+  const projSegments = projStatusDefs.map(([st, color]) => ({ label: label(st), value: projects.filter((p) => p.status === st).length, color }));
+
+  const remaining = Math.max(0, totalPlanned - totalSpent);
+  const burnPct = totalPlanned ? Math.round((totalSpent / totalPlanned) * 100) : 0;
+  const budgetSegments = [
+    { label: "Spent", value: Math.round(totalSpent), color: "var(--brand)" },
+    { label: "Remaining", value: Math.round(remaining), color: "#e7e5e4" },
+  ];
+
+  const projIds = projects.map((p) => p.id);
+  const reqRows = projIds.length
+    ? await q<{ status: string; n: number }>(`SELECT status, COUNT(*)::int n FROM requisition WHERE project_id = ANY($1) GROUP BY status`, [projIds])
+    : [];
+  const reqBucket = (statuses: string[]) => reqRows.filter((r) => statuses.includes(r.status)).reduce((s, r) => s + r.n, 0);
+  const reqSegments = [
+    { label: "In progress", value: reqBucket(["draft", "submitted", "finance_review", "pending", "manager_review", "admin_review", "partially_funded"]), color: "var(--warn)" },
+    { label: "Approved / disbursed", value: reqBucket(["approved", "disbursed"]), color: "var(--ok)" },
+    { label: "Retired / closed", value: reqBucket(["retired", "accounted", "closed"]), color: "var(--brand)" },
+    { label: "Rejected", value: reqBucket(["rejected", "cancelled"]), color: "var(--danger)" },
+  ];
+  const reqTotal = reqRows.reduce((s, r) => s + r.n, 0);
+
   return (
     <div>
       <PageHeader
@@ -121,7 +146,7 @@ export default async function DashboardPage() {
       )}
 
       {totalPlanned > 0 && (
-        <div className="card p-4 mb-7">
+        <Link href="/finance/statements" className="card p-4 mb-7 block hover:border-brand transition-colors" style={{ borderColor: "var(--border)" }}>
           <div className="text-sm font-medium mb-1">Budget utilisation by project</div>
           {projects.map((p, i) => {
             const b = summaries[i]?.budget;
@@ -129,7 +154,7 @@ export default async function DashboardPage() {
             return <HBar key={p.id} label={`${p.code} ${p.title}`} value={b.actual} max={b.planned}
               money={`${money(b.actual, p.currency)} / ${money(b.planned, p.currency)}`} />;
           })}
-        </div>
+        </Link>
       )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
@@ -137,6 +162,29 @@ export default async function DashboardPage() {
         <Stat label="Portfolio budget" value={money(totalPlanned, primaryCurrency)} sub={displayBudget ? `≈ ${displayBudget} · ${pct(totalPlanned ? (totalSpent / totalPlanned) * 100 : 0)} spent` : `${pct(totalPlanned ? (totalSpent / totalPlanned) * 100 : 0)} spent`} />
         <Stat label="To sign" value={pendingSignatures.length} sub="requisitions awaiting you" tone={pendingSignatures.length ? "warn" : undefined} />
         <Stat label="Open flags" value={totalFlags} sub="across your projects" tone={totalFlags ? "danger" : "ok"} />
+      </div>
+
+      {/* Institution overview — linked summary illustrations */}
+      <div className="mb-7">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-display text-lg font-semibold">Institution overview</h2>
+          <span className="text-xs" style={{ color: "var(--muted)" }}>Tap a card for detail →</span>
+        </div>
+        <div className="grid md:grid-cols-3 gap-4">
+          <Link href="/projects" className="card p-4 hover:border-brand transition-colors" style={{ borderColor: "var(--border)" }}>
+            <div className="text-sm font-medium mb-3">Projects by status</div>
+            <Donut segments={projSegments} centerLabel={String(projects.length)} centerSub="projects" />
+          </Link>
+          <Link href="/finance/statements" className="card p-4 hover:border-brand transition-colors" style={{ borderColor: "var(--border)" }}>
+            <div className="text-sm font-medium mb-3">Budget utilisation</div>
+            <Donut segments={budgetSegments} centerLabel={`${burnPct}%`} centerSub="spent" />
+            <div className="text-xs mt-2" style={{ color: "var(--muted)" }}>{money(totalSpent, primaryCurrency)} of {money(totalPlanned, primaryCurrency)}</div>
+          </Link>
+          <Link href="/projects" className="card p-4 hover:border-brand transition-colors" style={{ borderColor: "var(--border)" }}>
+            <div className="text-sm font-medium mb-3">Requisitions pipeline</div>
+            <Donut segments={reqSegments} centerLabel={String(reqTotal)} centerSub="total" />
+          </Link>
+        </div>
       </div>
 
       {org?.isOrgAdmin && (

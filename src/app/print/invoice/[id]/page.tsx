@@ -5,6 +5,7 @@ import { q, one } from "@/server/db";
 import { money, fmtDate } from "@/lib/format";
 import { PrintButton } from "@/components/print-button";
 import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
+import { convertToBase } from "@/server/services/ledger";
 
 export default async function PrintInvoice({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -30,6 +31,8 @@ export default async function PrintInvoice({ params }: { params: Promise<{ id: s
   const tdR: React.CSSProperties = { ...td, textAlign: "right", whiteSpace: "nowrap" };
 
   const lh = await getLetterhead(inv.orgId);
+  const fx = await convertToBase(inv.orgId, inv.total, inv.currency, inv.invoiceDate);
+  const showFx = fx.baseCurrency !== inv.currency && fx.rate !== 1;
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>
       <div style={{ maxWidth: 720, margin: "0 auto", padding: "40px 32px", fontSize: 14 }}>
@@ -60,6 +63,17 @@ export default async function PrintInvoice({ params }: { params: Promise<{ id: s
             {inv.amountPaid > 0 && <tr style={{ fontWeight: 700 }}><td style={td} colSpan={3}>Balance due</td><td style={tdR}>{money(inv.total - inv.amountPaid, inv.currency)}</td></tr>}
           </tbody>
         </table>
+        {showFx && (
+          <div style={{ marginTop: 10, fontSize: 12, color: "#444" }}>
+            Exchange rate: 1 {inv.currency} = {fx.rate} {fx.baseCurrency} · Equivalent {money(fx.base, fx.baseCurrency)} in reporting currency.
+          </div>
+        )}
+        {lh.bankDetails && (
+          <div style={{ marginTop: 20, fontSize: 12.5 }}>
+            <div style={{ fontWeight: 700, marginBottom: 3 }}>Payment details</div>
+            <div style={{ color: "#333", whiteSpace: "pre-line", lineHeight: 1.5 }}>{lh.bankDetails}</div>
+          </div>
+        )}
         <div style={{ marginTop: 26, fontSize: 11, color: "#555", borderTop: "1px solid #999", paddingTop: 8 }}>System reference: {inv.number} · generated from Project Strand.</div>
         <div style={{ marginTop: 18 }} className="no-print"><PrintButton label="Print / Save as PDF" /></div>
       </div>

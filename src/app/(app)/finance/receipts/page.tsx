@@ -3,6 +3,7 @@ import { requireFinanceOrg } from "../_guard";
 import { q, one } from "@/server/db";
 import { PageHeader, SectionTitle, Field, Empty } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
+import { currencyOptions } from "@/lib/currencies";
 import { label } from "@/lib/enums";
 import { createReceiptAction } from "@/app/actions";
 
@@ -59,7 +60,7 @@ export default async function ReceiptsPage({ searchParams }: { searchParams: Pro
           <select name="customerId" className="select"><option value="">— none —</option>{customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
         </Field>
         <Field label="Amount"><input type="number" step="0.01" name="amount" required className="input" /></Field>
-        <Field label="Currency"><input name="currency" defaultValue={base} className="input" /></Field>
+        <Field label="Currency"><select name="currency" defaultValue={base} className="select">{currencyOptions(base).map((cc) => <option key={cc} value={cc}>{cc}</option>)}</select></Field>
         <Field label="Deposit to (cash/bank)">
           <select name="depositAccountId" required className="select"><option value="">— choose —</option>{cashAccts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}</select>
         </Field>

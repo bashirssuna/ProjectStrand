@@ -1602,4 +1602,7 @@ ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS issuer_logo_data_url text
 -- Journal entries carry a source-document reference (voucher/invoice/receipt no.)
 -- in addition to their serial entry_no, per accounting referencing practice.
 ALTER TABLE journal_entry ADD COLUMN IF NOT EXISTS reference text;
+
+-- Organisation receiving-bank details, shown on invoices ("pay to").
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS bank_details text;
 `;

@@ -6,6 +6,7 @@ import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { PrintButton } from "@/components/print-button";
 import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
+import { convertToBase } from "@/server/services/ledger";
 
 export default async function PrintReceipt({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -14,10 +15,12 @@ export default async function PrintReceipt({ params }: { params: Promise<{ id: s
   if (!org || (!org.isOrgAdmin && !user.isSuperAdmin)) redirect("/dashboard");
   const r = await one<{
     orgId: string; number: string; receiptDate: string; amount: number; currency: string; method: string;
-    reference: string | null; note: string | null; customer: string | null; invoiceNo: string | null; orgName: string;
+    reference: string | null; note: string | null; customer: string | null; invoiceNo: string | null;
+    invTotal: number | null; invPaid: number | null; orgName: string;
   }>(
     `SELECT rc.org_id AS "orgId", rc.number, rc.receipt_date AS "receiptDate", rc.amount::float, rc.currency, rc.method,
-            rc.reference, rc.note, c.name AS customer, i.number AS "invoiceNo", o.name AS "orgName"
+            rc.reference, rc.note, c.name AS customer, i.number AS "invoiceNo",
+            i.total::float AS "invTotal", i.amount_paid::float AS "invPaid", o.name AS "orgName"
      FROM receipt rc JOIN organization o ON o.id=rc.org_id
      LEFT JOIN finance_customer c ON c.id=rc.customer_id LEFT JOIN invoice i ON i.id=rc.invoice_id
      WHERE rc.id=$1`, [id]
@@ -27,6 +30,9 @@ export default async function PrintReceipt({ params }: { params: Promise<{ id: s
   const tv: React.CSSProperties = { border: "1px solid #999", padding: "7px 10px" };
 
   const lh = await getLetterhead(r.orgId);
+  const fx = await convertToBase(r.orgId, r.amount, r.currency, r.receiptDate);
+  const showFx = fx.baseCurrency !== r.currency && fx.rate !== 1;
+  const invBalance = r.invoiceNo && r.invTotal !== null ? Math.max(0, r.invTotal - (r.invPaid ?? 0)) : null;
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>
       <div style={{ maxWidth: 640, margin: "0 auto", padding: "40px 32px", fontSize: 14 }}>
@@ -42,8 +48,10 @@ export default async function PrintReceipt({ params }: { params: Promise<{ id: s
             <tr><td style={td}>The sum of</td><td style={{ ...tv, fontWeight: 700, fontSize: 16 }}>{money(r.amount, r.currency)}</td></tr>
             <tr><td style={td}>Payment method</td><td style={tv}>{label(r.method)}</td></tr>
             {r.invoiceNo && <tr><td style={td}>Against invoice</td><td style={tv}>{r.invoiceNo}</td></tr>}
+            {invBalance !== null && <tr><td style={td}>Balance on invoice</td><td style={{ ...tv, fontWeight: 700 }}>{money(invBalance, r.currency)}</td></tr>}
             <tr><td style={td}>Reference</td><td style={tv}>{r.reference ?? "—"}</td></tr>
             {r.note && <tr><td style={td}>Note</td><td style={tv}>{r.note}</td></tr>}
+            {showFx && <tr><td style={td}>Exchange rate</td><td style={tv}>1 {r.currency} = {fx.rate} {fx.baseCurrency} · {money(fx.base, fx.baseCurrency)}</td></tr>}
           </tbody>
         </table>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, marginTop: 40 }}>

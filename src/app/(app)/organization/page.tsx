@@ -13,11 +13,11 @@ export default async function OrganizationPage({ searchParams }: { searchParams:
   const o = (await one<{
     name: string; logoDataUrl: string | null; address: string | null; email: string | null; phone: string | null;
     website: string | null; slogan: string | null; mission: string | null; vision: string | null; valuesText: string | null;
-    objectives: string | null; registrationNo: string | null; tin: string | null; brandColor: string;
+    objectives: string | null; registrationNo: string | null; tin: string | null; bankDetails: string | null; brandColor: string;
     twitter: string | null; linkedin: string | null; facebook: string | null;
   }>(
     `SELECT name, logo_data_url AS "logoDataUrl", address, email, phone, website, slogan, mission, vision,
-            values_text AS "valuesText", objectives, registration_no AS "registrationNo", tin, brand_color AS "brandColor",
+            values_text AS "valuesText", objectives, registration_no AS "registrationNo", tin, bank_details AS "bankDetails", brand_color AS "brandColor",
             social_twitter AS twitter, social_linkedin AS linkedin, social_facebook AS facebook
      FROM organization WHERE id=$1`, [userOrg.id]
   ))!;
@@ -80,6 +80,7 @@ export default async function OrganizationPage({ searchParams }: { searchParams:
           <Field label="Website"><input name="website" defaultValue={o.website ?? ""} className="input" /></Field>
           <Field label="Registration no."><input name="registrationNo" defaultValue={o.registrationNo ?? ""} className="input" /></Field>
           <Field label="TIN (tax no.)"><input name="tin" defaultValue={o.tin ?? ""} className="input" placeholder="Appears on invoices & receipts" /></Field>
+          <div className="sm:col-span-2"><Field label="Bank details (shown on invoices)"><textarea name="bankDetails" rows={3} defaultValue={o.bankDetails ?? ""} className="textarea" placeholder="Bank name, account name, account no., branch, SWIFT — where funders should pay" /></Field></div>
           <Field label="Brand colour"><input type="color" name="brandColor" defaultValue={o.brandColor} className="input" style={{ height: 38, padding: 4 }} /></Field>
         </div>
 

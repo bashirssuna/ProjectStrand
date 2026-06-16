@@ -3,6 +3,7 @@ import { requireFinanceOrg } from "../_guard";
 import { q, one } from "@/server/db";
 import { PageHeader, SectionTitle, Field, StatusBadge, Empty } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
+import { currencyOptions } from "@/lib/currencies";
 import { createInvoiceAction, issueInvoiceAction, voidInvoiceAction, addCustomerAction } from "@/app/actions";
 
 export default async function InvoicesPage({ searchParams }: { searchParams: Promise<{ created?: string; issued?: string; voided?: string; cust?: string; err?: string }> }) {
@@ -75,7 +76,7 @@ export default async function InvoicesPage({ searchParams }: { searchParams: Pro
             <div className="grid grid-cols-3 gap-3">
               <Field label="Quantity"><input type="number" step="0.01" name="quantity" defaultValue={1} className="input" /></Field>
               <Field label="Unit price"><input type="number" step="0.01" name="unitPrice" required className="input" /></Field>
-              <Field label="Currency"><input name="currency" defaultValue={base} className="input" /></Field>
+              <Field label="Currency"><select name="currency" defaultValue={base} className="select">{currencyOptions(base).map((cc) => <option key={cc} value={cc}>{cc}</option>)}</select></Field>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Invoice date"><input type="date" name="invoiceDate" defaultValue={new Date().toISOString().slice(0, 10)} className="input" /></Field>

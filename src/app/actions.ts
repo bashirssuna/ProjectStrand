@@ -2107,7 +2107,7 @@ export async function updateOrgProfileAction(formData: FormData) {
   const { orgId, userId } = await requireInstitutionFinance();
   await q(`UPDATE organization SET name=$2, address=$3, email=$4, phone=$5, website=$6, slogan=$7,
              mission=$8, vision=$9, values_text=$10, objectives=$11, registration_no=$12,
-             social_twitter=$13, social_linkedin=$14, social_facebook=$15, brand_color=$16, tin=$17, updated_at=now()
+             social_twitter=$13, social_linkedin=$14, social_facebook=$15, brand_color=$16, tin=$17, bank_details=$18, updated_at=now()
            WHERE id=$1`,
     [orgId, String(formData.get("name") || "").trim() || "Organisation",
      String(formData.get("address") || "") || null, String(formData.get("email") || "") || null,
@@ -2117,7 +2117,7 @@ export async function updateOrgProfileAction(formData: FormData) {
      String(formData.get("objectives") || "") || null, String(formData.get("registrationNo") || "") || null,
      String(formData.get("twitter") || "") || null, String(formData.get("linkedin") || "") || null,
      String(formData.get("facebook") || "") || null, String(formData.get("brandColor") || "#2f5d62"),
-     String(formData.get("tin") || "") || null]);
+     String(formData.get("tin") || "") || null, String(formData.get("bankDetails") || "") || null]);
   await writeAudit({ orgId, userId, action: "update", entity: "organization", entityId: orgId });
   redirect("/organization?saved=1");
 }

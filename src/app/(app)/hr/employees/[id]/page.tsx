@@ -340,7 +340,7 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
         <Field label="Job title"><input name="jobTitle" defaultValue={e.jobTitle ?? ""} className="input" /></Field>
         <Field label="Department"><input name="department" defaultValue={e.department ?? ""} className="input" /></Field>
         <Field label="Contract type">
-          <select name="contractType" defaultValue={e.contractType} className="select"><option value="permanent">Permanent</option><option value="fixed_term">Fixed term</option><option value="casual">Casual</option><option value="consultant">Consultant</option><option value="intern">Intern</option></select>
+          <select name="contractType" defaultValue={e.contractType} className="select"><option value="permanent">Permanent</option><option value="fixed_term">Fixed term</option><option value="part_time">Part time</option><option value="casual">Casual</option><option value="consultant">Consultant</option><option value="intern">Intern</option></select>
         </Field>
         <Field label="Basic salary"><input type="number" step="0.01" name="basicSalary" defaultValue={e.basicSalary} className="input" /></Field>
         <Field label="Currency"><input name="currency" defaultValue={e.currency} className="input" /></Field>
@@ -353,7 +353,6 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
         <Field label="Bank name"><input name="bankName" defaultValue={e.bankName ?? ""} className="input" /></Field>
         <Field label="Bank account"><input name="bankAccount" defaultValue={e.bankAccount ?? ""} className="input" /></Field>
         <Field label="Bank branch"><input name="bankBranch" defaultValue={e.bankBranch ?? ""} className="input" /></Field>
-        <Field label="Mobile money"><input name="mobileMoney" defaultValue={e.mobileMoney ?? ""} className="input" /></Field>
         <Field label="Start date"><input type="date" name="startDate" defaultValue={dateInput(e.startDate)} className="input" /></Field>
         <Field label="End date"><input type="date" name="endDate" defaultValue={dateInput(e.endDate)} className="input" /></Field>
         <div className="sm:col-span-3 flex justify-end"><button className="btn btn-primary" type="submit">Save changes</button></div>

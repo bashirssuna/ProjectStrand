@@ -23,8 +23,7 @@ export default async function HrHome() {
           ["/hr/employees", "Employees", "Records, contracts, salary & bank details."],
           ["/hr/leave", "Leave", "Requests, approvals and balance tracking."],
           ["/hr/timesheets", "Timesheets", "Log and approve hours, by project."],
-          ["/hr/payroll", "Payroll", "Configurable components, runs & payslips."],
-          ["/hr/compensation", "Compensation", "Grant model: gross, fringe, NSSF, PAYE & effort."],
+          ["/hr/payroll", "Payroll & compensation", "Pay components, the grant compensation model, runs & payslips."],
           ["/hr/departments", "Departments", "Units staff are assigned to."],
           ["/organization/access", "Access management", "Now under Organisation → manage roles & permissions by person or department."],
         ].map(([href, t, d]) => (

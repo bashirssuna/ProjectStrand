@@ -1347,6 +1347,7 @@ export async function postManualJournalAction(formData: FormData) {
   try {
     await postJournal({
       orgId, entryDate: date, memo: String(formData.get("memo") || "") || undefined,
+      reference: String(formData.get("reference") || "") || null,
       sourceType: "manual", postedBy: userId, postedByName: userName,
       projectId: String(formData.get("projectId") || "") || null,
       lines: [
@@ -1575,8 +1576,9 @@ export async function addEmployeeAction(formData: FormData) {
     deptName = (await one<{ name: string }>(`SELECT name FROM department WHERE id=$1`, [deptId]))?.name ?? null;
   }
   await q(`INSERT INTO employee (id, org_id, user_id, staff_no, first_name, last_name, email, phone, job_title, department, department_id,
-             contract_type, start_date, end_date, basic_salary, currency, pay_frequency, bank_name, bank_account, bank_branch, mobile_money, annual_leave_days, note, prefix)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+             contract_type, start_date, end_date, basic_salary, currency, pay_frequency, bank_name, bank_account, bank_branch, mobile_money, annual_leave_days, note, prefix,
+             national_id, nssf_number, tin_number, next_of_kin, next_of_kin_relationship, next_of_kin_phone, next_of_kin_address)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
     [eid, orgId, String(formData.get("userId") || "") || null, String(formData.get("staffNo") || "") || null,
      first, last, String(formData.get("email") || "") || null, String(formData.get("phone") || "") || null,
      String(formData.get("jobTitle") || "") || null, deptName, deptId,
@@ -1587,7 +1589,11 @@ export async function addEmployeeAction(formData: FormData) {
      String(formData.get("bankName") || "") || null, String(formData.get("bankAccount") || "") || null,
      String(formData.get("bankBranch") || "") || null, String(formData.get("mobileMoney") || "") || null,
      Number(formData.get("annualLeaveDays") || 21), String(formData.get("note") || "") || null,
-     String(formData.get("prefix") || "") || null]);
+     String(formData.get("prefix") || "") || null,
+     String(formData.get("nationalId") || "") || null, String(formData.get("nssfNumber") || "") || null,
+     String(formData.get("tinNumber") || "") || null, String(formData.get("nextOfKin") || "") || null,
+     String(formData.get("nextOfKinRelationship") || "") || null, String(formData.get("nextOfKinPhone") || "") || null,
+     String(formData.get("nextOfKinAddress") || "") || null]);
   await writeAudit({ orgId, userId, action: "create", entity: "employee", entityId: eid, after: { name: `${first} ${last}` } });
   // optional: create a self-service login immediately
   if (formData.get("createLogin") === "on" && String(formData.get("email") || "").trim()) {
@@ -1601,13 +1607,13 @@ export async function updateEmployeeAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
   const eid = String(formData.get("employeeId"));
   await q(`UPDATE employee SET job_title=$2, department=$3, contract_type=$4, basic_salary=$5, currency=$6,
-             bank_name=$7, bank_account=$8, bank_branch=$9, mobile_money=$10, annual_leave_days=$11, status=$12,
-             start_date=$13, end_date=$14, phone=$15, email=$16, staff_no=$17 WHERE id=$1 AND org_id=$18`,
+             bank_name=$7, bank_account=$8, bank_branch=$9, annual_leave_days=$10, status=$11,
+             start_date=$12, end_date=$13, phone=$14, email=$15, staff_no=$16 WHERE id=$1 AND org_id=$17`,
     [eid, String(formData.get("jobTitle") || "") || null, String(formData.get("department") || "") || null,
      String(formData.get("contractType") || "permanent"), Number(formData.get("basicSalary") || 0),
      String(formData.get("currency") || "USD"), String(formData.get("bankName") || "") || null,
      String(formData.get("bankAccount") || "") || null, String(formData.get("bankBranch") || "") || null,
-     String(formData.get("mobileMoney") || "") || null, Number(formData.get("annualLeaveDays") || 21),
+     Number(formData.get("annualLeaveDays") || 21),
      String(formData.get("status") || "active"), String(formData.get("startDate") || "") || null,
      String(formData.get("endDate") || "") || null, String(formData.get("phone") || "") || null,
      String(formData.get("email") || "") || null, String(formData.get("staffNo") || "") || null, orgId]);

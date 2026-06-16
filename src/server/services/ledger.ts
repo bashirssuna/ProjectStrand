@@ -24,6 +24,7 @@ export async function postJournal(input: {
   orgId: string;
   entryDate: string;            // YYYY-MM-DD
   memo?: string;
+  reference?: string | null;    // source document reference (voucher/invoice/receipt no.)
   sourceType?: "manual" | "expenditure" | "voucher" | "reversal";
   sourceId?: string | null;
   projectId?: string | null;
@@ -54,9 +55,9 @@ export async function postJournal(input: {
   const entryId = id("je");
 
   await q(
-    `INSERT INTO journal_entry (id, org_id, entry_no, entry_date, memo, source_type, source_id, project_id, reverses_entry_id, posted_by, posted_by_name)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-    [entryId, input.orgId, entryNo, input.entryDate, input.memo ?? null,
+    `INSERT INTO journal_entry (id, org_id, entry_no, entry_date, memo, reference, source_type, source_id, project_id, reverses_entry_id, posted_by, posted_by_name)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [entryId, input.orgId, entryNo, input.entryDate, input.memo ?? null, input.reference ?? null,
      input.sourceType ?? "manual", input.sourceId ?? null, input.projectId ?? null,
      input.reversesEntryId ?? null, input.postedBy ?? null, input.postedByName ?? null]
   );
@@ -242,6 +243,7 @@ export async function postExpenditureToLedger(input: {
     orgId: input.orgId,
     entryDate: input.date.slice(0, 10),
     memo: `Expenditure${input.reference ? ` ${input.reference}` : ""}${input.payee ? ` — ${input.payee}` : ""}`,
+    reference: input.reference ?? null,
     sourceType: "expenditure",
     sourceId: input.expenditureId,
     projectId: input.projectId,

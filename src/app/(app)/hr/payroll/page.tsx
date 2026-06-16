@@ -26,7 +26,7 @@ export default async function PayrollPage({ searchParams }: { searchParams: Prom
 
   return (
     <div className="max-w-5xl">
-      <PageHeader title="Payroll" subtitle="Configurable components, monthly runs & payslips" actions={<Link href="/hr" className="btn btn-sm">← HR</Link>} />
+      <PageHeader title="Payroll & compensation" subtitle="Pay components, the grant compensation model, monthly runs & payslips" actions={<div className="flex gap-2"><Link href="/hr/compensation" className="btn btn-sm">Compensation model</Link><Link href="/hr" className="btn btn-sm">← HR</Link></div>} />
       {sp.comp && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Pay component added.</div>}
       {sp.finalised && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Payroll run finalised.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{decodeURIComponent(sp.err)}</div>}

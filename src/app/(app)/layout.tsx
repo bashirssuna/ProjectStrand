@@ -54,6 +54,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <nav className="p-3 space-y-1 overflow-y-auto">
             <NavLink href="/dashboard">▣ Dashboard</NavLink>
             <NavLink href="/projects">❏ Projects</NavLink>
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/subawards">⤳ Sub-awards</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/collaborations">⚘ Collaborations</NavLink>}
 
             {(org?.isOrgAdmin || user.isSuperAdmin) && (
               <>
@@ -61,8 +63,6 @@ export default async function AppLayout({ children }: { children: React.ReactNod
                 <NavLink href="/finance">₿ Finance &amp; Accounting</NavLink>
                 <NavLink href="/hr">⚇ Human Resources</NavLink>
                 <NavLink href="/procurement">⛁ Procurement</NavLink>
-                <NavLink href="/subawards">⤳ Sub-awards</NavLink>
-                <NavLink href="/collaborations">⚘ Collaborations</NavLink>
               </>
             )}
 

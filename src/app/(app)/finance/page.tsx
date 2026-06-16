@@ -82,14 +82,6 @@ export default async function FinanceHome() {
           <div className="font-display font-semibold">Sub-awards</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Pass-through grants to partner organisations and their disbursements.</div>
         </Link>
-        <Link href="/finance/remittances" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Statutory remittances</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>PAYE, NSSF &amp; LST filing register with deadlines and receipts.</div>
-        </Link>
-        <Link href="/finance/perdiem" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Per diem &amp; travel</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Travel allowances with mandatory activity reports before payment.</div>
-        </Link>
       </div>
     </div>
   );

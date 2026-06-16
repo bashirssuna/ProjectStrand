@@ -135,7 +135,7 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
           </datalist>
         </Field>
         <Field label="Contract type">
-          <select name="contractType" className="select"><option value="permanent">Permanent</option><option value="fixed_term">Fixed term</option><option value="casual">Casual</option><option value="consultant">Consultant</option><option value="intern">Intern</option></select>
+          <select name="contractType" className="select"><option value="permanent">Permanent</option><option value="fixed_term">Fixed term</option><option value="part_time">Part time</option><option value="casual">Casual</option><option value="consultant">Consultant</option><option value="intern">Intern</option></select>
         </Field>
         <Field label="Basic salary"><input type="number" step="0.01" name="basicSalary" className="input" /></Field>
         <Field label="Currency"><input name="currency" defaultValue="USD" className="input" /></Field>
@@ -147,7 +147,14 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
         <Field label="Annual leave (days)"><input type="number" step="0.5" name="annualLeaveDays" defaultValue={21} className="input" /></Field>
         <Field label="Bank name"><input name="bankName" className="input" /></Field>
         <Field label="Bank account"><input name="bankAccount" className="input" /></Field>
-        <Field label="Mobile money"><input name="mobileMoney" className="input" /></Field>
+        <Field label="Bank branch"><input name="bankBranch" className="input" /></Field>
+        <Field label="National ID"><input name="nationalId" className="input" /></Field>
+        <Field label="NSSF no."><input name="nssfNumber" className="input" /></Field>
+        <Field label="TIN"><input name="tinNumber" className="input" /></Field>
+        <Field label="Next of kin"><input name="nextOfKin" className="input" placeholder="Full name" /></Field>
+        <Field label="Next of kin relationship"><input name="nextOfKinRelationship" className="input" /></Field>
+        <Field label="Next of kin phone"><input name="nextOfKinPhone" className="input" /></Field>
+        <div className="sm:col-span-3"><Field label="Next of kin address"><input name="nextOfKinAddress" className="input" /></Field></div>
         <Field label="Start date"><input type="date" name="startDate" className="input" /></Field>
         <Field label="Link to login (optional)">
           <select name="userId" className="select"><option value="">— not linked —</option>{users.map((u) => <option key={u.id} value={u.id}>{u.name} ({u.email})</option>)}</select>

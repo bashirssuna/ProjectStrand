@@ -14,10 +14,10 @@ export default async function JournalPage({ searchParams }: { searchParams: Prom
     `SELECT id, code, name FROM ledger_account WHERE org_id=$1 AND is_active ORDER BY code`, [orgId]
   );
   const entries = await q<{
-    id: string; entryNo: string; entryDate: string; memo: string | null; sourceType: string;
+    id: string; entryNo: string; entryDate: string; memo: string | null; reference: string | null; sourceType: string;
     postedByName: string | null; total: number; reversed: boolean; isReversal: boolean;
   }>(
-    `SELECT je.id, je.entry_no AS "entryNo", je.entry_date AS "entryDate", je.memo, je.source_type AS "sourceType",
+    `SELECT je.id, je.entry_no AS "entryNo", je.entry_date AS "entryDate", je.memo, je.reference, je.source_type AS "sourceType",
             je.posted_by_name AS "postedByName",
             COALESCE((SELECT SUM(debit) FROM journal_line WHERE entry_id=je.id),0)::float AS total,
             EXISTS(SELECT 1 FROM journal_entry r WHERE r.reverses_entry_id=je.id) AS reversed,
@@ -59,6 +59,7 @@ export default async function JournalPage({ searchParams }: { searchParams: Prom
             {accounts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}
           </select>
         </Field>
+        <Field label="Reference"><input name="reference" className="input" placeholder="Voucher / invoice / receipt no." /></Field>
         <div className="sm:col-span-2"><Field label="Memo"><input name="memo" className="input" placeholder="What is this entry for?" /></Field></div>
         <div className="sm:col-span-2 flex justify-end"><button className="btn btn-primary" type="submit">Post entry</button></div>
       </form>
@@ -71,6 +72,7 @@ export default async function JournalPage({ searchParams }: { searchParams: Prom
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-mono text-xs" style={{ color: "var(--brand)" }}>{e.entryNo}</span>
+                  {e.reference && <Badge tone="muted">Ref: {e.reference}</Badge>}
                   <span className="text-sm">{fmtDate(e.entryDate)}</span>
                   <Badge tone="muted">{e.sourceType}</Badge>
                   {e.isReversal && <Badge tone="info">reversal</Badge>}

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { q, one } from "@/server/db";
 import { getProjectAccess } from "@/server/policy";
 import { SectionTitle, Empty, ProgressBar, Badge, Field } from "@/components/ui";
@@ -5,8 +6,10 @@ import { num, money } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { addObjectiveAction, deleteObjectiveAction, addIndicatorAction, deleteIndicatorAction, uploadObjectivesAction, linkActivityToOutputAction } from "@/app/actions";
 
-export default async function LogframePage({ params }: { params: Promise<{ id: string }> }) {
+export default async function LogframePage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ view?: string }> }) {
   const { id } = await params;
+  const sp = await searchParams;
+  const view = sp.view === "matrix" ? "matrix" : "build";
   const access = await getProjectAccess(id);
   const canEdit = access.permissions.has("project.edit");
   const ccy = (await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [id]))?.currency ?? "USD";
@@ -59,9 +62,146 @@ export default async function LogframePage({ params }: { params: Promise<{ id: s
 
   const unlinkedActs = activities.filter((a) => !a.outputId);
   const empty = objectives.length === 0 && outputs.length === 0;
+  const goals = objectives.filter((o) => o.level === "goal");
+  const objs = objectives.filter((o) => o.level !== "goal");
+  const objProgress = (objId: string, outIds: string[]) => {
+    const inds = indFor(objId, outIds);
+    if (!inds.length) return null;
+    return Math.round(inds.reduce((s, i) => s + indicatorProgress(i), 0) / inds.length);
+  };
+
+  const Toggle = (
+    <div className="flex items-center gap-2">
+      <Link href={`/projects/${id}/logframe`} className="btn btn-sm" style={view === "build" ? { borderColor: "var(--brand)", background: "var(--surface)" } : undefined}>Builder</Link>
+      <Link href={`/projects/${id}/logframe?view=matrix`} className="btn btn-sm" style={view === "matrix" ? { borderColor: "var(--brand)", background: "var(--surface)" } : undefined}>Matrix &amp; visual</Link>
+    </div>
+  );
+
+  // ---------- MATRIX & VISUAL VIEW (read-only, donor-standard) ----------
+  if (view === "matrix") {
+    type Ind = typeof indicators[number];
+    const indCell = (inds: Ind[]) => inds.length ? (
+      <div className="space-y-1">
+        {inds.map((i) => {
+          const p = Math.round(indicatorProgress(i));
+          return (
+            <div key={i.id}>
+              <div><span className="font-medium">{i.name}</span> <span className="text-xs" style={{ color: "var(--muted)" }}>({i.unit})</span></div>
+              <div className="text-xs tabular-nums">{num(i.baseline)} → <span className="font-medium">{num(i.latest)}</span> / {num(i.target)} <Badge tone={p >= 100 ? "ok" : p >= 50 ? "brand" : "warn"}>{p}%</Badge></div>
+            </div>
+          );
+        })}
+      </div>
+    ) : <span style={{ color: "var(--muted)" }}>—</span>;
+    const joinCell = (vals: (string | null)[]) => { const v = vals.filter(Boolean) as string[]; return v.length ? v.join("; ") : <span style={{ color: "var(--muted)" }}>—</span>; };
+    const objInds = (objId: string) => indicators.filter((i) => i.objectiveId === objId);
+    const outInds = (outId: string) => indicators.filter((i) => i.outputId === outId);
+
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <SectionTitle>Logical framework</SectionTitle>
+          {Toggle}
+        </div>
+
+        {empty ? <Empty title="No logframe yet" hint="Switch to the Builder to add objectives, outputs and indicators." /> : (<>
+          {/* Results-chain visual */}
+          <div className="card p-5">
+            <SectionTitle>Results chain</SectionTitle>
+            <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>How activities deliver outputs, which achieve the objectives, which contribute to the goal. Progress is live — from indicators and the work plan.</p>
+            {goals.map((g) => (
+              <div key={g.id} className="rounded-lg p-3 mb-1" style={{ background: "var(--surface)", borderLeft: "4px solid var(--ok)" }}>
+                <div className="text-xs uppercase tracking-wide" style={{ color: "var(--muted)" }}>Goal · {g.code}</div>
+                <div className="font-medium">{g.statement}</div>
+              </div>
+            ))}
+            {goals.length > 0 && objs.length > 0 && <div className="text-center text-xs my-1" style={{ color: "var(--muted)" }}>▲ contributes to</div>}
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {objs.map((o) => {
+                const outs = outputs.filter((x) => x.objectiveId === o.id);
+                const p = objProgress(o.id, outs.map((x) => x.id));
+                return (
+                  <div key={o.id} className="rounded-lg p-3" style={{ background: "var(--surface)", borderLeft: "4px solid var(--brand)" }}>
+                    <div className="text-xs uppercase tracking-wide" style={{ color: "var(--muted)" }}>Objective · {o.code}</div>
+                    <div className="text-sm font-medium mb-1">{o.statement}</div>
+                    {p !== null && <ProgressBar value={p} tone={p >= 100 ? "ok" : p >= 50 ? "brand" : "warn"} showLabel />}
+                  </div>
+                );
+              })}
+            </div>
+            {outputs.length > 0 && <div className="text-center text-xs my-1" style={{ color: "var(--muted)" }}>▲ delivered by outputs</div>}
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2">
+              {outputs.map((o) => {
+                const acts = actsFor(o.id); const b = outputBudget(acts); const p = avgProgress(acts);
+                return (
+                  <div key={o.id} className="rounded-lg p-2 text-sm" style={{ border: "1px solid var(--border)" }}>
+                    <div className="text-xs font-mono" style={{ color: "var(--muted)" }}>{o.code}</div>
+                    <div className="mb-1">{o.statement}</div>
+                    {acts.length > 0 ? <><ProgressBar value={p} tone={p >= 100 ? "ok" : "brand"} showLabel /><div className="text-xs mt-1" style={{ color: "var(--muted)" }}>{acts.length} activit{acts.length === 1 ? "y" : "ies"} · {money(b.actual, ccy)} / {money(b.planned, ccy)}</div></> : <div className="text-xs" style={{ color: "var(--muted)" }}>no activities linked</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Canonical logframe matrix */}
+          <div className="card overflow-x-auto">
+            <div className="p-4 pb-2 flex items-center justify-between">
+              <SectionTitle>Logical framework matrix</SectionTitle>
+              <a href={`/print/logframe/${id}`} target="_blank" rel="noopener" className="btn btn-sm">Print / PDF</a>
+            </div>
+            <table className="w-full text-sm">
+              <thead><tr>
+                <th className="th text-left" style={{ width: "32%" }}>Results / narrative summary</th>
+                <th className="th text-left">Indicators · baseline → latest / target</th>
+                <th className="th text-left">Means of verification</th>
+                <th className="th text-left">Assumptions</th>
+              </tr></thead>
+              <tbody>
+                {goals.length > 0 && <tr><td colSpan={4} className="td" style={{ background: "var(--surface)", fontWeight: 700 }}>GOAL</td></tr>}
+                {goals.map((g) => { const inds = objInds(g.id); return (
+                  <tr key={g.id}>
+                    <td className="td"><span className="font-mono text-xs mr-1" style={{ color: "var(--muted)" }}>{g.code}</span>{g.statement}{g.narrative && <div className="text-xs mt-1" style={{ color: "var(--muted)" }}>{g.narrative}</div>}</td>
+                    <td className="td">{indCell(inds)}</td><td className="td text-xs">{joinCell(inds.map((i) => i.mov))}</td><td className="td text-xs">{joinCell(inds.map((i) => i.assumptions))}</td>
+                  </tr>
+                ); })}
+
+                {objs.length > 0 && <tr><td colSpan={4} className="td" style={{ background: "var(--surface)", fontWeight: 700 }}>OBJECTIVES / OUTCOMES</td></tr>}
+                {objs.map((o) => { const inds = objInds(o.id); return (
+                  <tr key={o.id}>
+                    <td className="td"><span className="font-mono text-xs mr-1" style={{ color: "var(--muted)" }}>{o.code}</span>{o.statement}{o.narrative && <div className="text-xs mt-1" style={{ color: "var(--muted)" }}>{o.narrative}</div>}</td>
+                    <td className="td">{indCell(inds)}</td><td className="td text-xs">{joinCell(inds.map((i) => i.mov))}</td><td className="td text-xs">{joinCell(inds.map((i) => i.assumptions))}</td>
+                  </tr>
+                ); })}
+
+                {outputs.length > 0 && <tr><td colSpan={4} className="td" style={{ background: "var(--surface)", fontWeight: 700 }}>OUTPUTS</td></tr>}
+                {outputs.map((o) => { const inds = outInds(o.id); return (
+                  <tr key={o.id}>
+                    <td className="td"><span className="font-mono text-xs mr-1" style={{ color: "var(--muted)" }}>{o.code}</span>{o.statement}</td>
+                    <td className="td">{indCell(inds)}</td><td className="td text-xs">{joinCell(inds.map((i) => i.mov))}</td><td className="td text-xs">{joinCell(inds.map((i) => i.assumptions))}</td>
+                  </tr>
+                ); })}
+
+                {activities.length > 0 && <tr><td colSpan={4} className="td" style={{ background: "var(--surface)", fontWeight: 700 }}>ACTIVITIES <span className="text-xs font-normal" style={{ color: "var(--muted)" }}>· from the work plan, with live budget</span></td></tr>}
+                {outputs.map((o) => actsFor(o.id).map((a) => (
+                  <tr key={a.id}>
+                    <td className="td"><span className="font-mono text-xs mr-1" style={{ color: "var(--muted)" }}>{a.code ?? o.code}</span>{a.title}</td>
+                    <td className="td"><ProgressBar value={a.progress} tone={a.progress >= 100 ? "ok" : "brand"} showLabel /></td>
+                    <td className="td text-xs">{a.blCode ? `Budget ${a.blCode}` : "—"}</td>
+                    <td className="td text-xs tabular-nums">{a.budgetLineId ? `${money(a.actual, ccy)} / ${money(a.planned, ccy)}` : "—"}</td>
+                  </tr>
+                )))}
+              </tbody>
+            </table>
+          </div>
+        </>)}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
+      <div className="flex items-center justify-end">{Toggle}</div>
       {canEdit && (
         <div className="card p-4">
           <SectionTitle>Populate the results framework</SectionTitle>

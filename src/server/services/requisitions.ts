@@ -78,7 +78,7 @@ export async function submitRequisition(reqId: string, userId: string): Promise<
 async function notifyApprovers(projectId: string, role: Step["role"], reqId: string, number: string, email: boolean) {
   const memberRole = role === "pm" ? "project_manager" : role === "admin" ? "pi" : "finance_admin";
   const members = await q<{ userId: string }>(
-    `SELECT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role IN ($2,'pi')`,
+    `SELECT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role IN ($2,'pi','co_pi')`,
     [projectId, memberRole]
   );
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);

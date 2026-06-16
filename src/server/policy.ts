@@ -98,9 +98,9 @@ export async function requirePermission(projectId: string, permission: Permissio
   return access;
 }
 
-// Only platform/org admins and Principal Investigators may create projects.
-// A PI is anyone who holds the 'pi' role on at least one project (the admin
-// seeds the first PI by creating a project and assigning them).
+// Only platform/org admins and Principal Investigators (including Co-PIs) may
+// create projects. The admin seeds the first PI by creating a project and
+// assigning them; PIs and Co-PIs can then spin up further projects.
 export async function canCreateProjects(userId: string, isSuperAdmin: boolean): Promise<boolean> {
   if (isSuperAdmin) return true;
   const orgAdmin = await one(
@@ -108,6 +108,6 @@ export async function canCreateProjects(userId: string, isSuperAdmin: boolean): 
      WHERE m.user_id = $1 AND r.key = 'org_admin'`, [userId]
   );
   if (orgAdmin) return true;
-  const pi = await one(`SELECT 1 AS ok FROM project_member WHERE user_id = $1 AND role = 'pi' LIMIT 1`, [userId]);
+  const pi = await one(`SELECT 1 AS ok FROM project_member WHERE user_id = $1 AND role IN ('pi','co_pi') LIMIT 1`, [userId]);
   return Boolean(pi);
 }

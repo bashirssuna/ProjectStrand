@@ -82,6 +82,12 @@ export async function createProjectAction(formData: FormData) {
     await addProjectMemberByEmail(pid, piEmail, String(formData.get("piName") || "").trim(), "pi", user.id);
   }
 
+  // Co-PIs / Co-Investigators — same authority as the PI.
+  const coPiEmails = String(formData.get("coPiEmails") || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  for (const email of coPiEmails) {
+    await addProjectMemberByEmail(pid, email, "", "co_pi", user.id);
+  }
+
   revalidatePath("/projects");
   const wantsImport = String(formData.get("withImport") || "") === "1";
   redirect(wantsImport ? `/projects/${pid}/import` : `/projects/${pid}`);
@@ -607,7 +613,7 @@ export async function approveSowAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   const access = await getProjectAccess(projectId);
-  if (access.role !== "pi") throw new Error("FORBIDDEN — only the Principal Investigator can approve the SOW");
+  if (access.role !== "pi" && access.role !== "co_pi") throw new Error("FORBIDDEN — only the Principal Investigator or a Co-PI can approve the SOW");
   await q(`UPDATE sow SET status='approved', approved_by_id=$2, approved_at=now() WHERE project_id=$1`, [projectId, user.id]);
   await writeAudit({ userId: user.id, action: "approve", entity: "sow", entityId: projectId });
   revalidatePath(`/projects/${projectId}/sow`);

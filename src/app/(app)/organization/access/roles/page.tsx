@@ -10,12 +10,13 @@ const PERM_LABEL: Record<Permission, string> = {
   "requisitions.approve": "Approve requisitions", "requisitions.sign": "Sign requisitions", "approvals.approve": "Approve items",
 };
 const ROLE_LABEL: Record<ProjectRole, string> = {
-  pi: "Principal Investigator", project_manager: "Project Manager", finance_admin: "Finance Administrator",
+  pi: "Principal Investigator", co_pi: "Co-PI / Co-Investigator", project_manager: "Project Manager", finance_admin: "Finance Administrator",
   coordinator: "Coordinator", assistant: "Assistant", member: "Member", reviewer: "Reviewer",
   approver: "Approver", viewer: "Viewer",
 };
 const ROLE_NOTE: Record<ProjectRole, string> = {
   pi: "Full oversight of a project, but cannot raise requisitions (separation of duties — they approve and sign instead).",
+  co_pi: "Same authority as the Principal Investigator: full project oversight, approves the SOW, approves and signs requisitions, manages the team, budget and reports.",
   project_manager: "Full control of a project, including raising requisitions.",
   finance_admin: "Budget, reports and the full requisition workflow; does not edit project content.",
   coordinator: "Edits content, manages documents and reports, and raises requisitions.",

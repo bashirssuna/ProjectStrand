@@ -58,9 +58,9 @@ export default async function DashboardPage() {
      JOIN project p ON p.id=r.project_id
      JOIN requisition_approval ra ON ra.requisition_id=r.id AND ra.decision='pending'
      JOIN project_member pm ON pm.project_id=r.project_id AND pm.user_id=$1
-     WHERE (ra.role='pm' AND pm.role IN ('project_manager','pi'))
+     WHERE (ra.role='pm' AND pm.role IN ('project_manager','pi','co_pi'))
         OR (ra.role='finance_admin' AND pm.role='finance_admin')
-        OR (ra.role='admin' AND pm.role='pi')
+        OR (ra.role='admin' AND pm.role IN ('pi','co_pi'))
      GROUP BY r.id, r.number, r.title, r.project_id, r.amount, p.currency`, [user.id]
   );
 

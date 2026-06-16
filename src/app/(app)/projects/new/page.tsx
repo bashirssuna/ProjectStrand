@@ -69,6 +69,11 @@ export default async function NewProjectPage() {
           </div>
         )}
 
+        <div className="card p-4" style={{ background: "var(--surface)" }}>
+          <Field label="Co-PIs / Co-Investigators (optional)"><input name="coPiEmails" className="input" placeholder="comma-separated emails" /></Field>
+          <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>Co-PIs are added to the project with the same authority as the PI (approve the SOW, approve &amp; sign requisitions, manage the team, budget and reports). You can add or change them later on the Team page.</p>
+        </div>
+
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" name="withImport" value="1" defaultChecked />
           After creating, take me to document import (auto-generate pages)

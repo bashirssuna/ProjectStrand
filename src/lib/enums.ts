@@ -2,7 +2,7 @@
 
 export const SYSTEM_ROLES = ["super_admin", "org_admin", "support_admin"] as const;
 export const PROJECT_ROLES = [
-  "pi", "project_manager", "finance_admin", "coordinator",
+  "pi", "co_pi", "project_manager", "finance_admin", "coordinator",
   "assistant", "member", "reviewer", "approver", "viewer",
 ] as const;
 export type ProjectRole = (typeof PROJECT_ROLES)[number];
@@ -36,6 +36,7 @@ export type Permission = (typeof PERMISSIONS)[number];
 
 export const ROLE_PERMISSIONS: Record<ProjectRole, Permission[]> = {
   pi: PERMISSIONS.filter((p) => p !== "requisitions.create"),  // PIs approve/sign but do NOT initiate requisitions (segregation of duties)
+  co_pi: PERMISSIONS.filter((p) => p !== "requisitions.create"),  // Co-PIs / Co-Investigators carry the same authority as the PI
   project_manager: [...PERMISSIONS],
   finance_admin: [
     "project.view", "project.comment", "budget.manage", "reports.manage",
@@ -65,6 +66,11 @@ export const STATUS_TONE: Record<string, "ok" | "warn" | "danger" | "info" | "mu
   info: "info", warning: "warn", critical: "danger", open: "warn", mitigating: "info",
 };
 
+const LABEL_OVERRIDES: Record<string, string> = {
+  pi: "PI",
+  co_pi: "Co-PI / Co-I",
+};
 export function label(s: string): string {
+  if (LABEL_OVERRIDES[s]) return LABEL_OVERRIDES[s];
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }

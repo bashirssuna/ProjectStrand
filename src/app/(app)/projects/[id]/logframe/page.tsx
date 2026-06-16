@@ -2,6 +2,7 @@ import Link from "next/link";
 import { q, one } from "@/server/db";
 import { getProjectAccess } from "@/server/policy";
 import { SectionTitle, Empty, ProgressBar, Badge, Field } from "@/components/ui";
+import { EditorModal } from "@/components/editor-modal";
 import { num, money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { addObjectiveAction, deleteObjectiveAction, addIndicatorAction, deleteIndicatorAction, uploadObjectivesAction, linkActivityToOutputAction, updateObjectiveAction, updateIndicatorAction, recordIndicatorActualAction, deleteIndicatorActualAction } from "@/app/actions";
@@ -257,23 +258,17 @@ export default async function LogframePage({ params, searchParams }: { params: P
               </div>
               {canEdit && (
                 <div className="flex items-center gap-1">
-                  <details className="editor inline-block">
-                    <summary className="btn btn-sm">Edit</summary>
-                    <div className="editor-panel card p-4">
-                      <SectionTitle>Edit objective</SectionTitle>
-                      <form action={updateObjectiveAction} className="space-y-2 mt-2">
-                        <input type="hidden" name="projectId" value={id} />
-                        <input type="hidden" name="objectiveId" value={obj.id} />
-                        <div className="grid grid-cols-2 gap-2">
-                          <Field label="Code"><input name="code" className="input" defaultValue={obj.code} /></Field>
-                          <Field label="Level"><select name="level" className="select" defaultValue={obj.level}><option value="objective">Objective</option><option value="goal">Goal</option></select></Field>
-                        </div>
-                        <Field label="Statement"><textarea name="statement" required className="textarea" rows={3} defaultValue={obj.statement} /></Field>
-                        <Field label="Narrative (optional)"><textarea name="narrative" className="textarea" rows={2} defaultValue={obj.narrative ?? ""} /></Field>
-                        <button className="btn btn-primary w-full" type="submit">Save changes</button>
-                      </form>
+                  <EditorModal trigger="Edit" title="Edit objective" action={updateObjectiveAction}>
+                    <input type="hidden" name="projectId" value={id} />
+                    <input type="hidden" name="objectiveId" value={obj.id} />
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field label="Code"><input name="code" className="input" defaultValue={obj.code} /></Field>
+                      <Field label="Level"><select name="level" className="select" defaultValue={obj.level}><option value="objective">Objective</option><option value="goal">Goal</option></select></Field>
                     </div>
-                  </details>
+                    <Field label="Statement"><textarea name="statement" required className="textarea" rows={3} defaultValue={obj.statement} /></Field>
+                    <Field label="Narrative (optional)"><textarea name="narrative" className="textarea" rows={2} defaultValue={obj.narrative ?? ""} /></Field>
+                    <button className="btn btn-primary w-full" type="submit">Save changes</button>
+                  </EditorModal>
                   <form action={deleteObjectiveAction}>
                     <input type="hidden" name="projectId" value={id} />
                     <input type="hidden" name="objectiveId" value={obj.id} />
@@ -365,41 +360,28 @@ export default async function LogframePage({ params, searchParams }: { params: P
                           {canEdit && (
                             <td className="td">
                               <div className="flex items-center gap-1 justify-end">
-                                <details className="editor inline-block">
-                                  <summary className="btn btn-sm btn-primary">Record</summary>
-                                  <div className="editor-panel card p-4">
-                                    <SectionTitle>Record progress</SectionTitle>
-                                    <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>{i.name}</p>
-                                    <form action={recordIndicatorActualAction} className="space-y-2">
-                                      <input type="hidden" name="projectId" value={id} />
-                                      <input type="hidden" name="indicatorId" value={i.id} />
-                                      <Field label="Period (e.g. Q1 2026, Mar 2026)"><input name="period" required className="input" placeholder="Q1 2026" /></Field>
-                                      <Field label={`Cumulative value (${i.unit || "number"})`}><input type="number" step="any" name="value" required className="input" defaultValue={i.latest || 0} /></Field>
-                                      <Field label="What was done (optional)"><textarea name="note" className="textarea" rows={2} placeholder="e.g. 6 FGDs completed across 3 sub-counties" /></Field>
-                                      <div className="text-xs" style={{ color: "var(--muted)" }}>Baseline {num(i.baseline)} · Target {num(i.target)}</div>
-                                      <button className="btn btn-primary w-full" type="submit">Save reading</button>
-                                    </form>
+                                <EditorModal trigger="Record" primary title="Record progress" subtitle={i.name} action={recordIndicatorActualAction}>
+                                  <input type="hidden" name="projectId" value={id} />
+                                  <input type="hidden" name="indicatorId" value={i.id} />
+                                  <Field label="Period (e.g. Q1 2026, Mar 2026)"><input name="period" required className="input" placeholder="Q1 2026" /></Field>
+                                  <Field label={`Cumulative value (${i.unit || "number"})`}><input type="number" step="any" name="value" required className="input" defaultValue={i.latest || 0} /></Field>
+                                  <Field label="What was done (optional)"><textarea name="note" className="textarea" rows={2} placeholder="e.g. 6 FGDs completed across 3 sub-counties" /></Field>
+                                  <div className="text-xs" style={{ color: "var(--muted)" }}>Baseline {num(i.baseline)} · Target {num(i.target)}</div>
+                                  <button className="btn btn-primary w-full" type="submit">Save reading</button>
+                                </EditorModal>
+                                <EditorModal trigger="Edit" title="Edit indicator" action={updateIndicatorAction}>
+                                  <input type="hidden" name="projectId" value={id} />
+                                  <input type="hidden" name="indicatorId" value={i.id} />
+                                  <Field label="Indicator name"><textarea name="name" required className="textarea" rows={2} defaultValue={i.name} /></Field>
+                                  <div className="grid grid-cols-3 gap-2">
+                                    <Field label="Unit"><input name="unit" className="input" defaultValue={i.unit} /></Field>
+                                    <Field label="Baseline"><input type="number" step="any" name="baseline" className="input" defaultValue={i.baseline} /></Field>
+                                    <Field label="Target"><input type="number" step="any" name="target" className="input" defaultValue={i.target} /></Field>
                                   </div>
-                                </details>
-                                <details className="editor inline-block">
-                                  <summary className="btn btn-sm">Edit</summary>
-                                  <div className="editor-panel card p-4">
-                                    <SectionTitle>Edit indicator</SectionTitle>
-                                    <form action={updateIndicatorAction} className="space-y-2 mt-2">
-                                      <input type="hidden" name="projectId" value={id} />
-                                      <input type="hidden" name="indicatorId" value={i.id} />
-                                      <Field label="Indicator name"><textarea name="name" required className="textarea" rows={2} defaultValue={i.name} /></Field>
-                                      <div className="grid grid-cols-3 gap-2">
-                                        <Field label="Unit"><input name="unit" className="input" defaultValue={i.unit} /></Field>
-                                        <Field label="Baseline"><input type="number" step="any" name="baseline" className="input" defaultValue={i.baseline} /></Field>
-                                        <Field label="Target"><input type="number" step="any" name="target" className="input" defaultValue={i.target} /></Field>
-                                      </div>
-                                      <Field label="Means of verification"><input name="mov" className="input" defaultValue={i.mov ?? ""} /></Field>
-                                      <Field label="Assumptions"><input name="assumptions" className="input" defaultValue={i.assumptions ?? ""} /></Field>
-                                      <button className="btn btn-primary w-full" type="submit">Save changes</button>
-                                    </form>
-                                  </div>
-                                </details>
+                                  <Field label="Means of verification"><input name="mov" className="input" defaultValue={i.mov ?? ""} /></Field>
+                                  <Field label="Assumptions"><input name="assumptions" className="input" defaultValue={i.assumptions ?? ""} /></Field>
+                                  <button className="btn btn-primary w-full" type="submit">Save changes</button>
+                                </EditorModal>
                                 <form action={deleteIndicatorAction}>
                                   <input type="hidden" name="projectId" value={id} />
                                   <input type="hidden" name="indicatorId" value={i.id} />

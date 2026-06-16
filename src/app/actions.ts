@@ -1399,8 +1399,9 @@ export async function addCustomerAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
   const name = String(formData.get("name") || "").trim();
   if (!name) redirect("/finance/invoices?err=cust");
-  await q(`INSERT INTO finance_customer (id, org_id, name, email, phone, address) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [id("cust"), orgId, name, String(formData.get("email") || "") || null, String(formData.get("phone") || "") || null, String(formData.get("address") || "") || null]);
+  await q(`INSERT INTO finance_customer (id, org_id, name, email, phone, address, contact_name, contact_title, fax) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [id("cust"), orgId, name, String(formData.get("email") || "") || null, String(formData.get("phone") || "") || null, String(formData.get("address") || "") || null,
+     String(formData.get("contactName") || "") || null, String(formData.get("contactTitle") || "") || null, String(formData.get("fax") || "") || null]);
   redirect("/finance/invoices?cust=ok");
 }
 
@@ -1414,16 +1415,71 @@ export async function createInvoiceAction(formData: FormData) {
   if (total <= 0) redirect("/finance/invoices?err=amount");
   const num = await nextNum(orgId, "invoice", "INV");
   const invId = id("inv");
-  await q(`INSERT INTO invoice (id, org_id, project_id, customer_id, number, invoice_date, due_date, currency, income_account_id, description, total, created_by, created_by_name)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+  await q(`INSERT INTO invoice (id, org_id, project_id, customer_id, number, invoice_date, due_date, currency, income_account_id, description, total, award_number, awardee, signatory_name, signatory_title, created_by, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
     [invId, orgId, String(formData.get("projectId") || "") || null, String(formData.get("customerId") || "") || null,
      num, String(formData.get("invoiceDate") || new Date().toISOString().slice(0, 10)),
      String(formData.get("dueDate") || "") || null, String(formData.get("currency") || "USD"),
-     String(formData.get("incomeAccountId") || "") || null, desc || "Invoice", total, userId, userName]);
+     String(formData.get("incomeAccountId") || "") || null, desc || "Invoice", total,
+     String(formData.get("awardNumber") || "") || null, String(formData.get("awardee") || "") || null,
+     String(formData.get("signatoryName") || "") || null, String(formData.get("signatoryTitle") || "") || null,
+     userId, userName]);
   await q(`INSERT INTO invoice_line (id, invoice_id, description, quantity, unit_price, amount) VALUES ($1,$2,$3,$4,$5,$6)`,
     [id("invl"), invId, desc || "Services", qty, unit, total]);
   await writeAudit({ orgId, userId, action: "create", entity: "invoice", entityId: num, after: { total } });
-  redirect(`/finance/invoices?created=${num}`);
+  redirect(`/finance/invoices/${invId}?created=1`);
+}
+
+// Edit a DRAFT invoice's header (locked once issued).
+export async function updateInvoiceAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const invId = String(formData.get("invoiceId"));
+  const inv = await one<{ status: string }>(`SELECT status FROM invoice WHERE id=$1 AND org_id=$2`, [invId, orgId]);
+  if (!inv) redirect("/finance/invoices");
+  if (inv.status !== "draft") redirect(`/finance/invoices/${invId}?err=locked`);
+  await q(`UPDATE invoice SET customer_id=$2, project_id=$3, invoice_date=$4, due_date=$5, currency=$6, income_account_id=$7,
+             description=$8, award_number=$9, awardee=$10, signatory_name=$11, signatory_title=$12 WHERE id=$1 AND org_id=$13`,
+    [invId, String(formData.get("customerId") || "") || null, String(formData.get("projectId") || "") || null,
+     String(formData.get("invoiceDate") || new Date().toISOString().slice(0, 10)), String(formData.get("dueDate") || "") || null,
+     String(formData.get("currency") || "USD"), String(formData.get("incomeAccountId") || "") || null,
+     String(formData.get("description") || "") || "Invoice", String(formData.get("awardNumber") || "") || null,
+     String(formData.get("awardee") || "") || null, String(formData.get("signatoryName") || "") || null,
+     String(formData.get("signatoryTitle") || "") || null, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "invoice", entityId: invId });
+  redirect(`/finance/invoices/${invId}?saved=1`);
+}
+
+async function recomputeInvoiceTotal(invoiceId: string): Promise<void> {
+  const r = await one<{ t: number }>(`SELECT COALESCE(SUM(amount),0)::float t FROM invoice_line WHERE invoice_id=$1`, [invoiceId]);
+  await q(`UPDATE invoice SET total=$2 WHERE id=$1`, [invoiceId, round2cents(r?.t ?? 0)]);
+}
+
+// Add a line to a DRAFT invoice.
+export async function addInvoiceLineAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const invId = String(formData.get("invoiceId"));
+  const inv = await one<{ status: string }>(`SELECT status FROM invoice WHERE id=$1 AND org_id=$2`, [invId, orgId]);
+  if (!inv || inv.status !== "draft") redirect(`/finance/invoices/${invId}?err=locked`);
+  const desc = String(formData.get("description") || "").trim();
+  const qty = Number(formData.get("quantity") || 1);
+  const unit = Number(formData.get("unitPrice") || 0);
+  if (!desc) redirect(`/finance/invoices/${invId}?err=line`);
+  await q(`INSERT INTO invoice_line (id, invoice_id, description, quantity, unit_price, amount) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id("invl"), invId, desc, qty, unit, round2cents(qty * unit)]);
+  await recomputeInvoiceTotal(invId);
+  redirect(`/finance/invoices/${invId}?line=added`);
+}
+
+// Remove a line from a DRAFT invoice.
+export async function deleteInvoiceLineAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const invId = String(formData.get("invoiceId"));
+  const lineId = String(formData.get("lineId"));
+  const inv = await one<{ status: string }>(`SELECT status FROM invoice WHERE id=$1 AND org_id=$2`, [invId, orgId]);
+  if (!inv || inv.status !== "draft") redirect(`/finance/invoices/${invId}?err=locked`);
+  await q(`DELETE FROM invoice_line WHERE id=$1 AND invoice_id=$2`, [lineId, invId]);
+  await recomputeInvoiceTotal(invId);
+  redirect(`/finance/invoices/${invId}?line=removed`);
 }
 export async function issueInvoiceAction(formData: FormData) {
   const { orgId, userId, userName } = await requireInstitutionFinance();

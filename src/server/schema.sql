@@ -1608,3 +1608,12 @@ ALTER TABLE organization ADD COLUMN IF NOT EXISTS bank_details text;
 -- Timesheet approval parity with leave: capture a decision note and timestamp.
 ALTER TABLE timesheet ADD COLUMN IF NOT EXISTS decision_note text;
 ALTER TABLE timesheet ADD COLUMN IF NOT EXISTS approved_at timestamptz;
+
+-- Letter-style grantor invoicing: customer attention contact + per-invoice award details & signatory.
+ALTER TABLE finance_customer ADD COLUMN IF NOT EXISTS contact_name text;   -- "Attention:" person
+ALTER TABLE finance_customer ADD COLUMN IF NOT EXISTS contact_title text;
+ALTER TABLE finance_customer ADD COLUMN IF NOT EXISTS fax text;
+ALTER TABLE invoice ADD COLUMN IF NOT EXISTS award_number text;
+ALTER TABLE invoice ADD COLUMN IF NOT EXISTS awardee text;
+ALTER TABLE invoice ADD COLUMN IF NOT EXISTS signatory_name text;
+ALTER TABLE invoice ADD COLUMN IF NOT EXISTS signatory_title text;

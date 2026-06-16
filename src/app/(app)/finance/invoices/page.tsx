@@ -36,7 +36,7 @@ export default async function InvoicesPage({ searchParams }: { searchParams: Pro
             <tbody>
               {invoices.map((i) => (
                 <tr key={i.id}>
-                  <td className="td font-mono text-xs">{i.number}</td>
+                  <td className="td font-mono text-xs"><Link href={`/finance/invoices/${i.id}`} className="hover:underline" style={{ color: "var(--brand)" }}>{i.number}</Link></td>
                   <td className="td whitespace-nowrap">{fmtDate(i.invoiceDate)}</td>
                   <td className="td">{i.customer ?? "—"}</td>
                   <td className="td"><StatusBadge status={i.status} /></td>
@@ -44,6 +44,7 @@ export default async function InvoicesPage({ searchParams }: { searchParams: Pro
                   <td className="td text-right tabular-nums">{money(i.amountPaid, i.currency)}</td>
                   <td className="td text-right whitespace-nowrap">
                     <div className="flex gap-1 justify-end">
+                      {i.status === "draft" && <Link href={`/finance/invoices/${i.id}`} className="btn btn-sm">Edit</Link>}
                       {i.status === "draft" && (
                         <form action={issueInvoiceAction}><input type="hidden" name="invoiceId" value={i.id} /><button className="btn btn-sm btn-primary" type="submit">Issue</button></form>
                       )}
@@ -92,9 +93,14 @@ export default async function InvoicesPage({ searchParams }: { searchParams: Pro
         <div>
           <SectionTitle>Add a customer / funder</SectionTitle>
           <form action={addCustomerAction} className="card p-4 space-y-3">
-            <Field label="Name"><input name="name" required className="input" placeholder="e.g. NIH, Gates Foundation" /></Field>
+            <Field label="Name (organisation)"><input name="name" required className="input" placeholder="e.g. NIH, Gates Foundation" /></Field>
+            <Field label="Attention (contact person)"><input name="contactName" className="input" placeholder="e.g. Prof. Jane Doe" /></Field>
+            <Field label="Contact title"><input name="contactTitle" className="input" placeholder="e.g. Grants Officer" /></Field>
             <Field label="Email"><input name="email" className="input" /></Field>
-            <Field label="Phone"><input name="phone" className="input" /></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Tel"><input name="phone" className="input" /></Field>
+              <Field label="Fax"><input name="fax" className="input" /></Field>
+            </div>
             <Field label="Address"><input name="address" className="input" /></Field>
             <button className="btn btn-primary" type="submit">Add customer</button>
           </form>

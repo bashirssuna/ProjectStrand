@@ -258,7 +258,7 @@ export default async function LogframePage({ params, searchParams }: { params: P
               </div>
               {canEdit && (
                 <div className="flex items-center gap-1">
-                  <EditorModal trigger="Edit" title="Edit objective" action={updateObjectiveAction}>
+                  <EditorModal trigger="Edit" title="Edit objective" submitLabel="Save changes" action={updateObjectiveAction}>
                     <input type="hidden" name="projectId" value={id} />
                     <input type="hidden" name="objectiveId" value={obj.id} />
                     <div className="grid grid-cols-2 gap-2">
@@ -267,7 +267,6 @@ export default async function LogframePage({ params, searchParams }: { params: P
                     </div>
                     <Field label="Statement"><textarea name="statement" required className="textarea" rows={3} defaultValue={obj.statement} /></Field>
                     <Field label="Narrative (optional)"><textarea name="narrative" className="textarea" rows={2} defaultValue={obj.narrative ?? ""} /></Field>
-                    <button className="btn btn-primary w-full" type="submit">Save changes</button>
                   </EditorModal>
                   <form action={deleteObjectiveAction}>
                     <input type="hidden" name="projectId" value={id} />
@@ -360,16 +359,15 @@ export default async function LogframePage({ params, searchParams }: { params: P
                           {canEdit && (
                             <td className="td">
                               <div className="flex items-center gap-1 justify-end">
-                                <EditorModal trigger="Record" primary title="Record progress" subtitle={i.name} action={recordIndicatorActualAction}>
+                                <EditorModal trigger="Record" primary title="Record progress" subtitle={i.name} submitLabel="Save reading" action={recordIndicatorActualAction}>
                                   <input type="hidden" name="projectId" value={id} />
                                   <input type="hidden" name="indicatorId" value={i.id} />
                                   <Field label="Period (e.g. Q1 2026, Mar 2026)"><input name="period" required className="input" placeholder="Q1 2026" /></Field>
                                   <Field label={`Cumulative value (${i.unit || "number"})`}><input type="number" step="any" name="value" required className="input" defaultValue={i.latest || 0} /></Field>
                                   <Field label="What was done (optional)"><textarea name="note" className="textarea" rows={2} placeholder="e.g. 6 FGDs completed across 3 sub-counties" /></Field>
                                   <div className="text-xs" style={{ color: "var(--muted)" }}>Baseline {num(i.baseline)} · Target {num(i.target)}</div>
-                                  <button className="btn btn-primary w-full" type="submit">Save reading</button>
                                 </EditorModal>
-                                <EditorModal trigger="Edit" title="Edit indicator" action={updateIndicatorAction}>
+                                <EditorModal trigger="Edit" title="Edit indicator" submitLabel="Save changes" action={updateIndicatorAction}>
                                   <input type="hidden" name="projectId" value={id} />
                                   <input type="hidden" name="indicatorId" value={i.id} />
                                   <Field label="Indicator name"><textarea name="name" required className="textarea" rows={2} defaultValue={i.name} /></Field>
@@ -380,7 +378,6 @@ export default async function LogframePage({ params, searchParams }: { params: P
                                   </div>
                                   <Field label="Means of verification"><input name="mov" className="input" defaultValue={i.mov ?? ""} /></Field>
                                   <Field label="Assumptions"><input name="assumptions" className="input" defaultValue={i.assumptions ?? ""} /></Field>
-                                  <button className="btn btn-primary w-full" type="submit">Save changes</button>
                                 </EditorModal>
                                 <form action={deleteIndicatorAction}>
                                   <input type="hidden" name="projectId" value={id} />

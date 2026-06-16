@@ -1656,8 +1656,8 @@ export async function decideLeaveAction(formData: FormData) {
   const { orgId, userId, userName } = await requireInstitutionFinance();
   const lvId = String(formData.get("leaveId"));
   const decision = String(formData.get("decision")) as "approved" | "rejected";
-  await q(`UPDATE leave_request SET status=$2, decided_by=$3, decided_by_name=$4, decided_at=now() WHERE id=$1 AND org_id=$5`,
-    [lvId, decision, userId, userName, orgId]);
+  await q(`UPDATE leave_request SET status=$2, decided_by=$3, decided_by_name=$4, decided_at=now(), decision_note=$6 WHERE id=$1 AND org_id=$5`,
+    [lvId, decision, userId, userName, orgId, String(formData.get("decisionNote") || "") || null]);
   revalidatePath("/hr/leave");
   redirect("/hr/leave?decided=1");
 }
@@ -1678,8 +1678,8 @@ export async function decideTimesheetAction(formData: FormData) {
   const { orgId, userId, userName } = await requireInstitutionFinance();
   const tsId = String(formData.get("timesheetId"));
   const decision = String(formData.get("decision")) as "approved" | "rejected";
-  await q(`UPDATE timesheet SET status=$2, approved_by=$3, approved_by_name=$4 WHERE id=$1 AND org_id=$5`,
-    [tsId, decision, userId, userName, orgId]);
+  await q(`UPDATE timesheet SET status=$2, approved_by=$3, approved_by_name=$4, approved_at=now(), decision_note=$6 WHERE id=$1 AND org_id=$5`,
+    [tsId, decision, userId, userName, orgId, String(formData.get("decisionNote") || "") || null]);
   revalidatePath("/hr/timesheets");
 }
 

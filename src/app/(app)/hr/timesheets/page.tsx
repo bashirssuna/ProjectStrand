@@ -11,8 +11,9 @@ export default async function TimesheetsPage({ searchParams }: { searchParams: P
   const sp = await searchParams;
   const employees = await q<{ id: string; firstName: string; lastName: string }>(`SELECT id, first_name AS "firstName", last_name AS "lastName" FROM employee WHERE org_id=$1 AND status<>'terminated' ORDER BY last_name`, [orgId]);
   const projects = await q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY created_at DESC`, [orgId]);
-  const rows = await q<{ id: string; emp: string; project: string | null; workDate: string; hours: number; description: string | null; status: string }>(
-    `SELECT t.id, e.first_name || ' ' || e.last_name AS emp, p.code AS project, t.work_date AS "workDate", t.hours::float, t.description, t.status
+  const rows = await q<{ id: string; emp: string; project: string | null; workDate: string; hours: number; description: string | null; status: string; approvedBy: string | null; decisionNote: string | null }>(
+    `SELECT t.id, e.first_name || ' ' || e.last_name AS emp, p.code AS project, t.work_date AS "workDate", t.hours::float, t.description, t.status,
+            t.approved_by_name AS "approvedBy", t.decision_note AS "decisionNote"
      FROM timesheet t JOIN employee e ON e.id=t.employee_id LEFT JOIN project p ON p.id=t.project_id WHERE t.org_id=$1 ORDER BY t.work_date DESC LIMIT 50`, [orgId]
   );
 
@@ -35,13 +36,17 @@ export default async function TimesheetsPage({ searchParams }: { searchParams: P
                   <td className="td font-mono text-xs">{t.project ?? "—"}</td>
                   <td className="td text-right tabular-nums">{t.hours}</td>
                   <td className="td">{t.description ?? "—"}</td>
-                  <td className="td"><Badge tone={t.status === "approved" ? "ok" : t.status === "rejected" ? "danger" : "warn"}>{label(t.status)}</Badge></td>
+                  <td className="td"><Badge tone={t.status === "approved" ? "ok" : t.status === "rejected" ? "danger" : "warn"}>{label(t.status)}</Badge>
+                    {t.status !== "submitted" && t.approvedBy && <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>by {t.approvedBy}{t.decisionNote ? ` — ${t.decisionNote}` : ""}</div>}
+                  </td>
                   <td className="td text-right whitespace-nowrap">
                     {t.status === "submitted" && (
-                      <div className="flex gap-1 justify-end">
-                        <form action={decideTimesheetAction}><input type="hidden" name="timesheetId" value={t.id} /><button className="btn btn-sm btn-primary" name="decision" value="approved" type="submit">Approve</button></form>
-                        <form action={decideTimesheetAction}><input type="hidden" name="timesheetId" value={t.id} /><button className="btn btn-sm" name="decision" value="rejected" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Reject</button></form>
-                      </div>
+                      <form action={decideTimesheetAction} className="flex gap-1 justify-end items-center">
+                        <input type="hidden" name="timesheetId" value={t.id} />
+                        <input name="decisionNote" placeholder="Note (optional)" className="input" style={{ height: 30, padding: "2px 8px", width: 120 }} />
+                        <button className="btn btn-sm btn-primary" name="decision" value="approved" type="submit">Approve</button>
+                        <button className="btn btn-sm" name="decision" value="rejected" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Reject</button>
+                      </form>
                     )}
                   </td>
                 </tr>
@@ -50,6 +55,13 @@ export default async function TimesheetsPage({ searchParams }: { searchParams: P
           </table>
         </div>
       )}
+
+      <SectionTitle>Monthly timesheet (save as PDF)</SectionTitle>
+      <form action="/print/timesheet" method="get" target="_blank" className="card p-4 grid sm:grid-cols-3 gap-3 mb-6">
+        <Field label="Employee"><select name="employeeId" required className="select"><option value="">— choose —</option>{employees.map((e) => <option key={e.id} value={e.id}>{e.firstName} {e.lastName}</option>)}</select></Field>
+        <Field label="Month"><input type="month" name="month" defaultValue={new Date().toISOString().slice(0, 7)} className="input" /></Field>
+        <div className="self-end"><button className="btn" type="submit">🖨 Open monthly sheet</button></div>
+      </form>
 
       <SectionTitle>Log hours</SectionTitle>
       <form action={addTimesheetAction} className="card p-4 grid sm:grid-cols-4 gap-3">

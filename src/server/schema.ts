@@ -1605,4 +1605,8 @@ ALTER TABLE journal_entry ADD COLUMN IF NOT EXISTS reference text;
 
 -- Organisation receiving-bank details, shown on invoices ("pay to").
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS bank_details text;
+
+-- Timesheet approval parity with leave: capture a decision note and timestamp.
+ALTER TABLE timesheet ADD COLUMN IF NOT EXISTS decision_note text;
+ALTER TABLE timesheet ADD COLUMN IF NOT EXISTS approved_at timestamptz;
 `;

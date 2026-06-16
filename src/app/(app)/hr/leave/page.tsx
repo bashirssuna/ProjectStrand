@@ -10,9 +10,10 @@ export default async function LeavePage({ searchParams }: { searchParams: Promis
   const { orgId } = await requireHrOrg();
   const sp = await searchParams;
   const employees = await q<{ id: string; firstName: string; lastName: string }>(`SELECT id, first_name AS "firstName", last_name AS "lastName" FROM employee WHERE org_id=$1 AND status<>'terminated' ORDER BY last_name`, [orgId]);
-  const requests = await q<{ id: string; emp: string; leaveType: string; startDate: string; endDate: string; days: number; status: string; reason: string | null }>(
+  const requests = await q<{ id: string; emp: string; leaveType: string; startDate: string; endDate: string; days: number; status: string; reason: string | null; decidedByName: string | null; decisionNote: string | null }>(
     `SELECT lr.id, e.first_name || ' ' || e.last_name AS emp, lr.leave_type AS "leaveType",
-            lr.start_date AS "startDate", lr.end_date AS "endDate", lr.days::float, lr.status, lr.reason
+            lr.start_date AS "startDate", lr.end_date AS "endDate", lr.days::float, lr.status, lr.reason,
+            lr.decided_by_name AS "decidedByName", lr.decision_note AS "decisionNote"
      FROM leave_request lr JOIN employee e ON e.id=lr.employee_id WHERE lr.org_id=$1 ORDER BY lr.created_at DESC LIMIT 50`, [orgId]
   );
 
@@ -36,14 +37,21 @@ export default async function LeavePage({ searchParams }: { searchParams: Promis
                   <td className="td whitespace-nowrap">{fmtDate(r.startDate)}</td>
                   <td className="td whitespace-nowrap">{fmtDate(r.endDate)}</td>
                   <td className="td text-right">{r.days}</td>
-                  <td className="td"><Badge tone={r.status === "approved" ? "ok" : r.status === "rejected" ? "danger" : "warn"}>{label(r.status)}</Badge></td>
+                  <td className="td"><Badge tone={r.status === "approved" ? "ok" : r.status === "rejected" ? "danger" : "warn"}>{label(r.status)}</Badge>
+                    {r.status !== "pending" && r.decidedByName && <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>by {r.decidedByName}{r.decisionNote ? ` — ${r.decisionNote}` : ""}</div>}
+                  </td>
                   <td className="td text-right whitespace-nowrap">
-                    {r.status === "pending" && (
-                      <div className="flex gap-1 justify-end">
-                        <form action={decideLeaveAction}><input type="hidden" name="leaveId" value={r.id} /><button className="btn btn-sm btn-primary" name="decision" value="approved" type="submit">Approve</button></form>
-                        <form action={decideLeaveAction}><input type="hidden" name="leaveId" value={r.id} /><button className="btn btn-sm" name="decision" value="rejected" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Reject</button></form>
-                      </div>
-                    )}
+                    <div className="flex gap-1 justify-end items-center">
+                      {r.status === "pending" && (
+                        <form action={decideLeaveAction} className="flex gap-1 items-center">
+                          <input type="hidden" name="leaveId" value={r.id} />
+                          <input name="decisionNote" placeholder="Note (optional)" className="input" style={{ height: 30, padding: "2px 8px", width: 130 }} />
+                          <button className="btn btn-sm btn-primary" name="decision" value="approved" type="submit">Approve</button>
+                          <button className="btn btn-sm" name="decision" value="rejected" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Reject</button>
+                        </form>
+                      )}
+                      <a href={`/print/leave/${r.id}`} target="_blank" rel="noopener" className="btn btn-sm" title="Print / Save as PDF">🖨</a>
+                    </div>
                   </td>
                 </tr>
               ))}

@@ -1602,6 +1602,44 @@ export async function toggleBankLineAction(formData: FormData) {
   redirect(`/finance/reconcile?account=${accountId}`);
 }
 
+// ---- Monthly bank reconciliation (clear GL cash movements vs the statement) ----
+export async function toggleClearedAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const lineId = String(formData.get("lineId"));
+  const accountId = String(formData.get("accountId"));
+  const period = String(formData.get("period"));
+  await q(`UPDATE journal_line SET cleared = NOT cleared, cleared_at = CASE WHEN cleared THEN NULL ELSE now() END
+           WHERE id=$1 AND entry_id IN (SELECT id FROM journal_entry WHERE org_id=$2)`, [lineId, orgId]);
+  redirect(`/finance/reconcile?account=${accountId}&period=${period}`);
+}
+export async function saveBankRecAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const accountId = String(formData.get("accountId"));
+  const period = String(formData.get("period"));
+  const sc = formData.get("statementClosing");
+  const statementClosing = sc === null || String(sc).trim() === "" ? null : Number(sc);
+  await q(`INSERT INTO bank_reconciliation (id, org_id, account_id, period, statement_closing, note)
+           VALUES ($1,$2,$3,$4,$5,$6)
+           ON CONFLICT (org_id, account_id, period) DO UPDATE SET statement_closing=EXCLUDED.statement_closing, note=EXCLUDED.note`,
+    [id("brec"), orgId, accountId, period, statementClosing, String(formData.get("note") || "") || null]);
+  redirect(`/finance/reconcile?account=${accountId}&period=${period}&saved=1`);
+}
+export async function finalizeBankRecAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const accountId = String(formData.get("accountId"));
+  const period = String(formData.get("period"));
+  if (formData.get("reopen") === "1") {
+    await q(`UPDATE bank_reconciliation SET status='open', finalized_by=NULL, finalized_by_name=NULL, finalized_at=NULL WHERE org_id=$1 AND account_id=$2 AND period=$3`, [orgId, accountId, period]);
+    redirect(`/finance/reconcile?account=${accountId}&period=${period}&saved=1`);
+  }
+  await q(`INSERT INTO bank_reconciliation (id, org_id, account_id, period, status, finalized_by, finalized_by_name, finalized_at)
+           VALUES ($1,$2,$3,$4,'finalized',$5,$6,now())
+           ON CONFLICT (org_id, account_id, period) DO UPDATE SET status='finalized', finalized_by=EXCLUDED.finalized_by, finalized_by_name=EXCLUDED.finalized_by_name, finalized_at=EXCLUDED.finalized_at`,
+    [id("brec"), orgId, accountId, period, userId, userName]);
+  await writeAudit({ orgId, userId, action: "finalize", entity: "bank_reconciliation", entityId: `${accountId}:${period}` });
+  redirect(`/finance/reconcile?account=${accountId}&period=${period}&finalized=1`);
+}
+
 // small local helpers (avoid clobbering existing ones)
 function round2cents(n: number): number { return Math.round((n + Number.EPSILON) * 100) / 100; }
 async function nextNum(orgId: string, table: string, prefix: string): Promise<string> {

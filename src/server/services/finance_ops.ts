@@ -196,3 +196,69 @@ export async function reconciliationView(orgId: string, accountId: string): Prom
     unreconciledLines: lines,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Monthly bank reconciliation. Reconciles a cash/bank GL account against the
+// bank statement for one month: the book's cash movements (receipts in,
+// payments/vouchers out) are listed and ticked as "cleared" when they appear on
+// the statement; uncleared items become reconciling items (deposits in transit
+// and outstanding payments).
+// ---------------------------------------------------------------------------
+export type BankRecMovement = {
+  lineId: string; date: string; memo: string | null; reference: string | null; sourceType: string; amount: number; cleared: boolean;
+};
+export type MonthlyBankRec = {
+  accountId: string; accountName: string; period: string;
+  statementClosing: number | null; note: string | null; status: string;
+  ledgerClosing: number;
+  movements: BankRecMovement[];       // dated within the month
+  broughtForward: BankRecMovement[];  // uncleared, dated before the month
+  depositsInTransit: number; outstandingPayments: number;
+  adjustedBank: number | null; difference: number | null;
+};
+
+export async function monthlyBankRec(orgId: string, accountId: string, period: string): Promise<MonthlyBankRec> {
+  const acc = (await one<{ name: string }>(`SELECT name FROM ledger_account WHERE id=$1 AND org_id=$2`, [accountId, orgId]))!;
+  const p = /^\d{4}-\d{2}$/.test(period) ? period : new Date().toISOString().slice(0, 7);
+  const [y, m] = p.split("-").map(Number);
+  const monthStart = `${p}-01`;
+  const nextMonth = new Date(Date.UTC(y, m, 1)).toISOString().slice(0, 10); // first of next month
+
+  const rec = await one<{ statementClosing: number | null; note: string | null; status: string }>(
+    `SELECT statement_closing::float AS "statementClosing", note, status FROM bank_reconciliation WHERE org_id=$1 AND account_id=$2 AND period=$3`,
+    [orgId, accountId, p]
+  );
+  const ledger = await one<{ s: number }>(
+    `SELECT COALESCE(SUM(jl.debit - jl.credit),0)::float s FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
+     WHERE jl.account_id=$1 AND je.entry_date < $2::date`, [accountId, nextMonth]
+  );
+  const movements = await q<BankRecMovement>(
+    `SELECT jl.id AS "lineId", je.entry_date AS date, je.memo, je.reference, je.source_type AS "sourceType",
+            (jl.debit - jl.credit)::float AS amount, jl.cleared
+     FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
+     WHERE jl.account_id=$1 AND je.entry_date >= $2::date AND je.entry_date < $3::date
+     ORDER BY je.entry_date, je.entry_no`, [accountId, monthStart, nextMonth]
+  );
+  const broughtForward = await q<BankRecMovement>(
+    `SELECT jl.id AS "lineId", je.entry_date AS date, je.memo, je.reference, je.source_type AS "sourceType",
+            (jl.debit - jl.credit)::float AS amount, jl.cleared
+     FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
+     WHERE jl.account_id=$1 AND je.entry_date < $2::date AND jl.cleared=false
+     ORDER BY je.entry_date`, [accountId, monthStart]
+  );
+  const unc = await q<{ amount: number }>(
+    `SELECT (jl.debit - jl.credit)::float AS amount FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
+     WHERE jl.account_id=$1 AND je.entry_date < $2::date AND jl.cleared=false`, [accountId, nextMonth]
+  );
+  const depositsInTransit = round2(unc.filter((u) => u.amount > 0).reduce((s, u) => s + u.amount, 0));
+  const outstandingPayments = round2(unc.filter((u) => u.amount < 0).reduce((s, u) => s - u.amount, 0));
+  const ledgerClosing = round2(ledger?.s ?? 0);
+  const statementClosing = rec?.statementClosing ?? null;
+  const adjustedBank = statementClosing === null ? null : round2(statementClosing + depositsInTransit - outstandingPayments);
+  const difference = adjustedBank === null ? null : round2(ledgerClosing - adjustedBank);
+  return {
+    accountId, accountName: acc.name, period: p,
+    statementClosing, note: rec?.note ?? null, status: rec?.status ?? "open",
+    ledgerClosing, movements, broughtForward, depositsInTransit, outstandingPayments, adjustedBank, difference,
+  };
+}

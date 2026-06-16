@@ -1617,3 +1617,21 @@ ALTER TABLE invoice ADD COLUMN IF NOT EXISTS award_number text;
 ALTER TABLE invoice ADD COLUMN IF NOT EXISTS awardee text;
 ALTER TABLE invoice ADD COLUMN IF NOT EXISTS signatory_name text;
 ALTER TABLE invoice ADD COLUMN IF NOT EXISTS signatory_title text;
+
+-- Bank reconciliation: mark individual ledger cash movements as cleared on the
+-- bank statement, and keep a per-account, per-month reconciliation record.
+ALTER TABLE journal_line ADD COLUMN IF NOT EXISTS cleared boolean NOT NULL DEFAULT false;
+ALTER TABLE journal_line ADD COLUMN IF NOT EXISTS cleared_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS bank_reconciliation (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  account_id text NOT NULL REFERENCES ledger_account(id),
+  period text NOT NULL,                      -- 'YYYY-MM'
+  statement_closing numeric(18,2),           -- bank statement closing balance for the month
+  note text,
+  status text NOT NULL DEFAULT 'open',       -- open | finalized
+  finalized_by text, finalized_by_name text, finalized_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, account_id, period)
+);

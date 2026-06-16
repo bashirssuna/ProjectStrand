@@ -31,7 +31,7 @@ export default async function InvoiceDetailPage({ params, searchParams }: { para
   );
   const customers = await q<{ id: string; name: string }>(`SELECT id, name FROM finance_customer WHERE org_id=$1 ORDER BY name`, [orgId]);
   const projects = await q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY code`, [orgId]);
-  const incomeAccts = await q<{ id: string; code: string; name: string }>(`SELECT id, code, name FROM ledger_account WHERE org_id=$1 AND type='income' ORDER BY code`, [orgId]);
+  const incomeAccts = await q<{ id: string; code: string; name: string }>(`SELECT id, code, name FROM ledger_account WHERE org_id=$1 AND account_type='income' AND is_active ORDER BY code`, [orgId]);
   const isDraft = inv.status === "draft";
 
   return (

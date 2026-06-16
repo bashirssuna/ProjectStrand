@@ -1030,6 +1030,64 @@ export async function deleteIndicatorAction(formData: FormData) {
   revalidatePath(`/projects/${projectId}/logframe`);
 }
 
+// Edit an objective / goal in place.
+export async function updateObjectiveAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  const objectiveId = String(formData.get("objectiveId"));
+  const before = await one(`SELECT code, statement, narrative, level FROM objective WHERE id=$1 AND project_id=$2`, [objectiveId, projectId]);
+  const after = {
+    code: String(formData.get("code") || "OBJ"),
+    statement: String(formData.get("statement") || "Objective").slice(0, 500),
+    narrative: String(formData.get("narrative") || "") || null,
+    level: String(formData.get("level") || "objective") === "goal" ? "goal" : "objective",
+  };
+  await q(`UPDATE objective SET code=$1, statement=$2, narrative=$3, level=$4 WHERE id=$5 AND project_id=$6`,
+    [after.code, after.statement, after.narrative, after.level, objectiveId, projectId]);
+  await writeAudit({ userId: user.id, action: "update", entity: "objective", entityId: objectiveId, before, after });
+  revalidatePath(`/projects/${projectId}/logframe`);
+}
+
+// Edit an indicator's definition (name, unit, baseline, target, verification, assumptions).
+export async function updateIndicatorAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  const indicatorId = String(formData.get("indicatorId"));
+  await q(`UPDATE indicator SET name=$1, unit=$2, baseline=$3, target=$4, means_of_verification=$5, assumptions=$6 WHERE id=$7`,
+    [String(formData.get("name") || "Indicator"), String(formData.get("unit") || ""),
+     Number(formData.get("baseline") || 0), Number(formData.get("target") || 0),
+     String(formData.get("mov") || "") || null, String(formData.get("assumptions") || "") || null, indicatorId]);
+  await writeAudit({ userId: user.id, action: "update", entity: "indicator", entityId: indicatorId });
+  revalidatePath(`/projects/${projectId}/logframe`);
+}
+
+// Record a periodic actual reading against an indicator — this is the monitoring log.
+// The most recent reading (by recorded_at) becomes the indicator's "latest" value.
+export async function recordIndicatorActualAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  const indicatorId = String(formData.get("indicatorId"));
+  const period = String(formData.get("period") || "").trim() || new Date().toISOString().slice(0, 10);
+  const value = Number(formData.get("value") || 0);
+  const note = String(formData.get("note") || "").trim() || null;
+  await q(`INSERT INTO indicator_actual (id, indicator_id, period, value, note) VALUES ($1,$2,$3,$4,$5)`,
+    [id("iact"), indicatorId, period, value, note]);
+  await writeAudit({ userId: user.id, action: "record", entity: "indicator_actual", entityId: indicatorId, after: { period, value, note } });
+  revalidatePath(`/projects/${projectId}/logframe`);
+}
+
+export async function deleteIndicatorActualAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  await q(`DELETE FROM indicator_actual WHERE id=$1`, [String(formData.get("actualId"))]);
+  await writeAudit({ userId: user.id, action: "delete", entity: "indicator_actual", entityId: String(formData.get("actualId")) });
+  revalidatePath(`/projects/${projectId}/logframe`);
+}
+
 // Connect (or disconnect) a work-plan activity to a logframe output, so the
 // results framework shows the activities — and their live budget — under each output.
 export async function linkActivityToOutputAction(formData: FormData) {

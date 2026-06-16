@@ -2,9 +2,9 @@ import Link from "next/link";
 import { q, one } from "@/server/db";
 import { getProjectAccess } from "@/server/policy";
 import { SectionTitle, Empty, ProgressBar, Badge, Field } from "@/components/ui";
-import { num, money } from "@/lib/format";
+import { num, money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
-import { addObjectiveAction, deleteObjectiveAction, addIndicatorAction, deleteIndicatorAction, uploadObjectivesAction, linkActivityToOutputAction } from "@/app/actions";
+import { addObjectiveAction, deleteObjectiveAction, addIndicatorAction, deleteIndicatorAction, uploadObjectivesAction, linkActivityToOutputAction, updateObjectiveAction, updateIndicatorAction, recordIndicatorActualAction, deleteIndicatorActualAction } from "@/app/actions";
 
 export default async function LogframePage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ view?: string; imported?: string }> }) {
   const { id } = await params;
@@ -43,8 +43,19 @@ export default async function LogframePage({ params, searchParams }: { params: P
      ORDER BY a.code NULLS LAST, a.title`, [id]
   );
 
+  // Recorded progress readings (the monitoring log) for every indicator in the project.
+  const actuals = await q<{ id: string; indicatorId: string; indicatorName: string; period: string; value: number; note: string | null; recordedAt: string }>(
+    `SELECT a.id, a.indicator_id AS "indicatorId", i.name AS "indicatorName", a.period, a.value, a.note, a.recorded_at AS "recordedAt"
+     FROM indicator_actual a JOIN indicator i ON i.id = a.indicator_id
+     LEFT JOIN objective o ON o.id = i.objective_id
+     LEFT JOIN output op ON op.id = i.output_id
+     WHERE COALESCE(o.project_id, (SELECT project_id FROM output WHERE id=i.output_id)) = $1
+     ORDER BY a.recorded_at DESC`, [id]
+  );
+
   const indFor = (objId: string, outIds: string[]) =>
     indicators.filter((i) => i.objectiveId === objId || (i.outputId && outIds.includes(i.outputId)));
+  const actualsFor = (indIds: string[]) => actuals.filter((a) => indIds.includes(a.indicatorId));
   const actsFor = (outId: string) => activities.filter((a) => a.outputId === outId);
   // Output budget rolls up distinct linked budget lines (so shared lines aren't double-counted).
   function outputBudget(acts: typeof activities) {
@@ -245,11 +256,30 @@ export default async function LogframePage({ params, searchParams }: { params: P
                 <span className="text-xs uppercase tracking-wide" style={{ color: "var(--muted)" }}>{obj.level === "goal" ? "Goal" : "Objective"}</span>
               </div>
               {canEdit && (
-                <form action={deleteObjectiveAction}>
-                  <input type="hidden" name="projectId" value={id} />
-                  <input type="hidden" name="objectiveId" value={obj.id} />
-                  <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete</button>
-                </form>
+                <div className="flex items-center gap-1">
+                  <details className="editor inline-block">
+                    <summary className="btn btn-sm">Edit</summary>
+                    <div className="editor-panel card p-4">
+                      <SectionTitle>Edit objective</SectionTitle>
+                      <form action={updateObjectiveAction} className="space-y-2 mt-2">
+                        <input type="hidden" name="projectId" value={id} />
+                        <input type="hidden" name="objectiveId" value={obj.id} />
+                        <div className="grid grid-cols-2 gap-2">
+                          <Field label="Code"><input name="code" className="input" defaultValue={obj.code} /></Field>
+                          <Field label="Level"><select name="level" className="select" defaultValue={obj.level}><option value="objective">Objective</option><option value="goal">Goal</option></select></Field>
+                        </div>
+                        <Field label="Statement"><textarea name="statement" required className="textarea" rows={3} defaultValue={obj.statement} /></Field>
+                        <Field label="Narrative (optional)"><textarea name="narrative" className="textarea" rows={2} defaultValue={obj.narrative ?? ""} /></Field>
+                        <button className="btn btn-primary w-full" type="submit">Save changes</button>
+                      </form>
+                    </div>
+                  </details>
+                  <form action={deleteObjectiveAction}>
+                    <input type="hidden" name="projectId" value={id} />
+                    <input type="hidden" name="objectiveId" value={obj.id} />
+                    <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete</button>
+                  </form>
+                </div>
               )}
             </div>
             <h3 className="font-display text-lg font-semibold">{obj.statement}</h3>
@@ -333,12 +363,49 @@ export default async function LogframePage({ params, searchParams }: { params: P
                           <td className="td"><ProgressBar value={p} tone={p >= 100 ? "ok" : p >= 50 ? "brand" : "warn"} showLabel /></td>
                           <td className="td text-xs" style={{ color: "var(--muted)" }}>{i.mov ?? "—"}{i.assumptions ? <span><br />Assumes: {i.assumptions}</span> : null}</td>
                           {canEdit && (
-                            <td className="td text-right">
-                              <form action={deleteIndicatorAction}>
-                                <input type="hidden" name="projectId" value={id} />
-                                <input type="hidden" name="indicatorId" value={i.id} />
-                                <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>✕</button>
-                              </form>
+                            <td className="td">
+                              <div className="flex items-center gap-1 justify-end">
+                                <details className="editor inline-block">
+                                  <summary className="btn btn-sm btn-primary">Record</summary>
+                                  <div className="editor-panel card p-4">
+                                    <SectionTitle>Record progress</SectionTitle>
+                                    <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>{i.name}</p>
+                                    <form action={recordIndicatorActualAction} className="space-y-2">
+                                      <input type="hidden" name="projectId" value={id} />
+                                      <input type="hidden" name="indicatorId" value={i.id} />
+                                      <Field label="Period (e.g. Q1 2026, Mar 2026)"><input name="period" required className="input" placeholder="Q1 2026" /></Field>
+                                      <Field label={`Cumulative value (${i.unit || "number"})`}><input type="number" step="any" name="value" required className="input" defaultValue={i.latest || 0} /></Field>
+                                      <Field label="What was done (optional)"><textarea name="note" className="textarea" rows={2} placeholder="e.g. 6 FGDs completed across 3 sub-counties" /></Field>
+                                      <div className="text-xs" style={{ color: "var(--muted)" }}>Baseline {num(i.baseline)} · Target {num(i.target)}</div>
+                                      <button className="btn btn-primary w-full" type="submit">Save reading</button>
+                                    </form>
+                                  </div>
+                                </details>
+                                <details className="editor inline-block">
+                                  <summary className="btn btn-sm">Edit</summary>
+                                  <div className="editor-panel card p-4">
+                                    <SectionTitle>Edit indicator</SectionTitle>
+                                    <form action={updateIndicatorAction} className="space-y-2 mt-2">
+                                      <input type="hidden" name="projectId" value={id} />
+                                      <input type="hidden" name="indicatorId" value={i.id} />
+                                      <Field label="Indicator name"><textarea name="name" required className="textarea" rows={2} defaultValue={i.name} /></Field>
+                                      <div className="grid grid-cols-3 gap-2">
+                                        <Field label="Unit"><input name="unit" className="input" defaultValue={i.unit} /></Field>
+                                        <Field label="Baseline"><input type="number" step="any" name="baseline" className="input" defaultValue={i.baseline} /></Field>
+                                        <Field label="Target"><input type="number" step="any" name="target" className="input" defaultValue={i.target} /></Field>
+                                      </div>
+                                      <Field label="Means of verification"><input name="mov" className="input" defaultValue={i.mov ?? ""} /></Field>
+                                      <Field label="Assumptions"><input name="assumptions" className="input" defaultValue={i.assumptions ?? ""} /></Field>
+                                      <button className="btn btn-primary w-full" type="submit">Save changes</button>
+                                    </form>
+                                  </div>
+                                </details>
+                                <form action={deleteIndicatorAction}>
+                                  <input type="hidden" name="projectId" value={id} />
+                                  <input type="hidden" name="indicatorId" value={i.id} />
+                                  <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }} title="Delete indicator">✕</button>
+                                </form>
+                              </div>
                             </td>
                           )}
                         </tr>
@@ -348,6 +415,46 @@ export default async function LogframePage({ params, searchParams }: { params: P
                 </table>
               </div>
             )}
+
+            {objInds.length > 0 && (() => {
+              const logs = actualsFor(objInds.map((i) => i.id));
+              return (
+                <div className="mt-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs uppercase tracking-wide font-medium" style={{ color: "var(--muted)" }}>Progress monitoring</span>
+                    <Badge tone="muted">{logs.length} reading{logs.length === 1 ? "" : "s"}</Badge>
+                  </div>
+                  {logs.length === 0 ? (
+                    <p className="text-xs" style={{ color: "var(--muted)" }}>No progress recorded yet. Use <b>Record</b> on an indicator above to log what has been achieved each period — those readings update the Latest column and the progress bars.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead><tr>
+                          <th className="th text-left" style={{ width: 100 }}>Recorded</th>
+                          <th className="th text-left">Indicator</th>
+                          <th className="th text-left" style={{ width: 110 }}>Period</th>
+                          <th className="th text-right" style={{ width: 70 }}>Value</th>
+                          <th className="th text-left">What was done</th>
+                          {canEdit && <th className="th" style={{ width: 36 }} />}
+                        </tr></thead>
+                        <tbody>
+                          {logs.map((a) => (
+                            <tr key={a.id}>
+                              <td className="td text-xs whitespace-nowrap" style={{ color: "var(--muted)" }}>{fmtDate(a.recordedAt)}</td>
+                              <td className="td">{a.indicatorName}</td>
+                              <td className="td">{a.period}</td>
+                              <td className="td text-right tabular-nums font-medium">{num(a.value)}</td>
+                              <td className="td text-xs" style={{ color: "var(--muted)" }}>{a.note ?? "—"}</td>
+                              {canEdit && <td className="td text-right"><form action={deleteIndicatorActualAction}><input type="hidden" name="projectId" value={id} /><input type="hidden" name="actualId" value={a.id} /><button className="btn btn-sm" type="submit" title="Remove reading" style={{ color: "var(--danger)" }}>✕</button></form></td>}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {canEdit && (
               <details className="mt-3">

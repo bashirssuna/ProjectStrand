@@ -1532,6 +1532,15 @@ export async function issueInvoiceAction(formData: FormData) {
   revalidatePath("/finance/invoices");
   redirect("/finance/invoices?issued=1");
 }
+// Re-run the financial control checks across every project in the org, so the
+// Audit & Compliance view reflects the latest budgets, spend and approvals.
+export async function recheckOrgComplianceAction() {
+  const { orgId } = await requireInstitutionFinance();
+  const projects = await q<{ id: string }>(`SELECT id FROM project WHERE org_id=$1`, [orgId]);
+  for (const p of projects) { try { await evaluateProject(p.id); } catch {} }
+  redirect("/finance/audit?rechecked=1");
+}
+
 export async function voidInvoiceAction(formData: FormData) {
   const { orgId, userId, userName } = await requireInstitutionFinance();
   const invId = String(formData.get("invoiceId"));

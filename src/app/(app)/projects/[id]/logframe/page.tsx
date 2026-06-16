@@ -6,7 +6,7 @@ import { num, money } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { addObjectiveAction, deleteObjectiveAction, addIndicatorAction, deleteIndicatorAction, uploadObjectivesAction, linkActivityToOutputAction } from "@/app/actions";
 
-export default async function LogframePage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ view?: string }> }) {
+export default async function LogframePage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ view?: string; imported?: string }> }) {
   const { id } = await params;
   const sp = await searchParams;
   const view = sp.view === "matrix" ? "matrix" : "build";
@@ -202,6 +202,22 @@ export default async function LogframePage({ params, searchParams }: { params: P
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-end">{Toggle}</div>
+      {sp.imported !== undefined && (() => {
+        const v = sp.imported as string;
+        const ok = v !== "nofile" && (Number(v) || 0) > 0;
+        const n = Number(v) || 0;
+        const text = v === "nofile"
+          ? "Choose a file first, then click Upload & extract."
+          : ok
+            ? `Imported ${n} item${n === 1 ? "" : "s"} from your document — review and edit them below.`
+            : "No objectives or outputs were detected in that document. It may use a layout the extractor can't read yet — add them by hand below, or send the file to support so the extractor can be taught its format.";
+        return (
+          <div className="card p-3 flex items-start gap-2" style={{ borderColor: ok ? "var(--ok)" : "var(--warn)" }}>
+            <span className="mt-1 inline-block h-2 w-2 rounded-full" style={{ background: ok ? "var(--ok)" : "var(--warn)" }} />
+            <p className="text-sm">{text}</p>
+          </div>
+        );
+      })()}
       {canEdit && (
         <div className="card p-4">
           <SectionTitle>Populate the results framework</SectionTitle>

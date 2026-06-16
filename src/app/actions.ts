@@ -1037,7 +1037,7 @@ export async function uploadObjectivesAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "project.edit");
   const file = formData.get("file") as File | null;
-  if (!file || file.size === 0) { revalidatePath(`/projects/${projectId}/logframe`); return; }
+  if (!file || file.size === 0) redirect(`/projects/${projectId}/logframe?imported=nofile`);
 
   const buf = Buffer.from(await file.arrayBuffer());
   const { text, rows } = await extractFile(file.name, buf);
@@ -1045,21 +1045,25 @@ export async function uploadObjectivesAction(formData: FormData) {
 
   let order = (await one<{ m: number }>(`SELECT COALESCE(MAX("order"),0)::int m FROM objective WHERE project_id=$1`, [projectId]))?.m ?? 0;
   const objByCode = new Map<string, string>();
-  let created = 0;
+  let objN = 0, outN = 0, created = 0;
 
   for (const s of suggestions.filter((x) => x.kind === "objective")) {
     const p = s.payload as { code?: string; statement?: string };
     const oid = id("obj");
+    objN++;
+    const code = p.code || `OBJ${objN}`;
     await q(`INSERT INTO objective (id, project_id, level, code, statement, "order") VALUES ($1,$2,'objective',$3,$4,$5)`,
-      [oid, projectId, p.code || `OBJ${++order}`, (p.statement || "Objective").slice(0, 500), ++order]);
+      [oid, projectId, code, (p.statement || "Objective").slice(0, 500), ++order]);
+    objByCode.set(code, oid);
     if (p.code) objByCode.set(p.code, oid);
     created++;
   }
   for (const s of suggestions.filter((x) => x.kind === "output")) {
     const p = s.payload as { code?: string; statement?: string; objectiveCode?: string };
+    outN++;
     await q(`INSERT INTO output (id, project_id, objective_id, code, statement, "order") VALUES ($1,$2,$3,$4,$5,$6)`,
       [id("out"), projectId, p.objectiveCode ? objByCode.get(p.objectiveCode) ?? null : null,
-       p.code || `OUT${created + 1}`, (p.statement || "Output").slice(0, 500), ++order]);
+       p.code || `OUT${outN}`, (p.statement || "Output").slice(0, 500), ++order]);
     created++;
   }
 
@@ -1068,7 +1072,7 @@ export async function uploadObjectivesAction(formData: FormData) {
   await q(`INSERT INTO project_document (id, project_id, name, doc_type, mime_type, storage_key, size_bytes, extracted_text)
            VALUES ($1,$2,$3,'proposal',$4,$5,$6,$7)`, [docId, projectId, file.name, mimeFor(file.name), skey, buf.length, text.slice(0, 20000)]);
   await writeAudit({ userId: user.id, action: "import", entity: "objective", entityId: projectId, after: { created } });
-  revalidatePath(`/projects/${projectId}/logframe`);
+  redirect(`/projects/${projectId}/logframe?imported=${created}`);
 }
 
 /* ---------------- Requisition attachments, vouchers ---------------- */

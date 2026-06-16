@@ -28,12 +28,63 @@ export function parseDocument(docType: string, text: string, rows?: (string | nu
   const donorLine = lines.find((l) => /^(donor|funder|funding source)\s*[:\-]/i.test(l));
   if (donorLine) out.push({ kind: "meta", payload: { field: "donor", value: donorLine.split(/[:\-]/).slice(1).join(":").trim() }, confidence: 0.75 });
 
-  // Objectives & outputs
+  // ---- Objectives, outcomes & outputs (robust to many document layouts) ----
+  const hasLetters = (s: string) => /[a-z]/i.test(s);
+  const OBJ_KEY = /^(?:(?:specific|strategic|general|overall|broad|main|primary|secondary|development|immediate|long[-\s]?term|short[-\s]?term|project|the)\s+)*(?:objectives?|goals?|outcomes?|aims?|purpose)\b/i;
+  const OUT_KEY = /^(?:(?:expected|key|main|major)\s+)*(?:outputs?|results?|deliverables?)\b/i;
+  // After the keyword: a number (with optional separator), OR just a separator. Then the statement.
+  const TAIL = /^(?:\s*(\d+(?:\.\d+)*)\s*[):.\-–—]*\s*|\s*[):.\-–—]\s*)(.+)$/;
+  const numOf = (s: string) => s.match(/^\(?(\d+(?:\.\d+)*)\)?/)?.[1];
+  const bareHeader = (l: string, key: RegExp) => { const r = l.replace(key, "").trim(); return r === "" || /^[):.\-–—\s]+$/.test(r); };
+  const listItem = (l: string) => { const m = l.match(/^(?:\(?\d+(?:\.\d+)*\)?[.):\-]?\s+|[-*•►▪◦]\s+)(.{4,})$/); return m ? m[1].trim() : null; };
+
+  let objSeq = 0, outSeq = 0;
+  const pushObj = (numRaw: string | undefined, st: string) => { const s = (st || "").trim(); if (!s || !hasLetters(s) || s.length < 4) return; objSeq++; out.push({ kind: "objective", payload: { code: numRaw ? `OBJ${numRaw}` : `OBJ${objSeq}`, statement: s.slice(0, 500) }, confidence: 0.7 }); };
+  const pushOut = (numRaw: string | undefined, st: string) => { const s = (st || "").trim(); if (!s || !hasLetters(s) || s.length < 4) return; outSeq++; out.push({ kind: "output", payload: { code: numRaw ? `OUT${numRaw}` : `OUT${outSeq}`, statement: s.slice(0, 500) }, confidence: 0.65 }); };
+
+  // Pass 1 — line by line, tracking which section ("Objectives:" / "Outputs:") we're under.
+  let mode: "objective" | "output" | null = null;
   for (const l of lines) {
-    const obj = l.match(/^(?:objective|goal)\s*(\d+)?\s*[:\-]\s*(.+)$/i);
-    if (obj) out.push({ kind: "objective", payload: { code: `OBJ${obj[1] ?? out.filter(s=>s.kind==="objective").length + 1}`, statement: obj[2].trim() }, confidence: 0.78 });
-    const op = l.match(/^(?:output|result)\s*(\d+(?:\.\d+)?)?\s*[:\-]\s*(.+)$/i);
-    if (op) out.push({ kind: "output", payload: { code: `OUT${op[1] ?? ""}`.trim(), statement: op[2].trim() }, confidence: 0.7 });
+    if (!l) continue;
+    if (OBJ_KEY.test(l)) {
+      if (bareHeader(l, OBJ_KEY)) { mode = "objective"; continue; }
+      const m = l.replace(OBJ_KEY, "").match(TAIL);
+      if (m) { pushObj(m[1], m[2]); mode = "objective"; continue; }
+    }
+    if (OUT_KEY.test(l)) {
+      if (bareHeader(l, OUT_KEY)) { mode = "output"; continue; }
+      const m = l.replace(OUT_KEY, "").match(TAIL);
+      if (m) { pushOut(m[1], m[2]); mode = "output"; continue; }
+    }
+    if (mode) {
+      const li = listItem(l);
+      if (li) { (mode === "objective" ? pushObj : pushOut)(numOf(l), li); continue; }
+      mode = null; // a non-list line ends the current list section
+    }
+  }
+
+  // Pass 2 — tables (an "Objectives and Outputs" doc is often a grid).
+  if (rows && rows.length) {
+    let objCol = -1, outCol = -1, headerRow = -1;
+    for (let i = 0; i < Math.min(rows.length, 6); i++) {
+      const cells = rows[i].map((c) => String(c ?? "").toLowerCase());
+      const oc = cells.findIndex((c) => /\bobjectives?\b|\bgoals?\b|\boutcomes?\b/.test(c));
+      const uc = cells.findIndex((c) => /\boutputs?\b|\bresults?\b|\bdeliverables?\b/.test(c));
+      if (oc >= 0 || uc >= 0) { objCol = oc; outCol = uc; headerRow = i; break; }
+    }
+    if (headerRow >= 0) {
+      for (let i = headerRow + 1; i < rows.length; i++) {
+        const cells = rows[i].map((c) => String(c ?? "").trim());
+        if (objCol >= 0 && cells[objCol] && hasLetters(cells[objCol]) && cells[objCol].length >= 4) pushObj(numOf(cells[0] ?? "") ?? numOf(cells[objCol]), cells[objCol]);
+        if (outCol >= 0 && outCol !== objCol && cells[outCol] && hasLetters(cells[outCol]) && cells[outCol].length >= 4) pushOut(numOf(cells[0] ?? "") ?? numOf(cells[outCol]), cells[outCol]);
+      }
+    }
+    for (const r of rows) {
+      const first = String(r[0] ?? "").trim();
+      const restCell = () => r.slice(1).map((c) => String(c ?? "").trim()).find((c) => hasLetters(c) && c.length >= 4) ?? "";
+      if (OBJ_KEY.test(first)) { const m = first.replace(OBJ_KEY, "").match(TAIL); pushObj(m?.[1] ?? numOf(first), m ? m[2] : restCell()); }
+      else if (OUT_KEY.test(first)) { const m = first.replace(OUT_KEY, "").match(TAIL); pushOut(m?.[1] ?? numOf(first), m ? m[2] : restCell()); }
+    }
   }
 
   // Activities (bulleted or "Activity x:")
@@ -63,10 +114,21 @@ export function parseDocument(docType: string, text: string, rows?: (string | nu
     }
   }
 
-  return out;
+  // De-duplicate objectives/outputs (Pass 1 line-scan and Pass 2 table-scan can
+  // both capture the same item). Key on kind + normalized statement.
+  const seenOO = new Set<string>();
+  const deduped: Suggestion[] = [];
+  for (const s of out) {
+    if (s.kind === "objective" || s.kind === "output") {
+      const st = String((s.payload as { statement?: string }).statement ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+      const key = `${s.kind}:${st}`;
+      if (seenOO.has(key)) continue;
+      seenOO.add(key);
+    }
+    deduped.push(s);
+  }
+  return deduped;
 }
-
-// Reads budget spreadsheets shaped like real grant budgets: rows of
 // "Activity Area N: ..." headers and "N.M Description ... <amounts> <total>"
 // line items. Emits a budget_line per line item (planned = last numeric in row),
 // and an activity suggestion per activity-area header.

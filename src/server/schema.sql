@@ -547,6 +547,9 @@ ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approved_by text;
 ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approved_by_name text;
 ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approved_at timestamptz;
 
+-- Documents can be archived (soft-hidden) by document managers without deleting.
+ALTER TABLE project_document ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
+
 -- ===========================================================================
 -- GENERAL LEDGER (institutional accounting foundation)
 -- Double-entry: every financial event posts a balanced journal entry whose

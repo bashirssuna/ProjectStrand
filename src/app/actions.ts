@@ -567,6 +567,18 @@ export async function addDocumentAction(formData: FormData) {
   revalidatePath(`/projects/${projectId}/documents`);
 }
 
+// Archive / unarchive a document (soft-hide; reversible) — for documents.manage holders.
+export async function archiveDocumentAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "documents.manage");
+  const docId = String(formData.get("docId"));
+  const archived = String(formData.get("archived")) === "true";
+  await q(`UPDATE project_document SET archived=$1 WHERE id=$2 AND project_id=$3`, [archived, docId, projectId]);
+  await writeAudit({ userId: user.id, action: archived ? "archive" : "unarchive", entity: "project_document", entityId: docId });
+  revalidatePath(`/projects/${projectId}/documents`);
+}
+
 export async function resolveFlagAction(formData: FormData) {
   await requireUser();
   const projectId = String(formData.get("projectId"));
@@ -669,7 +681,7 @@ export async function uploadDocumentAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "documents.manage");
   const file = formData.get("file") as File | null;
-  if (!file || file.size === 0) { revalidatePath(`/projects/${projectId}/documents`); return; }
+  if (!file || file.size === 0) redirect(`/projects/${projectId}/documents?upload=nofile`);
   const buf = Buffer.from(await file.arrayBuffer());
   const docId = id("doc");
   const key = await saveUpload(docId, file.name, buf);
@@ -681,7 +693,7 @@ export async function uploadDocumentAction(formData: FormData) {
     [docId, projectId, String(formData.get("folderId") || "") || null, file.name,
      String(formData.get("docType") || "other"), mimeFor(file.name), key, buf.length, extracted]);
   await writeAudit({ userId: user.id, action: "upload", entity: "project_document", entityId: docId, after: { fileName: file.name } });
-  revalidatePath(`/projects/${projectId}/documents`);
+  redirect(`/projects/${projectId}/documents?upload=ok`);
 }
 
 /* ---------------- SOW upload & populate ---------------- */

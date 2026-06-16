@@ -1018,6 +1018,20 @@ export async function deleteIndicatorAction(formData: FormData) {
   revalidatePath(`/projects/${projectId}/logframe`);
 }
 
+// Connect (or disconnect) a work-plan activity to a logframe output, so the
+// results framework shows the activities — and their live budget — under each output.
+export async function linkActivityToOutputAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  const activityId = String(formData.get("activityId"));
+  if (!activityId) { revalidatePath(`/projects/${projectId}/logframe`); return; }
+  const outputId = String(formData.get("outputId") || "") || null;
+  await q(`UPDATE activity SET output_id=$2, updated_at=now() WHERE id=$1 AND project_id=$3`, [activityId, outputId, projectId]);
+  await writeAudit({ userId: user.id, action: "update", entity: "activity", entityId: activityId, after: { output_id: outputId } });
+  revalidatePath(`/projects/${projectId}/logframe`);
+}
+
 export async function uploadObjectivesAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));

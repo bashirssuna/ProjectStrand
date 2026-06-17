@@ -98,6 +98,21 @@ export async function requirePermission(projectId: string, permission: Permissio
   return access;
 }
 
+// Clearing or importing a whole budget is a heavyweight, destructive operation,
+// so it is reserved for the Principal Investigator, Co-PIs and Finance (plus org
+// admins who oversee the organisation). Other budget.manage holders — e.g. a
+// project manager — can still edit individual lines but not wipe or replace the
+// whole budget.
+const SENIOR_BUDGET_ROLES: ProjectRole[] = ["pi", "co_pi", "finance_admin"];
+export function canManageBudgetBulk(access: ProjectAccess): boolean {
+  return access.isOrgAdmin || (access.role != null && SENIOR_BUDGET_ROLES.includes(access.role));
+}
+export async function requireBudgetBulk(projectId: string): Promise<ProjectAccess> {
+  const access = await getProjectAccess(projectId);
+  if (!canManageBudgetBulk(access)) throw new Error("FORBIDDEN");
+  return access;
+}
+
 // Only platform/org admins and Principal Investigators (including Co-PIs) may
 // create projects. The admin seeds the first PI by creating a project and
 // assigning them; PIs and Co-PIs can then spin up further projects.

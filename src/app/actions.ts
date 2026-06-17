@@ -5,7 +5,7 @@ import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
 import { PROJECT_STATUS, PROJECT_ROLES, PERMISSIONS, ROLE_PERMISSIONS, type Permission, type ProjectRole } from "@/lib/enums";
 import { createSession, destroySession, requireUser, verifyPassword } from "@/server/auth";
-import { requirePermission, getProjectAccess, canCreateProjects } from "@/server/policy";
+import { requirePermission, getProjectAccess, canCreateProjects, requireBudgetBulk } from "@/server/policy";
 import { createProject } from "@/server/services/projects";
 import { addProjectMemberByEmail, removeProjectMember, createAdminAccount, issuePasswordToken, consumePasswordToken, markTokenUsed, signupOrganization, getUserOrg, createOrganizationWithAdmin, setOrgState, requestUpgrade } from "@/server/services/accounts";
 import { hashPassword, passwordError } from "@/lib/password";
@@ -114,6 +114,12 @@ export async function applySuggestionsAction(formData: FormData) {
   const jobId = String(formData.get("jobId"));
   await requirePermission(projectId, "project.edit");
   const acceptIds = formData.getAll("accept").map(String);
+  // Creating budget lines (whatever document they were extracted from) is a
+  // senior-only action, same as clearing or importing a budget.
+  if (acceptIds.length) {
+    const bl = await one(`SELECT 1 AS ok FROM parsing_suggestion WHERE job_id=$1 AND kind='budget_line' AND id = ANY($2::text[]) LIMIT 1`, [jobId, acceptIds]);
+    if (bl) await requireBudgetBulk(projectId);
+  }
   await applySuggestions({ jobId, userId: user.id, acceptIds });
   revalidatePath(`/projects/${projectId}`);
   redirect(`/projects/${projectId}`);
@@ -292,7 +298,7 @@ export async function deleteBudgetLineAction(formData: FormData) {
 export async function clearBudgetLinesAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
-  await requirePermission(projectId, "budget.manage");
+  await requireBudgetBulk(projectId);
   const inProject = `SELECT bl.id FROM budget_line bl JOIN budget b ON b.id=bl.budget_id WHERE b.project_id=$1`;
   await q(`UPDATE requisition SET budget_line_id=NULL WHERE budget_line_id IN (${inProject})`, [projectId]);
   await q(`UPDATE activity SET budget_line_id=NULL WHERE budget_line_id IN (${inProject})`, [projectId]);
@@ -666,8 +672,10 @@ const FOLDER_FOR_DOCTYPE: Record<string, [string, string]> = {
 export async function uploadAndParseAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
-  await requirePermission(projectId, "project.edit");
   const docType = String(formData.get("docType") || "proposal");
+  // Importing a budget is senior-only; other document types need edit rights.
+  if (docType === "budget") await requireBudgetBulk(projectId);
+  else await requirePermission(projectId, "project.edit");
   const file = formData.get("file") as File | null;
   const pasted = String(formData.get("text") || "");
 

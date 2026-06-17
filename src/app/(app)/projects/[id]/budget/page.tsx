@@ -1,8 +1,9 @@
 import Link from "next/link";
-import { getProjectAccess } from "@/server/policy";
+import { getProjectAccess, canManageBudgetBulk } from "@/server/policy";
 import { one, q } from "@/server/db";
 import { budgetLineRollups, budgetSummary, STANDARD_BUDGET_CATEGORIES, type LineRollup } from "@/server/services/budget";
 import { addBudgetLineAction, convertBudgetCurrencyAction, updateBudgetLineAction, deleteBudgetLineAction, clearBudgetLinesAction, setupBudgetSectionsAction } from "@/app/actions";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Stat, SectionTitle, Empty, ProgressBar, Field, Badge } from "@/components/ui";
 import { money, pct, num, fmtDate } from "@/lib/format";
 import { blockStaff } from "../_staffblock";
@@ -12,6 +13,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
   await blockStaff(id);
   const access = await getProjectAccess(id);
   const canManage = access.permissions.has("budget.manage");
+  const canBulk = canManageBudgetBulk(access);
   const proj = await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [id]);
   const c = proj?.currency ?? "USD";
 
@@ -139,12 +141,14 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                 <button className="btn btn-sm btn-primary" type="submit">Set up standard sections</button>
               </form>
             )}
-            {lines.length > 0 && (
+            {canBulk && lines.length > 0 && (
               <form action={clearBudgetLinesAction}><input type="hidden" name="projectId" value={id} />
-                <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Clear all</button>
+                <ConfirmSubmit
+                  message="Clear ALL budget lines? This permanently deletes every line along with its committed and spent records, and unlinks any requisitions and activities tied to them. This cannot be undone."
+                  className="btn btn-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Clear all</ConfirmSubmit>
               </form>
             )}
-            <Link href={`/projects/${id}/import`} className="btn btn-sm">Import from file</Link>
+            {canBulk && <Link href={`/projects/${id}/import`} className="btn btn-sm">Import from file</Link>}
           </div>
         ) : undefined}>
           Budget {bud && <span className="text-sm font-normal" style={{ color: "var(--muted)" }}>· {bud.name}</span>}

@@ -698,7 +698,8 @@ export async function uploadAndParseAction(formData: FormData) {
   }
 
   if (!text.trim()) redirect(`/projects/${projectId}/import`);
-  const { jobId } = await createExtractionJob({ projectId, userId: user.id, fileName, docType, text, rows });
+  const currency = docType === "budget" ? String(formData.get("currency") || "").trim() : "";
+  const { jobId } = await createExtractionJob({ projectId, userId: user.id, fileName, docType, text, rows, currency: currency || null });
   redirect(`/projects/${projectId}/import/${jobId}`);
 }
 

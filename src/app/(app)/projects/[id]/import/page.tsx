@@ -10,7 +10,7 @@ export default async function ImportPage({ params }: { params: Promise<{ id: str
   const { id } = await params;
   await blockStaff(id);
   if (!(await can(id, "project.edit"))) redirect(`/projects/${id}`);
-  const project = await one<{ title: string; code: string }>(`SELECT title, code FROM project WHERE id=$1`, [id]);
+  const project = await one<{ title: string; code: string; currency: string }>(`SELECT title, code, currency FROM project WHERE id=$1`, [id]);
   if (!project) redirect("/projects");
 
   return (
@@ -26,7 +26,7 @@ export default async function ImportPage({ params }: { params: Promise<{ id: str
         nothing is saved to the project until you approve it. Uploaded files are also filed in the
         project Documents. (You can paste text instead if you prefer.)
       </div>
-      <ImportForm projectId={id} />
+      <ImportForm projectId={id} projectCurrency={project.currency} />
     </div>
   );
 }

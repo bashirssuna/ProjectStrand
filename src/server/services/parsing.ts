@@ -353,13 +353,14 @@ function parseWorkplan(rows: (string | number | Date)[][]): Suggestion[] {
 
 export async function createExtractionJob(input: {
   projectId: string; userId: string; fileName: string; docType: string; text: string;
-  rows?: (string | number | Date)[][] | null;
+  rows?: (string | number | Date)[][] | null; currency?: string | null;
 }): Promise<{ jobId: string; suggestions: number }> {
   const jobId = id("job");
   await q(
-    `INSERT INTO extraction_job (id, project_id, file_name, doc_type, status, raw_text)
-     VALUES ($1,$2,$3,$4,'parsed',$5)`,
-    [jobId, input.projectId, input.fileName, input.docType, input.text.slice(0, 20000)]
+    `INSERT INTO extraction_job (id, project_id, file_name, doc_type, status, raw_text, currency)
+     VALUES ($1,$2,$3,$4,'parsed',$5,$6)`,
+    [jobId, input.projectId, input.fileName, input.docType, input.text.slice(0, 20000),
+     input.currency ? input.currency.toUpperCase() : null]
   );
   const suggestions = parseDocument(input.docType, input.text, input.rows ?? null);
   for (const s of suggestions) {
@@ -376,9 +377,12 @@ export async function createExtractionJob(input: {
 
 // Materialize accepted suggestions into real project entities.
 export async function applySuggestions(input: { jobId: string; userId: string; acceptIds: string[] }): Promise<void> {
-  const job = await one<{ projectId: string }>(`SELECT project_id AS "projectId" FROM extraction_job WHERE id=$1`, [input.jobId]);
+  const job = await one<{ projectId: string; currency: string | null }>(`SELECT project_id AS "projectId", currency FROM extraction_job WHERE id=$1`, [input.jobId]);
   if (!job) throw new Error("Job not found");
   const projectId = job.projectId;
+  // Currency the user picked at upload time, if any. This wins over whatever we
+  // could sniff from the file; an empty value means "auto-detect from the file".
+  const jobCurrency = (job.currency || "").toUpperCase();
 
   const sugs = await q<{ id: string; kind: string; payload: string }>(
     `SELECT id, kind, payload FROM parsing_suggestion WHERE job_id=$1`, [input.jobId]
@@ -429,13 +433,10 @@ export async function applySuggestions(input: { jobId: string; userId: string; a
         [id("act"), projectId, String(p.code ?? ""), String(p.title),
          p.startDate ? String(p.startDate) : null, p.endDate ? String(p.endDate) : null, order++]);
     } else if (s.kind === "budget_line") {
-      const lineCcy = p.currency ? String(p.currency).toUpperCase() : "";
+      // Precedence: currency picked at upload > currency detected in the file > project currency.
+      const lineCcy = jobCurrency || (p.currency ? String(p.currency).toUpperCase() : "");
       if (!budgetId) {
         budgetId = id("bud");
-        // Denominate the imported budget in the file's own currency when we could
-        // detect it; otherwise keep the project's current currency. When a currency
-        // was detected, also switch the project to it so the budget/finance views
-        // (which display the project currency) read correctly.
         const ccy = lineCcy || (await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [projectId]))?.currency || "USD";
         await q(`INSERT INTO budget (id, project_id, name, currency) VALUES ($1,$2,'Imported budget',$3)`, [budgetId, projectId, ccy]);
         if (lineCcy) await q(`UPDATE project SET currency=$2, updated_at=now() WHERE id=$1`, [projectId, lineCcy]);

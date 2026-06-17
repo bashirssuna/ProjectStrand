@@ -1670,3 +1670,6 @@ UPDATE payment_voucher SET voucher_date = created_at::date WHERE voucher_date IS
 
 -- Draft/void invoices can be archived (hidden from the working list) or deleted.
 ALTER TABLE invoice ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
+
+-- Currency chosen at import time for a budget file (empty/null = auto-detect from the file).
+ALTER TABLE extraction_job ADD COLUMN IF NOT EXISTS currency text;

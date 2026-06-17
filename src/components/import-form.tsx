@@ -20,11 +20,13 @@ Baseline survey enumerators ......... 18,000
 Certified seed procurement .......... 120,000
 Training of trainers workshop ....... 35,000`;
 
-export function ImportForm({ projectId }: { projectId: string }) {
+export function ImportForm({ projectId, projectCurrency = "USD" }: { projectId: string; projectCurrency?: string }) {
   const [mode, setMode] = useState<"file" | "paste">("file");
+  const [docType, setDocType] = useState("proposal");
   const [text, setText] = useState("");
   const [fileName, setFileName] = useState("");
   const [pending, setPending] = useState(false);
+  const CCY = ["UGX", "USD", "EUR", "GBP", "KES", "TZS", "RWF", "NGN", "ZAR"];
 
   return (
     <form action={uploadAndParseAction} onSubmit={() => setPending(true)} className="card p-6 space-y-4">
@@ -39,13 +41,27 @@ export function ImportForm({ projectId }: { projectId: string }) {
 
       <label className="block">
         <span className="label">Document type</span>
-        <select name="docType" className="select" defaultValue="proposal">
+        <select name="docType" className="select" value={docType} onChange={(e) => setDocType(e.target.value)}>
           <option value="proposal">Proposal / narrative</option>
           <option value="workplan">Work plan</option>
           <option value="budget">Budget (spreadsheet)</option>
           <option value="sow">Statement of work</option>
         </select>
       </label>
+
+      {docType === "budget" && (
+        <label className="block">
+          <span className="label">Budget currency</span>
+          <select name="currency" className="select" defaultValue={projectCurrency}>
+            <option value="">Auto-detect from file</option>
+            {CCY.map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+          <span className="text-xs mt-1 block" style={{ color: "var(--muted)" }}>
+            The currency this budget file is written in. Set it before uploading so the figures
+            import under the right currency — the amounts are taken as-is, not converted.
+          </span>
+        </label>
+      )}
 
       {mode === "file" ? (
         <label className="block">

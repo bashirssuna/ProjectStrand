@@ -21,6 +21,7 @@ import {
 import { generateReport } from "@/server/services/reports";
 import { recomputeRollups } from "@/server/services/activities";
 import { evaluateProject } from "@/server/services/anomaly";
+import { ensureStandardCategories } from "@/server/services/budget";
 import { writeAudit, notify } from "@/server/services/audit";
 
 /* ---------------- Auth ---------------- */
@@ -202,15 +203,35 @@ export async function addBudgetLineAction(formData: FormData) {
   if (!budgetId) {
     budgetId = id("bud");
     await q(`INSERT INTO budget (id, project_id, name) VALUES ($1,$2,'Project budget')`, [budgetId, projectId]);
+    await ensureStandardCategories(budgetId); // a fresh budget gets the standard sections
   }
   const unitCost = Number(formData.get("unitCost") || 0);
   const quantity = Number(formData.get("quantity") || 1);
-  await q(`INSERT INTO budget_line (id, budget_id, code, description, unit, unit_cost, quantity, planned)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [id("bl"), budgetId, String(formData.get("code") || "BL"), String(formData.get("description") || "Line"),
-     String(formData.get("unit") || "unit"), unitCost, quantity, unitCost * quantity]);
+  const frequency = Number(formData.get("frequency") || 1) || 1;
+  const categoryId = String(formData.get("categoryId") || "") || null;
+  const justification = String(formData.get("justification") || "") || null;
+  await q(`INSERT INTO budget_line (id, budget_id, category_id, code, description, unit, unit_cost, quantity, frequency, planned, justification)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [id("bl"), budgetId, categoryId, String(formData.get("code") || "BL"), String(formData.get("description") || "Line"),
+     String(formData.get("unit") || "unit"), unitCost, quantity, frequency, unitCost * quantity * frequency, justification]);
   await writeAudit({ userId: user.id, action: "create", entity: "budget_line", entityId: budgetId });
   await evaluateProject(projectId);
+  revalidatePath(`/projects/${projectId}/budget`);
+}
+
+// Create the standard donor-style sections (Personnel, Equipment, …) on the
+// project's budget, creating the budget first if it doesn't exist yet.
+export async function setupBudgetSectionsAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "budget.manage");
+  let budgetId = String(formData.get("budgetId") || "");
+  if (!budgetId) {
+    budgetId = id("bud");
+    await q(`INSERT INTO budget (id, project_id, name) VALUES ($1,$2,'Project budget')`, [budgetId, projectId]);
+  }
+  await ensureStandardCategories(budgetId);
+  await writeAudit({ userId: user.id, action: "setup_sections", entity: "budget", entityId: budgetId });
   revalidatePath(`/projects/${projectId}/budget`);
 }
 
@@ -221,19 +242,23 @@ export async function updateBudgetLineAction(formData: FormData) {
   const lineId = String(formData.get("lineId"));
   const unitCost = Number(formData.get("unitCost") || 0);
   const quantity = Number(formData.get("quantity") || 1);
+  const frequency = Number(formData.get("frequency") || 1) || 1;
+  const categoryId = String(formData.get("categoryId") || "") || null;
+  const justification = String(formData.get("justification") || "") || null;
+  const planned = unitCost * quantity * frequency;
   // record the pre-change values so the previous figures stay queryable
-  const prev = await one<{ code: string; description: string; unitCost: number; quantity: number; planned: number }>(
-    `SELECT code, description, unit_cost AS "unitCost", quantity, planned FROM budget_line WHERE id=$1`, [lineId]);
+  const prev = await one<{ code: string; description: string; unitCost: number; quantity: number; frequency: number; planned: number }>(
+    `SELECT code, description, unit_cost AS "unitCost", quantity, COALESCE(frequency,1) AS frequency, planned FROM budget_line WHERE id=$1`, [lineId]);
   if (prev) {
-    await q(`INSERT INTO budget_line_revision (id, project_id, budget_line_id, code, description, unit_cost, quantity, planned, action, changed_by, changed_by_name)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'updated',$9,$10)`,
-      [id("blr"), projectId, lineId, prev.code, prev.description, prev.unitCost, prev.quantity, prev.planned, user.id, user.name]);
+    await q(`INSERT INTO budget_line_revision (id, project_id, budget_line_id, code, description, unit_cost, quantity, frequency, planned, action, changed_by, changed_by_name)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'updated',$10,$11)`,
+      [id("blr"), projectId, lineId, prev.code, prev.description, prev.unitCost, prev.quantity, prev.frequency, prev.planned, user.id, user.name]);
   }
-  await q(`UPDATE budget_line SET code=$2, description=$3, unit_cost=$4, quantity=$5, planned=$6 WHERE id=$1`,
-    [lineId, String(formData.get("code") || "BL"), String(formData.get("description") || "Line"), unitCost, quantity, unitCost * quantity]);
+  await q(`UPDATE budget_line SET code=$2, description=$3, category_id=$4, unit_cost=$5, quantity=$6, frequency=$7, planned=$8, justification=$9 WHERE id=$1`,
+    [lineId, String(formData.get("code") || "BL"), String(formData.get("description") || "Line"), categoryId, unitCost, quantity, frequency, planned, justification]);
   await writeAudit({ userId: user.id, action: "update", entity: "budget_line", entityId: lineId,
     before: prev ? { planned: prev.planned, unitCost: prev.unitCost, quantity: prev.quantity } : undefined,
-    after: { planned: unitCost * quantity, unitCost, quantity } });
+    after: { planned, unitCost, quantity, frequency } });
   await evaluateProject(projectId);
   revalidatePath(`/projects/${projectId}/budget`);
 }

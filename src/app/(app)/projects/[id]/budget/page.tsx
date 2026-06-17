@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { getProjectAccess } from "@/server/policy";
 import { one, q } from "@/server/db";
-import { budgetLineRollups, budgetSummary } from "@/server/services/budget";
-import { addBudgetLineAction, convertBudgetCurrencyAction, updateBudgetLineAction, deleteBudgetLineAction, clearBudgetLinesAction } from "@/app/actions";
+import { budgetLineRollups, budgetSummary, STANDARD_BUDGET_CATEGORIES, type LineRollup } from "@/server/services/budget";
+import { addBudgetLineAction, convertBudgetCurrencyAction, updateBudgetLineAction, deleteBudgetLineAction, clearBudgetLinesAction, setupBudgetSectionsAction } from "@/app/actions";
 import { Stat, SectionTitle, Empty, ProgressBar, Field, Badge } from "@/components/ui";
-import { money, pct, fmtDate } from "@/lib/format";
+import { money, pct, num, fmtDate } from "@/lib/format";
 import { blockStaff } from "../_staffblock";
 
 export default async function BudgetPage({ params }: { params: Promise<{ id: string }> }) {
@@ -20,22 +20,104 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
   );
   const lines = bud ? await budgetLineRollups(bud.id) : [];
   const sum = bud ? await budgetSummary(bud.id) : null;
+  const cats = bud ? await q<{ id: string; name: string; costType: string }>(
+    `SELECT id, name, cost_type AS "costType" FROM budget_category WHERE budget_id=$1`, [bud.id]
+  ) : [];
 
-  // change history per line (previous values, who changed them, when)
-  const revs = await q<{
-    budgetLineId: string; code: string; description: string; unitCost: number;
-    quantity: number; planned: number; action: string; changedByName: string | null; changedAt: string;
-  }>(
+  // change history per line
+  const revs = await q<{ budgetLineId: string; code: string; description: string; unitCost: number; quantity: number; frequency: number; planned: number; action: string; changedByName: string | null; changedAt: string; }>(
     `SELECT budget_line_id AS "budgetLineId", code, description, unit_cost AS "unitCost",
-            quantity, planned, action, changed_by_name AS "changedByName", changed_at AS "changedAt"
+            quantity, COALESCE(frequency,1) AS frequency, planned, action, changed_by_name AS "changedByName", changed_at AS "changedAt"
      FROM budget_line_revision WHERE project_id=$1 ORDER BY changed_at DESC`, [id]
   );
   const revsByLine = new Map<string, typeof revs>();
-  for (const r of revs) {
-    const arr = revsByLine.get(r.budgetLineId) ?? [];
-    arr.push(r);
-    revsByLine.set(r.budgetLineId, arr);
-  }
+  for (const r of revs) { const arr = revsByLine.get(r.budgetLineId) ?? []; arr.push(r); revsByLine.set(r.budgetLineId, arr); }
+
+  // Order sections by the standard template order, custom sections after.
+  const order = STANDARD_BUDGET_CATEGORIES.map((x) => x.name.toLowerCase());
+  const sortedCats = [...cats].sort((a, b) => (order.indexOf(a.name.toLowerCase()) + 1 || 999) - (order.indexOf(b.name.toLowerCase()) + 1 || 999));
+  const byCat = new Map<string | null, LineRollup[]>();
+  for (const l of lines) { const k = l.categoryId ?? null; const arr = byCat.get(k) ?? []; arr.push(l); byCat.set(k, arr); }
+  const uncategorized = byCat.get(null) ?? [];
+  const sectionSum = (ls: LineRollup[]) => ({
+    planned: ls.reduce((s, l) => s + l.planned, 0), committed: ls.reduce((s, l) => s + l.committed, 0),
+    actual: ls.reduce((s, l) => s + l.actual, 0), remaining: ls.reduce((s, l) => s + l.remaining, 0),
+  });
+  const colCount = canManage ? 11 : 10;
+
+  // sections to render: every defined category (even if empty), then Uncategorized.
+  const sections: { id: string | null; name: string; costType: string; lines: LineRollup[] }[] = [
+    ...sortedCats.map((cat) => ({ id: cat.id, name: cat.name, costType: cat.costType, lines: byCat.get(cat.id) ?? [] })),
+    ...(uncategorized.length ? [{ id: null, name: "Uncategorised", costType: "direct", lines: uncategorized }] : []),
+  ];
+
+  const editForm = (l: LineRollup) => (
+    <details className="editor inline-block">
+      <summary className="btn btn-sm inline-block">Edit</summary>
+      <div className="editor-panel card p-4 text-left">
+        <div className="font-medium mb-3">Edit budget line</div>
+        <form action={updateBudgetLineAction} className="grid gap-2">
+          <input type="hidden" name="projectId" value={id} />
+          <input type="hidden" name="lineId" value={l.id} />
+          <Field label="Section"><select name="categoryId" defaultValue={l.categoryId ?? ""} className="select">
+            <option value="">— Uncategorised —</option>
+            {cats.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+          </select></Field>
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Code"><input name="code" defaultValue={l.code} className="input" /></Field>
+            <Field label="Unit"><input name="unit" defaultValue={l.unit} className="input" /></Field>
+          </div>
+          <Field label="Description"><input name="description" defaultValue={l.description} className="input" /></Field>
+          <div className="grid grid-cols-3 gap-2">
+            <Field label="Unit cost / rate"><input name="unitCost" type="number" step="any" defaultValue={l.unitCost} className="input" /></Field>
+            <Field label="Qty / No."><input name="quantity" type="number" step="any" defaultValue={l.quantity} className="input" /></Field>
+            <Field label="× Days / times"><input name="frequency" type="number" step="any" defaultValue={l.frequency} className="input" /></Field>
+          </div>
+          <Field label="Justification"><textarea name="justification" rows={2} defaultValue={l.justification ?? ""} className="textarea" placeholder="Why this cost is needed" /></Field>
+          <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
+        </form>
+        <form action={deleteBudgetLineAction} className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+          <input type="hidden" name="projectId" value={id} />
+          <input type="hidden" name="lineId" value={l.id} />
+          <button className="btn btn-sm w-full" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete this line</button>
+        </form>
+        <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+          <div className="text-xs font-medium mb-2" style={{ color: "var(--muted)" }}>Change history</div>
+          {(revsByLine.get(l.id) ?? []).length === 0 ? (
+            <div className="text-xs" style={{ color: "var(--muted)" }}>No prior changes — current planned {money(l.planned, c)}.</div>
+          ) : (
+            <ul className="space-y-2">
+              {(revsByLine.get(l.id) ?? []).map((r, i) => (
+                <li key={i} className="text-xs" style={{ color: "var(--muted)" }}>
+                  <span style={{ color: r.action === "deleted" ? "var(--danger)" : "var(--fg)" }}>{r.action === "deleted" ? "Removed" : "Was"}: {money(r.planned, c)}</span>{" "}
+                  ({money(r.unitCost, c)} × {num(r.quantity)}{r.frequency !== 1 ? ` × ${num(r.frequency)}` : ""})<br />
+                  {r.changedByName ?? "Someone"} · {fmtDate(r.changedAt)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </details>
+  );
+
+  const lineRow = (l: LineRollup) => (
+    <tr key={l.id}>
+      <td className="td font-mono text-xs">{l.code}</td>
+      <td className="td">{l.description}
+        {l.justification && <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>{l.justification}</div>}
+      </td>
+      <td className="td text-right tabular-nums">{money(l.unitCost, c)}</td>
+      <td className="td text-right tabular-nums">{num(l.quantity)}</td>
+      <td className="td text-right tabular-nums" style={{ color: l.frequency === 1 ? "var(--muted)" : undefined }}>{num(l.frequency)}</td>
+      <td className="td text-right tabular-nums font-medium">{money(l.planned, c)}</td>
+      <td className="td text-right tabular-nums">{money(l.committed, c)}</td>
+      <td className="td text-right tabular-nums">{money(l.actual, c)}</td>
+      <td className="td text-right tabular-nums" style={{ color: l.remaining < 0 ? "var(--danger)" : undefined }}>{money(l.remaining, c)}</td>
+      <td className="td"><ProgressBar value={l.burn} tone={l.burn > 100 ? "danger" : l.burn > 90 ? "warn" : "ok"} /></td>
+      {canManage && <td className="td text-right whitespace-nowrap">{editForm(l)}</td>}
+    </tr>
+  );
 
   return (
     <div className="space-y-7">
@@ -52,6 +134,11 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
       <div>
         <SectionTitle action={canManage ? (
           <div className="flex items-center gap-2">
+            {cats.length === 0 && (
+              <form action={setupBudgetSectionsAction}><input type="hidden" name="projectId" value={id} />{bud && <input type="hidden" name="budgetId" value={bud.id} />}
+                <button className="btn btn-sm btn-primary" type="submit">Set up standard sections</button>
+              </form>
+            )}
             {lines.length > 0 && (
               <form action={clearBudgetLinesAction}><input type="hidden" name="projectId" value={id} />
                 <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Clear all</button>
@@ -60,19 +147,24 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
             <Link href={`/projects/${id}/import`} className="btn btn-sm">Import from file</Link>
           </div>
         ) : undefined}>
-          Budget lines {bud && <span className="text-sm font-normal" style={{ color: "var(--muted)" }}>· {bud.name}</span>}
+          Budget {bud && <span className="text-sm font-normal" style={{ color: "var(--muted)" }}>· {bud.name}</span>}
         </SectionTitle>
-        {lines.length === 0 ? (
-          <Empty title="No budget yet" hint={canManage ? "Add lines below or import a budget spreadsheet." : "No budget lines recorded."} />
+
+        {canManage && cats.length === 0 && lines.length > 0 && (
+          <p className="text-sm mb-3 card p-3" style={{ borderColor: "var(--brand)" }}>Click <b>Set up standard sections</b> to add Personnel, Travel, Equipment, etc. Then assign each line to a section using its <b>Edit</b> button.</p>
+        )}
+
+        {lines.length === 0 && cats.length === 0 ? (
+          <Empty title="No budget yet" hint={canManage ? "Set up the standard sections above, then add lines — or import a budget spreadsheet." : "No budget lines recorded."} />
         ) : (
           <div className="card overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr>
                 <th className="th text-left">Code</th>
                 <th className="th text-left">Description</th>
-                <th className="th text-left">Category</th>
                 <th className="th text-right">Unit cost</th>
                 <th className="th text-right">Qty</th>
+                <th className="th text-right">× Freq</th>
                 <th className="th text-right">Planned</th>
                 <th className="th text-right">Committed</th>
                 <th className="th text-right">Spent</th>
@@ -80,74 +172,36 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                 <th className="th text-left" style={{ width: 120 }}>Burn</th>
                 {canManage && <th className="th text-right">Edit</th>}
               </tr></thead>
-              <tbody>
-                {lines.map((l) => (
-                  <tr key={l.id}>
-                    <td className="td font-mono text-xs">{l.code}</td>
-                    <td className="td">{l.description}
-                      {l.costType === "indirect" && <Badge tone="muted">indirect</Badge>}
-                    </td>
-                    <td className="td" style={{ color: l.categoryName ? undefined : "var(--muted)" }}>{l.categoryName ?? "—"}</td>
-                    <td className="td text-right tabular-nums">{money(l.unitCost, c)}</td>
-                    <td className="td text-right tabular-nums">{l.quantity}</td>
-                    <td className="td text-right tabular-nums font-medium">{money(l.planned, c)}</td>
-                    <td className="td text-right tabular-nums">{money(l.committed, c)}</td>
-                    <td className="td text-right tabular-nums">{money(l.actual, c)}</td>
-                    <td className="td text-right tabular-nums" style={{ color: l.remaining < 0 ? "var(--danger)" : undefined }}>{money(l.remaining, c)}</td>
-                    <td className="td"><ProgressBar value={l.burn} tone={l.burn > 100 ? "danger" : l.burn > 90 ? "warn" : "ok"} /></td>
-                    {canManage && (
-                      <td className="td text-right whitespace-nowrap">
-                        <details className="editor inline-block">
-                          <summary className="btn btn-sm inline-block">Edit</summary>
-                          <div className="editor-panel card p-4 text-left">
-                            <div className="font-medium mb-3">Edit budget line</div>
-                            <form action={updateBudgetLineAction} className="grid gap-2">
-                              <input type="hidden" name="projectId" value={id} />
-                              <input type="hidden" name="lineId" value={l.id} />
-                              <Field label="Code"><input name="code" defaultValue={l.code} className="input" /></Field>
-                              <Field label="Description"><input name="description" defaultValue={l.description} className="input" /></Field>
-                              <div className="grid grid-cols-2 gap-2">
-                                <Field label="Unit cost"><input name="unitCost" type="number" step="any" defaultValue={l.unitCost} className="input" /></Field>
-                                <Field label="Qty"><input name="quantity" type="number" step="any" defaultValue={l.quantity} className="input" /></Field>
-                              </div>
-                              <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
-                            </form>
-                            <form action={deleteBudgetLineAction} className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
-                              <input type="hidden" name="projectId" value={id} />
-                              <input type="hidden" name="lineId" value={l.id} />
-                              <button className="btn btn-sm w-full" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete this line</button>
-                            </form>
-                            <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
-                              <div className="text-xs font-medium mb-2" style={{ color: "var(--muted)" }}>Change history</div>
-                              {(revsByLine.get(l.id) ?? []).length === 0 ? (
-                                <div className="text-xs" style={{ color: "var(--muted)" }}>No prior changes — current planned {money(l.planned, c)}.</div>
-                              ) : (
-                                <ul className="space-y-2">
-                                  {(revsByLine.get(l.id) ?? []).map((r, i) => (
-                                    <li key={i} className="text-xs" style={{ color: "var(--muted)" }}>
-                                      <span style={{ color: r.action === "deleted" ? "var(--danger)" : "var(--fg)" }}>
-                                        {r.action === "deleted" ? "Removed" : "Was"}: {money(r.planned, c)}
-                                      </span>{" "}
-                                      ({money(r.unitCost, c)} × {r.quantity})
-                                      <br />
-                                      {r.changedByName ?? "Someone"} · {fmtDate(r.changedAt)}
-                                    </li>
-                                  ))}
-                                </ul>
-                              )}
-                            </div>
-                            <div className="text-xs mt-3 text-center" style={{ color: "var(--muted)" }}>Click outside or “Edit” again to close.</div>
-                          </div>
-                        </details>
+              {sections.map((sec) => {
+                const ss = sectionSum(sec.lines);
+                return (
+                  <tbody key={sec.id ?? "uncat"}>
+                    <tr style={{ background: "var(--surface)" }}>
+                      <td className="td font-semibold uppercase text-xs tracking-wide" colSpan={colCount}>
+                        {sec.name}{sec.costType === "indirect" && <Badge tone="muted">indirect</Badge>}
                       </td>
+                    </tr>
+                    {sec.lines.length === 0 ? (
+                      <tr><td className="td text-xs" style={{ color: "var(--muted)" }} colSpan={colCount}>No lines yet{canManage ? " — add one below and pick this section." : ""}</td></tr>
+                    ) : sec.lines.map(lineRow)}
+                    {sec.lines.length > 0 && (
+                      <tr style={{ fontWeight: 600, borderTop: "1px solid var(--border)" }}>
+                        <td className="td" colSpan={5}>Subtotal — {sec.name}</td>
+                        <td className="td text-right tabular-nums">{money(ss.planned, c)}</td>
+                        <td className="td text-right tabular-nums">{money(ss.committed, c)}</td>
+                        <td className="td text-right tabular-nums">{money(ss.actual, c)}</td>
+                        <td className="td text-right tabular-nums" style={{ color: ss.remaining < 0 ? "var(--danger)" : undefined }}>{money(ss.remaining, c)}</td>
+                        <td className="td" />
+                        {canManage && <td className="td" />}
+                      </tr>
                     )}
-                  </tr>
-                ))}
-              </tbody>
+                  </tbody>
+                );
+              })}
               {sum && (
                 <tfoot>
                   <tr className="font-semibold" style={{ borderTop: "2px solid var(--border)" }}>
-                    <td className="td" colSpan={5}>Total</td>
+                    <td className="td" colSpan={5}>TOTAL BUDGET</td>
                     <td className="td text-right tabular-nums">{money(sum.planned, c)}</td>
                     <td className="td text-right tabular-nums">{money(sum.committed, c)}</td>
                     <td className="td text-right tabular-nums">{money(sum.actual, c)}</td>
@@ -162,13 +216,38 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
         )}
       </div>
 
+      {canManage && (
+        <div>
+          <SectionTitle>Add budget line</SectionTitle>
+          <form action={addBudgetLineAction} className="card p-4 grid sm:grid-cols-6 gap-3 items-end">
+            <input type="hidden" name="projectId" value={id} />
+            {bud && <input type="hidden" name="budgetId" value={bud.id} />}
+            <div className="sm:col-span-2"><Field label="Section">
+              <select name="categoryId" className="select w-full" defaultValue={cats[0]?.id ?? ""}>
+                <option value="">— Uncategorised —</option>
+                {cats.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+              </select>
+            </Field></div>
+            <Field label="Code"><input name="code" className="input" placeholder="BL-011" /></Field>
+            <div className="sm:col-span-3"><Field label="Description"><input name="description" required className="input" placeholder="e.g. Research assistants" /></Field></div>
+            <Field label="Unit"><input name="unit" className="input" placeholder="month" defaultValue="unit" /></Field>
+            <Field label="Unit cost / rate"><input type="number" step="0.01" name="unitCost" className="input" defaultValue={0} /></Field>
+            <Field label="Qty / No."><input type="number" step="0.01" name="quantity" className="input" defaultValue={1} /></Field>
+            <Field label="× Days / times"><input type="number" step="0.01" name="frequency" className="input" defaultValue={1} /></Field>
+            <div className="sm:col-span-5"><Field label="Justification (optional)"><input name="justification" className="input" placeholder="Why this cost is needed" /></Field></div>
+            <button className="btn btn-primary self-end" type="submit">Add line</button>
+          </form>
+          <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>Planned amount = unit cost / rate × qty × days/times. For a lump sum, leave qty and days at 1. Example (Personnel): 4 RAs × 50,000/day × 240 days.</p>
+        </div>
+      )}
+
       {canManage && lines.length > 0 && (
         <div>
           <SectionTitle>Convert currency</SectionTitle>
           <form action={convertBudgetCurrencyAction} className="card p-4 flex flex-wrap items-end gap-3">
             <input type="hidden" name="projectId" value={id} />
             <Field label="Exchange rate (multiply all amounts by)">
-              <input type="number" step="0.0001" name="rate" required className="input" placeholder="e.g. 3800" style={{ width: 180 }} />
+              <input type="number" step="0.0001" name="rate" required className="input" placeholder="e.g. 3650" style={{ width: 180 }} />
             </Field>
             <Field label="New currency (optional)">
               <select name="newCurrency" className="select" defaultValue="">
@@ -177,28 +256,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
               </select>
             </Field>
             <button className="btn" type="submit">Convert all lines</button>
-            <span className="text-xs" style={{ color: "var(--muted)" }}>
-              Use this when a budget was imported in a different currency — e.g. USD→UGX at 1 USD ≈ 3,800 UGX.
-              Multiplies every line&apos;s unit cost and planned amount by the rate.
-            </span>
-          </form>
-        </div>
-      )}
-
-      {canManage && (
-        <div>
-          <SectionTitle>Add budget line</SectionTitle>
-          <form action={addBudgetLineAction} className="card p-4 grid sm:grid-cols-6 gap-3 items-end">
-            <input type="hidden" name="projectId" value={id} />
-            {bud && <input type="hidden" name="budgetId" value={bud.id} />}
-            <Field label="Code"><input name="code" className="input" placeholder="BL-011" /></Field>
-            <div className="sm:col-span-2"><Field label="Description"><input name="description" required className="input" placeholder="e.g. Field allowances" /></Field></div>
-            <Field label="Unit"><input name="unit" className="input" placeholder="month" defaultValue="unit" /></Field>
-            <Field label="Unit cost"><input type="number" step="0.01" name="unitCost" className="input" defaultValue={0} /></Field>
-            <div className="flex gap-2">
-              <Field label="Qty"><input type="number" step="0.01" name="quantity" className="input" defaultValue={1} /></Field>
-              <button className="btn btn-primary self-end" type="submit">Add</button>
-            </div>
+            <span className="text-xs" style={{ color: "var(--muted)" }}>Use when a budget was entered in another currency — e.g. USD→UGX at 1 USD ≈ 3,650 UGX. Multiplies each line&apos;s unit cost and planned amount.</span>
           </form>
         </div>
       )}

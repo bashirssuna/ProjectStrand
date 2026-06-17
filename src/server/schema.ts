@@ -551,6 +551,12 @@ ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approved_at timestamptz;
 -- Documents can be archived (soft-hidden) by document managers without deleting.
 ALTER TABLE project_document ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
 
+-- Budget lines support a third costing factor (e.g. No. of people × Rate/day × No.
+-- of days), matching standard donor budget templates. frequency defaults to 1 so
+-- existing lines keep planned = unit_cost × quantity.
+ALTER TABLE budget_line ADD COLUMN IF NOT EXISTS frequency double precision NOT NULL DEFAULT 1;
+ALTER TABLE budget_line_revision ADD COLUMN IF NOT EXISTS frequency double precision NOT NULL DEFAULT 1;
+
 -- ===========================================================================
 -- GENERAL LEDGER (institutional accounting foundation)
 -- Double-entry: every financial event posts a balanced journal entry whose

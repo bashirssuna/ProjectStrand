@@ -247,7 +247,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
           <form action={convertBudgetCurrencyAction} className="card p-4 flex flex-wrap items-end gap-3">
             <input type="hidden" name="projectId" value={id} />
             <Field label="Exchange rate (multiply all amounts by)">
-              <input type="number" step="0.0001" name="rate" required className="input" placeholder="e.g. 3650" style={{ width: 180 }} />
+              <input type="number" step="any" min="0" name="rate" required className="input" placeholder="e.g. 3650, or 0.000274" style={{ width: 200 }} />
             </Field>
             <Field label="New currency (optional)">
               <select name="newCurrency" className="select" defaultValue="">

@@ -18,6 +18,13 @@ export default async function DashboardPage() {
     ? Math.ceil((new Date(org.trialEndsAt).getTime() - Date.now()) / 86400000) : null;
   const subDaysLeft = org?.plan === "active" && org.subscriptionEndsAt
     ? Math.ceil((new Date(org.subscriptionEndsAt).getTime() - Date.now()) / 86400000) : null;
+  // Subscription/billing status is for the institutional admin and Finance only.
+  // Finance = anyone holding a finance_admin role on a project in this org.
+  const isOrgFinance = org
+    ? (await q(`SELECT 1 FROM project_member pm JOIN project p ON p.id=pm.project_id
+                WHERE p.org_id=$1 AND pm.user_id=$2 AND pm.role='finance_admin' LIMIT 1`, [org.id, user.id])).length > 0
+    : false;
+  const canSeeBilling = Boolean(org?.isOrgAdmin) || isOrgFinance;
   const projects = await listProjectsForUser(user.id, user.isSuperAdmin);
   const summaries = await Promise.all(projects.map((p) => getProjectSummary(p.id)));
 
@@ -102,7 +109,7 @@ export default async function DashboardPage() {
         actions={<Link href="/projects/new" className="btn btn-primary">+ New project</Link>}
       />
 
-      {subDaysLeft !== null && (
+      {canSeeBilling && subDaysLeft !== null && (
         <div className="card p-4 mb-5 flex flex-wrap items-center justify-between gap-3"
           style={{ borderColor: subDaysLeft <= 30 ? "var(--warn)" : subDaysLeft < 0 ? "var(--danger)" : "var(--border)" }}>
           <div>
@@ -123,7 +130,7 @@ export default async function DashboardPage() {
             : subDaysLeft <= 30 && <Badge tone={subDaysLeft < 0 ? "danger" : "warn"}>{subDaysLeft < 0 ? "Renew now" : "Renewal approaching"}</Badge>}
         </div>
       )}
-      {trialDaysLeft !== null && (
+      {canSeeBilling && trialDaysLeft !== null && (
         <div className="card p-4 mb-5 flex flex-wrap items-center justify-between gap-3"
           style={{ borderColor: trialDaysLeft <= 14 ? "var(--warn)" : "var(--border)" }}>
           <div>

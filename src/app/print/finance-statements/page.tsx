@@ -9,7 +9,7 @@ import { PrintLetterhead, getLetterhead } from "@/components/letterhead";
 
 const VALID = ["income", "balance", "cashflow", "trial"];
 
-export default async function PrintFinanceStatements({ searchParams }: { searchParams: Promise<{ report?: string; view?: string }> }) {
+export default async function PrintFinanceStatements({ searchParams }: { searchParams: Promise<{ report?: string; view?: string; from?: string; to?: string; project?: string }> }) {
   const user = await requireUser();
   const org = await getUserOrg(user.id);
   if (!org || (!org.isOrgAdmin && !user.isSuperAdmin)) redirect("/dashboard");
@@ -18,16 +18,21 @@ export default async function PrintFinanceStatements({ searchParams }: { searchP
   const only = VALID.includes(sp.report ?? "") ? sp.report! : null;
   const summary = sp.view === "summary";
   const show = (r: string) => only === null || only === r;
+  const isDate = (s?: string) => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s);
+  const from = isDate(sp.from) ? sp.from : undefined;
+  const to = isDate(sp.to) ? sp.to : undefined;
+  const projectId = sp.project || undefined;
   const c = (await one<{ currency: string }>(`SELECT currency FROM project WHERE org_id=$1 ORDER BY created_at LIMIT 1`, [org.id]))?.currency ?? "USD";
-  const fs = await institutionalStatements(org.id);
-  const cf = show("cashflow") ? await cashFlowStatement(org.id) : null;
+  const projName = projectId ? (await one<{ code: string; title: string }>(`SELECT code, title FROM project WHERE id=$1 AND org_id=$2`, [projectId, org.id])) : null;
+  const fs = await institutionalStatements(org.id, { from, to, projectId });
+  const cf = show("cashflow") ? await cashFlowStatement(org.id, { from, to, projectId }) : null;
   const lh = await getLetterhead(org.id);
 
   const th: React.CSSProperties = { border: "1px solid #999", padding: "6px 9px", background: "#f5f5f5", textAlign: "left", fontSize: 12 };
   const td: React.CSSProperties = { border: "1px solid #999", padding: "6px 9px" };
   const tdR: React.CSSProperties = { ...td, textAlign: "right", whiteSpace: "nowrap" };
   const sec: React.CSSProperties = { ...td, fontWeight: 700, background: "#eee" };
-  const subtitleBits = [only ? VALID.find((v) => v === only)!.replace(/^\w/, (m) => m.toUpperCase()) : "Financial Statements", `as at ${fs.asOf}`, summary ? "summary" : "detailed", `amounts in ${c}`];
+  const subtitleBits = [only ? VALID.find((v) => v === only)!.replace(/^\w/, (m) => m.toUpperCase()) : "Financial Statements", projName ? `${projName.code} — ${projName.title}` : "Institution-wide", from ? `${from} to ${fs.asOf}` : `as at ${fs.asOf}`, summary ? "summary" : "detailed", `amounts in ${c}`];
 
   return (
     <div className="light" style={{ background: "#fff", color: "#111", minHeight: "100vh" }}>

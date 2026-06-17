@@ -155,9 +155,10 @@ export type AccountBalance = {
 };
 
 // Returns every account with its summed debits/credits and a normal-side balance.
-export async function accountBalances(orgId: string, opts?: { upTo?: string; projectId?: string }): Promise<AccountBalance[]> {
+export async function accountBalances(orgId: string, opts?: { from?: string; upTo?: string; projectId?: string }): Promise<AccountBalance[]> {
   const params: (string | null)[] = [orgId];
   let where = `la.org_id=$1`;
+  if (opts?.from) { params.push(opts.from); where += ` AND (je.entry_date IS NULL OR je.entry_date >= $${params.length}::date)`; }
   if (opts?.upTo) { params.push(opts.upTo); where += ` AND (je.entry_date IS NULL OR je.entry_date <= $${params.length}::date)`; }
   if (opts?.projectId) { params.push(opts.projectId); where += ` AND (jl.project_id = $${params.length} OR jl.id IS NULL)`; }
 
@@ -182,40 +183,91 @@ export async function accountBalances(orgId: string, opts?: { upTo?: string; pro
 export type InstitutionalStatements = {
   orgName: string;
   asOf: string;
+  periodFrom: string | null;
   trialBalance: { accounts: AccountBalance[]; totalDebit: number; totalCredit: number; balanced: boolean };
   incomeStatement: { income: AccountBalance[]; expenses: AccountBalance[]; totalIncome: number; totalExpense: number; surplus: number };
   balanceSheet: { assets: AccountBalance[]; liabilities: AccountBalance[]; equity: AccountBalance[]; totalAssets: number; totalLiabilities: number; totalEquity: number; surplus: number; balanced: boolean };
 };
 
-// Institution-wide statements rolled up from the ledger across all projects.
-export async function institutionalStatements(orgId: string, upTo?: string): Promise<InstitutionalStatements> {
+// Institution-wide statements rolled up from the ledger. Optionally scoped to a
+// date range and/or a single project. The income statement reflects activity
+// within [from, to]; the balance sheet & trial balance are cumulative as-at `to`
+// (a balance sheet is a snapshot, not a period movement).
+export async function institutionalStatements(orgId: string, opts?: { from?: string; to?: string; projectId?: string }): Promise<InstitutionalStatements> {
   const org = (await one<{ name: string }>(`SELECT name FROM organization WHERE id=$1`, [orgId]))!;
-  const bals = await accountBalances(orgId, { upTo });
+  const to = opts?.to;
+  const cumulative = await accountBalances(orgId, { upTo: to, projectId: opts?.projectId });
+  const period = opts?.from ? await accountBalances(orgId, { from: opts.from, upTo: to, projectId: opts?.projectId }) : cumulative;
 
-  const totalDebit = round2(bals.reduce((s, a) => s + a.debit, 0));
-  const totalCredit = round2(bals.reduce((s, a) => s + a.credit, 0));
+  const totalDebit = round2(cumulative.reduce((s, a) => s + a.debit, 0));
+  const totalCredit = round2(cumulative.reduce((s, a) => s + a.credit, 0));
 
-  const income = bals.filter((a) => a.accountType === "income");
-  const expenses = bals.filter((a) => a.accountType === "expense");
+  const income = period.filter((a) => a.accountType === "income");
+  const expenses = period.filter((a) => a.accountType === "expense");
   const totalIncome = round2(income.reduce((s, a) => s + a.balance, 0));
   const totalExpense = round2(expenses.reduce((s, a) => s + a.balance, 0));
   const surplus = round2(totalIncome - totalExpense);
 
-  const assets = bals.filter((a) => a.accountType === "asset");
-  const liabilities = bals.filter((a) => a.accountType === "liability");
-  const equity = bals.filter((a) => a.accountType === "equity");
+  const assets = cumulative.filter((a) => a.accountType === "asset");
+  const liabilities = cumulative.filter((a) => a.accountType === "liability");
+  const equity = cumulative.filter((a) => a.accountType === "equity");
   const totalAssets = round2(assets.reduce((s, a) => s + a.balance, 0));
   const totalLiabilities = round2(liabilities.reduce((s, a) => s + a.balance, 0));
   const totalEquity = round2(equity.reduce((s, a) => s + a.balance, 0));
 
   return {
     orgName: org.name,
-    asOf: upTo ?? new Date().toISOString().slice(0, 10),
-    trialBalance: { accounts: bals.filter((a) => a.debit !== 0 || a.credit !== 0), totalDebit, totalCredit, balanced: totalDebit === totalCredit },
+    asOf: to ?? new Date().toISOString().slice(0, 10),
+    periodFrom: opts?.from ?? null,
+    trialBalance: { accounts: cumulative.filter((a) => a.debit !== 0 || a.credit !== 0), totalDebit, totalCredit, balanced: totalDebit === totalCredit },
     incomeStatement: { income, expenses, totalIncome, totalExpense, surplus },
     // Assets = Liabilities + Equity + net surplus (current-year result not yet closed to equity)
     balanceSheet: { assets, liabilities, equity, totalAssets, totalLiabilities, totalEquity, surplus, balanced: round2(totalAssets) === round2(totalLiabilities + totalEquity + surplus) },
   };
+}
+
+export type LedgerTxn = { id: string; date: string; entryNo: string; memo: string | null; sourceType: string; description: string | null; projectId: string | null; projectCode: string | null; debit: number; credit: number; running: number };
+
+// The detailed transaction list (general-ledger detail) for one account, with a
+// running normal-side balance carried from the opening balance before `from`.
+export async function accountTransactions(orgId: string, accountId: string, opts?: { from?: string; to?: string; projectId?: string }): Promise<{
+  account: { code: string; name: string; accountType: string; normalSide: string } | null;
+  opening: number; lines: LedgerTxn[]; totalDebit: number; totalCredit: number; closing: number;
+}> {
+  const account = await one<{ code: string; name: string; accountType: string; normalSide: string }>(
+    `SELECT code, name, account_type AS "accountType", normal_side AS "normalSide" FROM ledger_account WHERE id=$1 AND org_id=$2`, [accountId, orgId]
+  );
+  if (!account) return { account: null, opening: 0, lines: [], totalDebit: 0, totalCredit: 0, closing: 0 };
+  const sign = account.normalSide === "debit" ? 1 : -1;
+
+  // Opening balance = net (debit-credit) strictly before `from`, signed by normal side.
+  let opening = 0;
+  if (opts?.from) {
+    const p: (string | null)[] = [accountId, opts.from];
+    let w = `jl.account_id=$1 AND je.entry_date < $2::date`;
+    if (opts.projectId) { p.push(opts.projectId); w += ` AND jl.project_id=$${p.length}`; }
+    const o = await one<{ s: number }>(`SELECT COALESCE(SUM(jl.debit-jl.credit),0)::float s FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id WHERE ${w}`, p);
+    opening = round2((o?.s ?? 0) * sign);
+  }
+
+  const p: (string | null)[] = [accountId];
+  let w = `jl.account_id=$1`;
+  if (opts?.from) { p.push(opts.from); w += ` AND je.entry_date >= $${p.length}::date`; }
+  if (opts?.to) { p.push(opts.to); w += ` AND je.entry_date <= $${p.length}::date`; }
+  if (opts?.projectId) { p.push(opts.projectId); w += ` AND jl.project_id=$${p.length}`; }
+  const rows = await q<Omit<LedgerTxn, "running">>(
+    `SELECT jl.id, je.entry_date AS date, je.entry_no AS "entryNo", je.memo, je.source_type AS "sourceType",
+            jl.description, jl.project_id AS "projectId", pr.code AS "projectCode",
+            jl.debit::float AS debit, jl.credit::float AS credit
+     FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
+     LEFT JOIN project pr ON pr.id = jl.project_id
+     WHERE ${w} ORDER BY je.entry_date, je.entry_no, jl.id`, p
+  );
+  let running = opening;
+  const lines: LedgerTxn[] = rows.map((r) => { running = round2(running + (r.debit - r.credit) * sign); return { ...r, running }; });
+  const totalDebit = round2(rows.reduce((s, r) => s + r.debit, 0));
+  const totalCredit = round2(rows.reduce((s, r) => s + r.credit, 0));
+  return { account, opening, lines, totalDebit, totalCredit, closing: running };
 }
 
 // Posts the journal for a recorded expenditure, using the org's posting rule
@@ -286,7 +338,7 @@ export type CashFlow = {
   totalIn: number; totalOut: number; netChange: number;
 };
 
-export async function cashFlowStatement(orgId: string, opts?: { from?: string; to?: string }): Promise<CashFlow> {
+export async function cashFlowStatement(orgId: string, opts?: { from?: string; to?: string; projectId?: string }): Promise<CashFlow> {
   const baseCurrency = await orgBaseCurrency(orgId);
   // cash & bank accounts = asset accounts coded 10xx by convention, but be robust:
   const cashAccts = await q<{ id: string }>(
@@ -297,22 +349,23 @@ export async function cashFlowStatement(orgId: string, opts?: { from?: string; t
 
   const from = opts?.from ?? "1900-01-01";
   const to = opts?.to ?? new Date().toISOString().slice(0, 10);
+  const pid = opts?.projectId ?? null;
 
   // opening = net cash movement strictly before `from`
   const open = await one<{ s: number }>(
     `SELECT COALESCE(SUM(jl.debit - jl.credit),0)::float s
      FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
-     WHERE jl.account_id = ANY($1::text[]) AND je.entry_date < $2::date`, [ids, from]
+     WHERE jl.account_id = ANY($1::text[]) AND je.entry_date < $2::date AND ($3::text IS NULL OR jl.project_id = $3)`, [ids, from, pid]
   );
   // movements in the window, grouped by entry (so each row is one transaction)
   const moves = await q<{ date: string; memo: string | null; net: number }>(
     `SELECT je.entry_date AS date, je.memo,
             SUM(jl.debit - jl.credit)::float AS net
      FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
-     WHERE jl.account_id = ANY($1::text[]) AND je.entry_date BETWEEN $2::date AND $3::date
+     WHERE jl.account_id = ANY($1::text[]) AND je.entry_date BETWEEN $2::date AND $3::date AND ($4::text IS NULL OR jl.project_id = $4)
      GROUP BY je.id, je.entry_date, je.memo
      HAVING SUM(jl.debit - jl.credit) <> 0
-     ORDER BY je.entry_date`, [ids, from, to]
+     ORDER BY je.entry_date`, [ids, from, to, pid]
   );
   const inflows = moves.filter((m) => m.net > 0).map((m) => ({ date: m.date, memo: m.memo, amount: round2(m.net) }));
   const outflows = moves.filter((m) => m.net < 0).map((m) => ({ date: m.date, memo: m.memo, amount: round2(-m.net) }));

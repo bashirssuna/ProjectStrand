@@ -52,7 +52,7 @@ export async function reDenominateProject(
   // --- project actuals / requests / payments (in project currency, no guard) ---
   await upd("expenditures", `UPDATE expenditure SET amount = amount*$2 WHERE project_id=$1`, [projectId, rate]);
   await upd("commitments", `UPDATE commitment SET amount = amount*$2 WHERE project_id=$1`, [projectId, rate]);
-  await upd("requisitions", `UPDATE requisition SET amount = amount*$2, disbursed_amount = disbursed_amount*$2 WHERE project_id=$1`, [projectId, rate]);
+  await upd("requisitions", `UPDATE requisition SET amount = amount*$2, disbursed_amount = disbursed_amount*$2, accounted_amount = accounted_amount*$2 WHERE project_id=$1`, [projectId, rate]);
   await upd("vouchers", `UPDATE payment_voucher SET amount = amount*$2 WHERE project_id=$1`, [projectId, rate]);
 
   // --- income & procurement records (currency-guarded; relabel as we go) ---

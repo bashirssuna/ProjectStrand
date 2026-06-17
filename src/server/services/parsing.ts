@@ -2,6 +2,7 @@ import "server-only";
 import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
 import { writeAudit } from "@/server/services/audit";
+import { ensureStandardCategories } from "@/server/services/budget";
 
 export type SuggestionKind = "meta" | "sow_section" | "objective" | "output" | "activity" | "budget_line";
 export type Suggestion = { kind: SuggestionKind; payload: Record<string, unknown>; confidence: number; sourceRef?: string };
@@ -16,7 +17,8 @@ export function parseDocument(docType: string, text: string, rows?: (string | nu
     if (docType === "workplan" || docType === "gantt" || docType === "timeline") {
       out.push(...parseWorkplan(rows));
     } else {
-      out.push(...parseSpreadsheet(rows));
+      const structured = parseStructuredBudget(rows);
+      out.push(...(structured.length ? structured : parseSpreadsheet(rows)));
     }
   }
 
@@ -166,6 +168,81 @@ function parseSpreadsheet(rows: (string | number | Date)[][]): Suggestion[] {
   return out;
 }
 
+// Structured budget template: a header row naming columns (Section/Category, Code,
+// Description, Unit cost/Rate, Qty/No., Days/Times, Justification). Lines can be
+// grouped by a Section column or under section-header rows. Emits rich budget
+// lines (category + the three costing factors + justification). Subtotal/total
+// rows are ignored. Returns [] (caller falls back to parseSpreadsheet) when no
+// recognisable header row is present.
+const SECTION_KEY = /personnel|per\s*diem|salar|travel|transport|fuel|logistic|supplies|consumable|material|equipment|communicat|other.*(direct|charge|cost)|others?\s*\(|indirect|overhead/i;
+
+function parseStructuredBudget(rows: (string | number | Date)[][]): Suggestion[] {
+  const out: Suggestion[] = [];
+  const r2 = (n: number) => Math.round(n * 100) / 100;
+  let hi = -1; let H: string[] = [];
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+    const cells = rows[i].map((c) => String(c ?? "").toLowerCase().trim());
+    const hasDesc = cells.some((c) => /descript|particular|^item$|budget line item/.test(c));
+    const hasMoney = cells.some((c) => /section|category|unit\s*cost|rate|amount|quantity|\bqty\b|\bno\.?\b|days|times|frequency/.test(c));
+    if (hasDesc && hasMoney) { hi = i; H = cells; break; }
+  }
+  if (hi < 0) return out;
+  const find = (re: RegExp) => H.findIndex((h) => re.test(h));
+  const cSection = find(/section|category|budget line item/);
+  const cCode = find(/^code$|^ref\.?$|line\s*code/);
+  const cDesc = find(/descript|particular|^item$/);
+  const cUnit = find(/^unit$|unit of measure|^uom$/);
+  const cRate = find(/unit\s*cost|rate|cost\s*per|cost\//);
+  const cQty = find(/quantity|^qty\b|^no\.?$|number of|no\.?\s*of/);
+  const cFreq = find(/days|times|frequency|duration|months|weeks|periods/);
+  const cJust = find(/justification|narrative|remark|note|rationale/);
+  const cAmount = find(/amount|planned|^total$|budget\s*amount/);
+  if (cDesc < 0) return out;
+
+  let section = "";
+  for (let i = hi + 1; i < rows.length; i++) {
+    const row = rows[i];
+    const cell = (idx: number) => (idx >= 0 ? String(row[idx] ?? "").trim() : "");
+    const numAt = (idx: number) => { if (idx < 0) return NaN; const v = row[idx]; const n = v instanceof Date ? NaN : Number(v); return Number.isFinite(n) ? n : NaN; };
+    const first = String(row[0] ?? "").trim();
+    const desc = cell(cDesc);
+
+    const secCol = cell(cSection);
+    if (secCol) section = secCol;
+    // section-header row (no Section column): a lone label matching a section keyword
+    if (cSection < 0 && first && !desc && SECTION_KEY.test(first)) { section = first.replace(/^\d+\s*[-.)]\s*/, "").trim(); continue; }
+    // skip totals / subtotals
+    if (/^(sub-?\s*total|total|grand\s*total)/i.test(first) || /^(sub-?\s*total|total)/i.test(desc)) continue;
+    if (!desc) continue;
+
+    const rate = numAt(cRate);
+    const qty = numAt(cQty);
+    const freq = numAt(cFreq);
+    const amount = numAt(cAmount);
+    const quantity = Number.isFinite(qty) && qty > 0 ? qty : 1;
+    const frequency = Number.isFinite(freq) && freq > 0 ? freq : 1;
+    let unitCost = Number.isFinite(rate) ? rate : NaN;
+    let planned: number;
+    // The three factors (entered by hand) drive the amount; an Amount column, if
+    // present, is treated as a fallback only (it may be a stale display formula).
+    if (Number.isFinite(unitCost)) { planned = r2(unitCost * quantity * frequency); }
+    else if (Number.isFinite(amount) && amount > 0) { planned = r2(amount); unitCost = r2(planned / quantity / frequency); }
+    else continue;
+    if (!(planned >= 1)) continue;
+
+    out.push({
+      kind: "budget_line",
+      payload: {
+        code: cell(cCode), description: desc, category: secCol || section || "",
+        unit: cell(cUnit) || "unit", unitCost: Number.isFinite(unitCost) ? unitCost : 0,
+        quantity, frequency, planned, justification: cell(cJust),
+      },
+      confidence: 0.85, sourceRef: `row ${i + 1}`,
+    });
+  }
+  return out;
+}
+
 // Reads a work plan / Gantt spreadsheet. Two shapes are supported:
 //  (a) columnar — a header row with Activity/Task + Start + End columns;
 //  (b) month/Gantt grid — a header row of month or "M1..Mn" columns, where the
@@ -276,6 +353,21 @@ export async function applySuggestions(input: { jobId: string; userId: string; a
   let budgetId = (await one<{ id: string }>(`SELECT id FROM budget WHERE project_id=$1 ORDER BY version LIMIT 1`, [projectId]))?.id ?? null;
 
   let order = 0;
+  let catsSeeded = false;
+  const catCache = new Map<string, string>();
+  const resolveCategory = async (bId: string, rawName: string): Promise<string | null> => {
+    const name = rawName.trim();
+    if (!name) return null;
+    const key = name.toLowerCase();
+    const cached = catCache.get(key);
+    if (cached) return cached;
+    const existing = await one<{ id: string }>(`SELECT id FROM budget_category WHERE budget_id=$1 AND lower(name)=lower($2) LIMIT 1`, [bId, name]);
+    let cid: string;
+    if (existing) cid = existing.id;
+    else { cid = id("bcat"); await q(`INSERT INTO budget_category (id, budget_id, name, cost_type) VALUES ($1,$2,$3,$4)`, [cid, bId, name, /indirect|overhead/i.test(name) ? "indirect" : "direct"]); }
+    catCache.set(key, cid);
+    return cid;
+  };
   for (const s of sugs) {
     if (!input.acceptIds.includes(s.id)) continue;
     const p = JSON.parse(s.payload) as Record<string, string | number>;
@@ -302,10 +394,18 @@ export async function applySuggestions(input: { jobId: string; userId: string; a
          p.startDate ? String(p.startDate) : null, p.endDate ? String(p.endDate) : null, order++]);
     } else if (s.kind === "budget_line") {
       if (!budgetId) { budgetId = id("bud"); await q(`INSERT INTO budget (id, project_id, name) VALUES ($1,$2,'Imported budget')`, [budgetId, projectId]); }
-      const planned = Number(p.planned ?? 0);
-      await q(`INSERT INTO budget_line (id, budget_id, code, description, unit, unit_cost, quantity, planned)
-               VALUES ($1,$2,$3,$4,'unit',$5,1,$5)`,
-        [id("bl"), budgetId, String(p.code ?? `BL-${String(order + 1).padStart(3, "0")}`), String(p.description), planned]);
+      if (!catsSeeded) { await ensureStandardCategories(budgetId); catsSeeded = true; }
+      const categoryId = p.category ? await resolveCategory(budgetId, String(p.category)) : null;
+      const quantity = Number(p.quantity ?? 1) || 1;
+      const frequency = Number(p.frequency ?? 1) || 1;
+      let unitCost = Number(p.unitCost ?? 0) || 0;
+      let planned = Number(p.planned ?? 0) || 0;
+      if (!planned) planned = Math.round(unitCost * quantity * frequency * 100) / 100;
+      if (!unitCost && planned) unitCost = quantity && frequency ? planned / quantity / frequency : planned;
+      await q(`INSERT INTO budget_line (id, budget_id, category_id, code, description, unit, unit_cost, quantity, frequency, planned, justification)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [id("bl"), budgetId, categoryId, String(p.code || `BL-${String(order + 1).padStart(3, "0")}`), String(p.description),
+         String(p.unit || "unit"), unitCost, quantity, frequency, planned, p.justification ? String(p.justification) : null]);
       order++;
     }
     await q(`UPDATE parsing_suggestion SET accepted=true WHERE id=$1`, [s.id]);

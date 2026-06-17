@@ -243,7 +243,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
 
       {canManage && lines.length > 0 && (
         <div>
-          <SectionTitle>Convert currency</SectionTitle>
+          <SectionTitle>Convert project currency</SectionTitle>
           <form action={convertBudgetCurrencyAction} className="card p-4 flex flex-wrap items-end gap-3">
             <input type="hidden" name="projectId" value={id} />
             <Field label="Exchange rate (multiply all amounts by)">
@@ -255,8 +255,10 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                 {["UGX", "USD", "EUR", "GBP", "KES", "TZS", "RWF", "NGN", "ZAR"].map((x) => <option key={x} value={x}>{x}</option>)}
               </select>
             </Field>
-            <button className="btn" type="submit">Convert all lines</button>
-            <span className="text-xs" style={{ color: "var(--muted)" }}>Use when a budget was entered in another currency — e.g. USD→UGX at 1 USD ≈ 3,650 UGX. Multiplies each line&apos;s unit cost and planned amount.</span>
+            <button className="btn" type="submit">Convert whole project</button>
+            <p className="text-xs basis-full" style={{ color: "var(--muted)" }}>
+              Re-prices the <strong>entire project</strong> by this rate — budget, actual spending, commitments, requisitions, vouchers, invoices &amp; receipts, procurement, sub-awards, and the project&apos;s own ledger postings — so the finance &amp; accounts figures move too, not just the budget lines. Example: UGX→USD at 0.000274 (1 USD ≈ 3,650 UGX). Apply once — it multiplies, so running it again multiplies again. Institution-level ledger entries not tied to this project keep the base currency; change that under Finance → Currency &amp; FX rates.
+            </p>
           </form>
         </div>
       )}

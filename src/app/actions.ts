@@ -22,6 +22,7 @@ import { generateReport } from "@/server/services/reports";
 import { recomputeRollups } from "@/server/services/activities";
 import { evaluateProject } from "@/server/services/anomaly";
 import { ensureStandardCategories } from "@/server/services/budget";
+import { reDenominateProject } from "@/server/services/currency";
 import { writeAudit, notify } from "@/server/services/audit";
 
 /* ---------------- Auth ---------------- */
@@ -846,15 +847,18 @@ export async function convertBudgetCurrencyAction(formData: FormData) {
   const newCurrency = String(formData.get("newCurrency") || "").trim().toUpperCase();
   if (!rate || rate <= 0) { revalidatePath(`/projects/${projectId}/budget`); return; }
 
-  await q(`UPDATE budget_line SET unit_cost = unit_cost * $2, planned = planned * $2
-           WHERE budget_id IN (SELECT id FROM budget WHERE project_id=$1)`, [projectId, rate]);
-  if (newCurrency) {
-    await q(`UPDATE project SET currency=$2, updated_at=now() WHERE id=$1`, [projectId, newCurrency]);
-    await q(`UPDATE budget SET currency=$2 WHERE project_id=$1`, [projectId, newCurrency]);
-  }
+  // Convert the WHOLE project: budget plan, spending/commitments, requisitions,
+  // vouchers, invoices/receipts, procurement, sub-awards, and the project's own
+  // ledger postings (scaled whole-entry so each stays balanced).
+  const res = await reDenominateProject(projectId, rate, newCurrency || undefined);
   await evaluateProject(projectId);
-  await writeAudit({ userId: user.id, action: "update", entity: "budget", entityId: projectId, after: { rate, newCurrency } });
-  revalidatePath(`/projects/${projectId}/budget`);
+  await writeAudit({ userId: user.id, action: "update", entity: "project_currency", entityId: projectId, after: { rate, newCurrency: res?.newCurrency, counts: res?.counts } });
+
+  for (const p of [
+    `/projects/${projectId}/budget`, `/projects/${projectId}`,
+    `/projects/${projectId}/requisitions`, `/projects/${projectId}/expenditure`,
+    `/finance`, `/finance/statements`,
+  ]) revalidatePath(p);
 }
 
 /* ---------------- Account & password flows ---------------- */

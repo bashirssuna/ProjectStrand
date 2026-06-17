@@ -176,9 +176,44 @@ function parseSpreadsheet(rows: (string | number | Date)[][]): Suggestion[] {
 // recognisable header row is present.
 const SECTION_KEY = /personnel|per\s*diem|salar|travel|transport|fuel|logistic|supplies|consumable|material|equipment|communicat|other.*(direct|charge|cost)|others?\s*\(|indirect|overhead/i;
 
+// Known ISO currency codes we can map a budget file onto.
+const KNOWN_CCY = ["USD", "UGX", "EUR", "GBP", "KES", "TZS", "RWF", "NGN", "ZAR", "GHS", "ETB", "CAD", "AUD", "JPY", "CHF", "INR", "CNY", "SEK", "NOK", "DKK", "XOF", "XAF"];
+
+// Best-effort detection of the currency a budget file is denominated in, scanning
+// only the top of the sheet (title block + header band) to avoid false positives
+// from words that happen to appear in line descriptions. Priority: an explicit
+// "Currency: XXX" label, then a code embedded in a money-column header (e.g.
+// "Unit cost (USD)"), then a currency symbol. Returns null when nothing is clear.
+function detectCurrency(rows: (string | number | Date)[][]): string | null {
+  const top = rows.slice(0, 25);
+  const joined = top.map((r) => r.map((c) => String(c ?? "")).join("  "));
+  for (const ln of joined) {
+    const m = ln.match(/currenc(?:y|ies)\s*[:\-=]?\s*\(?\s*([A-Za-z]{3})\s*\)?/i);
+    if (m && KNOWN_CCY.includes(m[1].toUpperCase())) return m[1].toUpperCase();
+  }
+  for (const r of top) {
+    for (const cell of r) {
+      const s = String(cell ?? "");
+      if (/unit\s*cost|rate|amount|budget|total|cost/i.test(s)) {
+        for (const c of KNOWN_CCY) if (new RegExp(`\\b${c}\\b`, "i").test(s)) return c;
+        if (s.includes("$")) return "USD";
+        if (s.includes("£")) return "GBP";
+        if (s.includes("€")) return "EUR";
+      }
+    }
+  }
+  for (const ln of joined) {
+    if (ln.includes("$")) return "USD";
+    if (ln.includes("£")) return "GBP";
+    if (ln.includes("€")) return "EUR";
+  }
+  return null;
+}
+
 function parseStructuredBudget(rows: (string | number | Date)[][]): Suggestion[] {
   const out: Suggestion[] = [];
   const r2 = (n: number) => Math.round(n * 100) / 100;
+  const ccy = detectCurrency(rows);
   let hi = -1; let H: string[] = [];
   for (let i = 0; i < Math.min(rows.length, 20); i++) {
     const cells = rows[i].map((c) => String(c ?? "").toLowerCase().trim());
@@ -236,6 +271,7 @@ function parseStructuredBudget(rows: (string | number | Date)[][]): Suggestion[]
         code: cell(cCode), description: desc, category: secCol || section || "",
         unit: cell(cUnit) || "unit", unitCost: Number.isFinite(unitCost) ? unitCost : 0,
         quantity, frequency, planned, justification: cell(cJust),
+        ...(ccy ? { currency: ccy } : {}),
       },
       confidence: 0.85, sourceRef: `row ${i + 1}`,
     });
@@ -393,7 +429,17 @@ export async function applySuggestions(input: { jobId: string; userId: string; a
         [id("act"), projectId, String(p.code ?? ""), String(p.title),
          p.startDate ? String(p.startDate) : null, p.endDate ? String(p.endDate) : null, order++]);
     } else if (s.kind === "budget_line") {
-      if (!budgetId) { budgetId = id("bud"); await q(`INSERT INTO budget (id, project_id, name) VALUES ($1,$2,'Imported budget')`, [budgetId, projectId]); }
+      const lineCcy = p.currency ? String(p.currency).toUpperCase() : "";
+      if (!budgetId) {
+        budgetId = id("bud");
+        // Denominate the imported budget in the file's own currency when we could
+        // detect it; otherwise keep the project's current currency. When a currency
+        // was detected, also switch the project to it so the budget/finance views
+        // (which display the project currency) read correctly.
+        const ccy = lineCcy || (await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [projectId]))?.currency || "USD";
+        await q(`INSERT INTO budget (id, project_id, name, currency) VALUES ($1,$2,'Imported budget',$3)`, [budgetId, projectId, ccy]);
+        if (lineCcy) await q(`UPDATE project SET currency=$2, updated_at=now() WHERE id=$1`, [projectId, lineCcy]);
+      }
       if (!catsSeeded) { await ensureStandardCategories(budgetId); catsSeeded = true; }
       const categoryId = p.category ? await resolveCategory(budgetId, String(p.category)) : null;
       const quantity = Number(p.quantity ?? 1) || 1;

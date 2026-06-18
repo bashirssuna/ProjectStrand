@@ -1236,10 +1236,20 @@ export async function createStandaloneVoucherAction(formData: FormData) {
   const expenseAccountId = String(formData.get("expenseAccountId") || ""); // debited
   const date = String(formData.get("voucherDate") || new Date().toISOString().slice(0, 10));
   if (!payee || amount <= 0 || !accountId || !expenseAccountId) redirect("/finance/vouchers?err=invalid");
-  const projectId = String(formData.get("projectId") || "") || null;
+  let projectId = String(formData.get("projectId") || "") || null;
   const purpose = String(formData.get("purpose") || "") || null;
   const reference = String(formData.get("reference") || "") || null;
   const method = String(formData.get("method") || "bank_transfer");
+  // Optional budget line. Picking one ties the voucher to a project budget line so
+  // it reduces that line; derive the project from the line so the ledger entry is
+  // project-tagged before we post.
+  const budgetLineId = String(formData.get("budgetLineId") || "") || null;
+  if (budgetLineId) {
+    const line = await one<{ projectId: string }>(
+      `SELECT p.id AS "projectId" FROM budget_line bl JOIN budget b ON b.id=bl.budget_id JOIN project p ON p.id=b.project_id
+       WHERE bl.id=$1 AND p.org_id=$2`, [budgetLineId, orgId]);
+    if (line) projectId = projectId ?? line.projectId;
+  }
   const num = await nextNum(orgId, "payment_voucher", "PV");
   const vid = id("pv");
   let entryId: string | null = null;
@@ -1256,10 +1266,23 @@ export async function createStandaloneVoucherAction(formData: FormData) {
   } catch (e) {
     redirect(`/finance/vouchers?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`);
   }
-  await q(`INSERT INTO payment_voucher (id, org_id, project_id, requisition_id, number, voucher_date, payee, amount, method, reference, purpose, account_id, expense_account_id, journal_entry_id, prepared_by, prepared_by_name, status)
-           VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'paid')`,
-    [vid, orgId, projectId, num, date, payee, amount, method, reference, purpose, accountId, expenseAccountId, entryId, userId, userName]);
+  await q(`INSERT INTO payment_voucher (id, org_id, project_id, requisition_id, number, voucher_date, payee, amount, method, reference, purpose, account_id, expense_account_id, journal_entry_id, prepared_by, prepared_by_name, status, budget_line_id)
+           VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'paid',$16)`,
+    [vid, orgId, projectId, num, date, payee, amount, method, reference, purpose, accountId, expenseAccountId, entryId, userId, userName, budgetLineId]);
   await writeAudit({ orgId, userId, action: "create", entity: "payment_voucher", entityId: num, after: { payee, amount } });
+  // Record the budget-line expenditure WITHOUT re-posting to the ledger — the voucher
+  // above already posted the cash movement (debit expense, credit cash).
+  if (budgetLineId && projectId) {
+    const expId = id("exp");
+    await q(`INSERT INTO expenditure (id, project_id, budget_line_id, amount, date, reference, payee, approved, created_by_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8)`,
+      [expId, projectId, budgetLineId, amount, date, num, payee, userId]);
+    await q(`UPDATE payment_voucher SET expenditure_id=$2 WHERE id=$1`, [vid, expId]);
+    await writeAudit({ orgId, userId, action: "create", entity: "expenditure", entityId: expId, after: { amount, fromVoucher: num, budgetLineId } });
+    await evaluateProject(projectId);
+    revalidatePath(`/projects/${projectId}/budget`);
+    revalidatePath(`/projects/${projectId}/spending`);
+  }
   redirect(`/finance/vouchers?created=${num}`);
 }
 
@@ -1272,15 +1295,11 @@ async function loadSlip(slipId: string, orgId: string): Promise<{ id: string; pr
   return s;
 }
 
-async function canSignAsPI(userId: string, orgId: string, projectId: string | null): Promise<boolean> {
+async function canSignAsApprover(userId: string, orgId: string, approverId: string | null): Promise<boolean> {
   const admin = await one(`SELECT 1 FROM org_membership m JOIN role r ON r.id=m.role_id
                            WHERE m.org_id=$1 AND m.user_id=$2 AND r.key='org_admin'`, [orgId, userId]);
-  if (admin) return true;
-  const pi = projectId
-    ? await one(`SELECT 1 FROM project_member WHERE project_id=$1 AND user_id=$2 AND role IN ('pi','co_pi')`, [projectId, userId])
-    : await one(`SELECT 1 FROM project_member pm JOIN project p ON p.id=pm.project_id
-                 WHERE p.org_id=$1 AND pm.user_id=$2 AND pm.role IN ('pi','co_pi') LIMIT 1`, [orgId, userId]);
-  return Boolean(pi);
+  if (admin) return true; // org admins / finance can always sign
+  return approverId != null && approverId === userId; // otherwise only the designated second signatory
 }
 
 export async function createPaymentSlipAction(formData: FormData) {
@@ -1364,30 +1383,119 @@ export async function signSlipFinanceAction(formData: FormData) {
   revalidatePath(`/finance/payment-slips/${slipId}`);
 }
 
-export async function signSlipPIAction(formData: FormData) {
+// Finance designates the second signatory (PI, manager, or anyone) and notifies them.
+export async function assignSlipApproverAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const slipId = String(formData.get("slipId"));
+  await loadSlip(slipId, orgId);
+  const approverId = String(formData.get("approverId") || "");
+  const approverTitle = String(formData.get("approverTitle") || "").trim() || "Authoriser";
+  if (!approverId) redirect(`/finance/payment-slips/${slipId}?err=approver`);
+  const u = await one<{ name: string }>(`SELECT name FROM app_user WHERE id=$1`, [approverId]);
+  if (!u) redirect(`/finance/payment-slips/${slipId}?err=approver`);
+  await q(`UPDATE payment_slip SET approver_id=$2, approver_name=$3, approver_title=$4 WHERE id=$1`, [slipId, approverId, u.name, approverTitle]);
+  const meta = await one<{ title: string; number: string }>(`SELECT title, number FROM payment_slip WHERE id=$1`, [slipId]);
+  await notify({
+    orgId, userId: approverId, type: "approval_request",
+    title: `Payment approval needed: ${meta?.title ?? "payment"}`,
+    body: `You have been asked to review and sign payment ${meta?.number ?? ""} as ${approverTitle}. Please log in to approve.`,
+    link: `/finance/payment-slips/${slipId}`, email: true,
+  });
+  await writeAudit({ orgId, userId, action: "assign", entity: "payment_slip", entityId: slipId, after: { approverId, approverTitle } });
+  redirect(`/finance/payment-slips/${slipId}?assigned=1`);
+}
+
+export async function notifySlipApproverAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const slipId = String(formData.get("slipId"));
+  await loadSlip(slipId, orgId);
+  const s = await one<{ approverId: string | null; approverTitle: string | null; title: string; number: string }>(
+    `SELECT approver_id AS "approverId", approver_title AS "approverTitle", title, number FROM payment_slip WHERE id=$1`, [slipId]);
+  if (s?.approverId) {
+    await notify({
+      orgId, userId: s.approverId, type: "approval_request",
+      title: `Reminder — payment approval needed: ${s.title}`,
+      body: `Please log in to review and sign payment ${s.number} as ${s.approverTitle ?? "Authoriser"}.`,
+      link: `/finance/payment-slips/${slipId}`, email: true,
+    });
+  }
+  redirect(`/finance/payment-slips/${slipId}?notified=1`);
+}
+
+// The designated second signatory (or an org admin) approves & signs the second slot.
+export async function signSlipApproverAction(formData: FormData) {
   const user = await requireUser();
   const slipId = String(formData.get("slipId"));
-  const s = await one<{ orgId: string; projectId: string | null }>(`SELECT org_id AS "orgId", project_id AS "projectId" FROM payment_slip WHERE id=$1`, [slipId]);
-  if (!s) redirect("/finance/payment-slips");
-  if (!(await canSignAsPI(user.id, s.orgId, s.projectId))) redirect(`/finance/payment-slips/${slipId}?err=forbidden`);
+  const s = await one<{ orgId: string; approverId: string | null }>(`SELECT org_id AS "orgId", approver_id AS "approverId" FROM payment_slip WHERE id=$1`, [slipId]);
+  if (!s) redirect("/dashboard");
+  if (!(await canSignAsApprover(user.id, s.orgId, s.approverId))) redirect(`/finance/payment-slips/${slipId}?err=forbidden`);
   const signature = String(formData.get("signature") || "");
   if (!signature) redirect(`/finance/payment-slips/${slipId}?err=sign`);
   await q(`UPDATE payment_slip SET pi_signed_by=$2, pi_signed_name=$3, pi_signature=$4, pi_signed_at=now(),
            status=CASE WHEN status='draft' THEN 'approved' ELSE status END WHERE id=$1`,
     [slipId, user.id, user.name, signature]);
-  await writeAudit({ orgId: s.orgId, userId: user.id, action: "approve", entity: "payment_slip", entityId: slipId, after: { piSigned: true } });
+  await writeAudit({ orgId: s.orgId, userId: user.id, action: "approve", entity: "payment_slip", entityId: slipId, after: { secondSigned: true } });
+  revalidatePath(`/finance/payment-slips/${slipId}`);
+}
+
+// Records the slip's total as an expenditure against its linked budget line and
+// posts it to the ledger — but only once, and only when the slip is disbursed AND a
+// line is linked. Safe to call from either "mark disbursed" or "link budget line",
+// so the order the user does them in doesn't matter.
+async function recordSlipExpenditureIfDue(slipId: string, orgId: string, userId: string, userName: string) {
+  const s = await one<{ projectId: string | null; budgetLineId: string | null; expenditureId: string | null; status: string; number: string; title: string; slipDate: string }>(
+    `SELECT project_id AS "projectId", budget_line_id AS "budgetLineId", expenditure_id AS "expenditureId", status,
+            number, title, slip_date::text AS "slipDate" FROM payment_slip WHERE id=$1`, [slipId]);
+  if (!s || s.status !== "disbursed" || !s.budgetLineId || !s.projectId || s.expenditureId) return;
+  const tot = (await one<{ t: number }>(`SELECT COALESCE(SUM(amount),0)::float t FROM payment_slip_payee WHERE slip_id=$1`, [slipId]))?.t ?? 0;
+  if (tot <= 0) return;
+  const expId = id("exp");
+  await q(`INSERT INTO expenditure (id, project_id, budget_line_id, amount, date, reference, payee, approved, created_by_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8)`,
+    [expId, s.projectId, s.budgetLineId, tot, s.slipDate, s.number, s.title, userId]);
+  await q(`UPDATE payment_slip SET expenditure_id=$2 WHERE id=$1`, [slipId, expId]);
+  await postExpenditureToLedger({ orgId, projectId: s.projectId, expenditureId: expId, amount: tot, date: s.slipDate, reference: s.number, payee: s.title, postedBy: userId, postedByName: userName });
+  await writeAudit({ orgId, userId, action: "create", entity: "expenditure", entityId: expId, after: { amount: tot, fromSlip: s.number, budgetLineId: s.budgetLineId } });
+  await evaluateProject(s.projectId);
+  revalidatePath(`/projects/${s.projectId}/budget`);
+  revalidatePath(`/projects/${s.projectId}/spending`);
+  revalidatePath(`/finance/statements`);
+}
+
+// Finance links the slip to a project budget line. Picking a line also sets the
+// slip's project (a line belongs to a project), so the two stay consistent.
+export async function setSlipBudgetLineAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const slipId = String(formData.get("slipId"));
+  await loadSlip(slipId, orgId);
+  const budgetLineId = String(formData.get("budgetLineId") || "") || null;
+  if (!budgetLineId) {
+    await q(`UPDATE payment_slip SET budget_line_id=NULL WHERE id=$1`, [slipId]);
+    await writeAudit({ orgId, userId, action: "update", entity: "payment_slip", entityId: slipId, after: { budgetLineId: null } });
+    revalidatePath(`/finance/payment-slips/${slipId}`); return;
+  }
+  const line = await one<{ projectId: string }>(
+    `SELECT p.id AS "projectId" FROM budget_line bl JOIN budget b ON b.id=bl.budget_id JOIN project p ON p.id=b.project_id
+     WHERE bl.id=$1 AND p.org_id=$2`, [budgetLineId, orgId]);
+  if (!line) redirect(`/finance/payment-slips/${slipId}?err=line`);
+  await q(`UPDATE payment_slip SET budget_line_id=$2, project_id=$3 WHERE id=$1`, [slipId, budgetLineId, line.projectId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "payment_slip", entityId: slipId, after: { budgetLineId } });
+  // If the slip was already disbursed, record the expenditure now that a line exists.
+  await recordSlipExpenditureIfDue(slipId, orgId, userId, userName);
   revalidatePath(`/finance/payment-slips/${slipId}`);
 }
 
 export async function setSlipStatusAction(formData: FormData) {
-  const { orgId, userId } = await requireInstitutionFinance();
+  const { orgId, userId, userName } = await requireInstitutionFinance();
   const slipId = String(formData.get("slipId"));
   await loadSlip(slipId, orgId);
   const status = String(formData.get("status") || "");
   if (!["draft", "approved", "disbursed", "closed"].includes(status)) redirect(`/finance/payment-slips/${slipId}`);
   await q(`UPDATE payment_slip SET status=$2 WHERE id=$1`, [slipId, status]);
+  if (status === "disbursed") await recordSlipExpenditureIfDue(slipId, orgId, userId, userName);
   await writeAudit({ orgId, userId, action: "update", entity: "payment_slip", entityId: slipId, after: { status } });
   revalidatePath(`/finance/payment-slips/${slipId}`);
+  revalidatePath(`/finance/statements`);
 }
 
 export async function sendSlipSigningLinksAction(formData: FormData) {

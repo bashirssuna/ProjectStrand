@@ -5,6 +5,7 @@ import { PageHeader, SectionTitle, Field, Badge, Empty } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { createStandaloneVoucherAction } from "@/app/actions";
+import { budgetLineOptions } from "@/server/services/payment-slips";
 
 export default async function VouchersPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string }> }) {
   const { orgId } = await requireFinanceOrg();
@@ -24,6 +25,7 @@ export default async function VouchersPage({ searchParams }: { searchParams: Pro
     `SELECT id, code, name FROM ledger_account WHERE org_id=$1 AND account_type='expense' AND is_active ORDER BY code`, [orgId]
   );
   const projects = await q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY code`, [orgId]);
+  const budgetLines = await budgetLineOptions(orgId);
   const ready = cashAccts.length > 0 && expenseAccts.length > 0;
 
   return (
@@ -71,6 +73,13 @@ export default async function VouchersPage({ searchParams }: { searchParams: Pro
           <Field label="Project (optional)"><select name="projectId" className="select"><option value="">— none —</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.code} {p.title}</option>)}</select></Field>
           <Field label="Pay from (cash/bank)"><select name="accountId" required className="select"><option value="">— choose —</option>{cashAccts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}</select></Field>
           <Field label="Expense account"><select name="expenseAccountId" required className="select"><option value="">— choose —</option>{expenseAccts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}</select></Field>
+          {budgetLines.length > 0 && (
+            <div className="sm:col-span-3"><Field label="Budget line (optional — deducts from the project budget)">
+              <select name="budgetLineId" className="select"><option value="">— none —</option>
+                {budgetLines.map((l) => <option key={l.id} value={l.id}>{l.projectCode} · {l.code} — {l.description} (remaining {money(l.remaining, l.currency)})</option>)}
+              </select>
+            </Field></div>
+          )}
           <Field label="Payment method"><select name="method" className="select"><option value="bank_transfer">Bank transfer</option><option value="cheque">Cheque</option><option value="cash">Cash</option><option value="mobile_money">Mobile money</option></select></Field>
           <Field label="Reference / cheque no."><input name="reference" className="input" /></Field>
           <div className="sm:col-span-3"><Field label="Description"><input name="purpose" className="input" placeholder="What the payment is for" /></Field></div>

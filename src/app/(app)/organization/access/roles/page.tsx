@@ -11,7 +11,8 @@ const PERM_LABEL: Record<Permission, string> = {
 };
 const ROLE_LABEL: Record<ProjectRole, string> = {
   pi: "Principal Investigator", co_pi: "Co-PI / Co-Investigator", project_manager: "Project Manager", finance_admin: "Finance Administrator",
-  coordinator: "Coordinator", assistant: "Assistant", member: "Member", reviewer: "Reviewer",
+  coordinator: "Coordinator", statistician: "Statistician", data_manager: "Data Manager", research_assistant: "Research Assistant",
+  data_clerk: "Data Clerk", consultant: "Consultant", assistant: "Assistant", member: "Member", reviewer: "Reviewer",
   approver: "Approver", viewer: "Viewer",
 };
 const ROLE_NOTE: Record<ProjectRole, string> = {
@@ -20,6 +21,11 @@ const ROLE_NOTE: Record<ProjectRole, string> = {
   project_manager: "Full control of a project, including raising requisitions.",
   finance_admin: "Budget, reports and the full requisition workflow; does not edit project content.",
   coordinator: "Edits content, manages documents and reports, and raises requisitions.",
+  statistician: "Analyses project data and contributes to reports; edits content and comments.",
+  data_manager: "Manages project data and documents; edits content and comments.",
+  research_assistant: "Carries out research/field tasks; edits assigned content and uploads evidence.",
+  data_clerk: "Enters and maintains project data; edits assigned content and uploads evidence.",
+  consultant: "External contributor; views and comments.",
   assistant: "Edits project content and comments.",
   member: "Views and comments.",
   reviewer: "Views, comments and approves items.",

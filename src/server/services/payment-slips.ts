@@ -41,6 +41,8 @@ export type SlipHeader = {
   preparedByName: string | null;
   financeSignedName: string | null; financeSignature: string | null; financeSignedAt: string | null;
   piSignedName: string | null; piSignature: string | null; piSignedAt: string | null;
+  approverId: string | null; approverName: string | null; approverTitle: string | null;
+  budgetLineId: string | null; lineCode: string | null; lineDescription: string | null; expenditureId: string | null;
 };
 
 export async function getSlip(id: string, orgId: string): Promise<SlipHeader | null> {
@@ -49,9 +51,35 @@ export async function getSlip(id: string, orgId: string): Promise<SlipHeader | n
             s.currency, s.status, s.note, s.project_id AS "projectId", p.code AS project,
             s.prepared_by_name AS "preparedByName",
             s.finance_signed_name AS "financeSignedName", s.finance_signature AS "financeSignature", s.finance_signed_at AS "financeSignedAt",
-            s.pi_signed_name AS "piSignedName", s.pi_signature AS "piSignature", s.pi_signed_at AS "piSignedAt"
-       FROM payment_slip s LEFT JOIN project p ON p.id=s.project_id
+            s.pi_signed_name AS "piSignedName", s.pi_signature AS "piSignature", s.pi_signed_at AS "piSignedAt",
+            s.approver_id AS "approverId", s.approver_name AS "approverName", s.approver_title AS "approverTitle",
+            s.budget_line_id AS "budgetLineId", s.expenditure_id AS "expenditureId",
+            bl.code AS "lineCode", bl.description AS "lineDescription"
+       FROM payment_slip s
+       LEFT JOIN project p ON p.id=s.project_id
+       LEFT JOIN budget_line bl ON bl.id=s.budget_line_id
       WHERE s.id=$1 AND s.org_id=$2`, [id, orgId]
+  );
+}
+
+// Budget lines available to link a slip/voucher to, with live remaining balance.
+// Scoped to one project when projectId is given, else all of the org's projects.
+export async function budgetLineOptions(orgId: string, projectId?: string | null): Promise<{
+  id: string; projectId: string; projectCode: string; code: string; description: string;
+  currency: string; planned: number; spent: number; remaining: number;
+}[]> {
+  return q(
+    `SELECT bl.id, p.id AS "projectId", p.code AS "projectCode", bl.code, bl.description,
+            COALESCE(b.currency, p.currency) AS currency,
+            COALESCE(bl.planned,0)::float AS planned,
+            COALESCE((SELECT SUM(amount) FROM expenditure WHERE budget_line_id=bl.id),0)::float AS spent,
+            (COALESCE(bl.planned,0) - COALESCE((SELECT SUM(amount) FROM expenditure WHERE budget_line_id=bl.id),0))::float AS remaining
+       FROM budget_line bl
+       JOIN budget b ON b.id=bl.budget_id
+       JOIN project p ON p.id=b.project_id
+      WHERE p.org_id=$1 ${projectId ? "AND p.id=$2" : ""}
+      ORDER BY p.code, bl.code`,
+    projectId ? [orgId, projectId] : [orgId]
   );
 }
 

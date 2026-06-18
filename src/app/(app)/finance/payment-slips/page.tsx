@@ -46,7 +46,7 @@ export default async function PaymentSlipsPage({ searchParams }: { searchParams:
                   <td className="td whitespace-nowrap">{fmtDate(s.slipDate)}</td>
                   <td className="td text-right">{s.payees}</td>
                   <td className="td text-right whitespace-nowrap">{money(s.total, s.currency)}</td>
-                  <td className="td text-xs">{s.financeSignedAt ? "Fin ✓" : "Fin —"} · {s.piSignedAt ? "PI ✓" : "PI —"}</td>
+                  <td className="td text-xs">{s.financeSignedAt ? "Fin ✓" : "Fin —"} · {s.piSignedAt ? "2nd ✓" : "2nd —"}</td>
                   <td className="td text-xs">{s.signed}/{s.payees}</td>
                   <td className="td"><Badge tone={statusTone(s.status)}>{s.status}</Badge></td>
                   <td className="td text-right whitespace-nowrap">

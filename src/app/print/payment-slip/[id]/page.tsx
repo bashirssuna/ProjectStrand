@@ -33,7 +33,7 @@ export default async function PrintPaymentSlipPage({ params }: { params: Promise
   if (!org) redirect("/dashboard");
   const slip = await getSlip(id, org.id);
   if (!slip) { if (!user.isSuperAdmin) redirect("/dashboard"); else redirect("/finance/payment-slips"); }
-  if (!org.isOrgAdmin && !user.isSuperAdmin) redirect("/dashboard");
+  if (!org.isOrgAdmin && !user.isSuperAdmin && slip?.approverId !== user.id) redirect("/dashboard");
   const s = slip!;
   const payees = await getPayees(id);
   const total = payees.reduce((a, p) => a + p.amount, 0);
@@ -118,7 +118,7 @@ export default async function PrintPaymentSlipPage({ params }: { params: Promise
           <div style={{ borderTop: "1px solid #111", paddingTop: 6, fontSize: 12 }}>
             {s.piSignature ? <img src={s.piSignature} alt="" style={{ height: 38, marginBottom: 4 }} /> : <div style={{ height: 42 }} />}
             <div style={{ fontWeight: 600 }}>{s.piSignedName || "\u00A0"}</div>
-            <div style={{ color: "#555" }}>Principal Investigator (Authorised)</div>
+            <div style={{ color: "#555" }}>{s.approverTitle || "Authorised by"}</div>
             <div style={{ color: "#888", fontSize: 11 }}>{s.piSignedAt ? fmtDate(s.piSignedAt) : ""}</div>
           </div>
           {single && (

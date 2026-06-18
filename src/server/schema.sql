@@ -1719,3 +1719,16 @@ CREATE TABLE IF NOT EXISTS payment_slip_payee (
 CREATE INDEX IF NOT EXISTS idx_payment_slip_org ON payment_slip(org_id);
 CREATE INDEX IF NOT EXISTS idx_payment_slip_payee_slip ON payment_slip_payee(slip_id);
 CREATE INDEX IF NOT EXISTS idx_payment_slip_payee_token ON payment_slip_payee(sign_token);
+
+-- Configurable second signatory (not locked to the PI): Finance designates who must
+-- authorise (manager, PI, co-investigator, anyone). Whoever signs that slot is stored
+-- in the pi_signed_* columns; approver_title records what role they signed under.
+ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS approver_id text REFERENCES app_user(id) ON DELETE SET NULL;
+ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS approver_name text;
+ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS approver_title text;
+-- Link a payment slip / voucher to a project budget line so disbursement records an
+-- expenditure against the line (which reduces its balance) and posts to the ledger.
+ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS budget_line_id text REFERENCES budget_line(id) ON DELETE SET NULL;
+ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS expenditure_id text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS budget_line_id text REFERENCES budget_line(id) ON DELETE SET NULL;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS expenditure_id text;

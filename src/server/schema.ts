@@ -1720,4 +1720,11 @@ CREATE TABLE IF NOT EXISTS payment_slip_payee (
 CREATE INDEX IF NOT EXISTS idx_payment_slip_org ON payment_slip(org_id);
 CREATE INDEX IF NOT EXISTS idx_payment_slip_payee_slip ON payment_slip_payee(slip_id);
 CREATE INDEX IF NOT EXISTS idx_payment_slip_payee_token ON payment_slip_payee(sign_token);
+ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS approver_id text REFERENCES app_user(id) ON DELETE SET NULL;
+ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS approver_name text;
+ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS approver_title text;
+ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS budget_line_id text REFERENCES budget_line(id) ON DELETE SET NULL;
+ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS expenditure_id text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS budget_line_id text REFERENCES budget_line(id) ON DELETE SET NULL;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS expenditure_id text;
 `;

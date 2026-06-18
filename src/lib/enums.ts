@@ -3,6 +3,7 @@
 export const SYSTEM_ROLES = ["super_admin", "org_admin", "support_admin"] as const;
 export const PROJECT_ROLES = [
   "pi", "co_pi", "project_manager", "finance_admin", "coordinator",
+  "statistician", "data_manager", "research_assistant", "data_clerk", "consultant",
   "assistant", "member", "reviewer", "approver", "viewer",
 ] as const;
 export type ProjectRole = (typeof PROJECT_ROLES)[number];
@@ -46,6 +47,11 @@ export const ROLE_PERMISSIONS: Record<ProjectRole, Permission[]> = {
     "project.view", "project.comment", "project.edit",
     "documents.manage", "reports.manage", "requisitions.create",
   ],
+  statistician: ["project.view", "project.comment", "project.edit", "reports.manage"],
+  data_manager: ["project.view", "project.comment", "project.edit", "documents.manage"],
+  research_assistant: ["project.view", "project.comment", "project.edit"],
+  data_clerk: ["project.view", "project.comment", "project.edit"],
+  consultant: ["project.view", "project.comment"],
   assistant: ["project.view", "project.comment", "project.edit"],
   member: ["project.view", "project.comment"],
   reviewer: ["project.view", "project.comment", "approvals.approve"],

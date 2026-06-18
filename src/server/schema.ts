@@ -1674,4 +1674,50 @@ ALTER TABLE invoice ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT f
 
 -- Currency chosen at import time for a budget file (empty/null = auto-detect from the file).
 ALTER TABLE extraction_job ADD COLUMN IF NOT EXISTS currency text;
+
+-- ============================================================================
+-- PAYMENT SLIPS — bulk or individual payments (airtime, data, transcription,
+-- transport, etc.) on letterhead, approved & signed by Finance and the PI, with
+-- each payee able to e-sign against their name via an emailed link (no login).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS payment_slip (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
+  number text NOT NULL,
+  title text NOT NULL,
+  category text,
+  slip_date date NOT NULL,
+  currency text NOT NULL DEFAULT 'UGX',
+  status text NOT NULL DEFAULT 'draft',
+  note text,
+  prepared_by text REFERENCES app_user(id) ON DELETE SET NULL,
+  prepared_by_name text,
+  finance_signed_by text REFERENCES app_user(id) ON DELETE SET NULL,
+  finance_signed_name text, finance_signature text, finance_signed_at timestamptz,
+  pi_signed_by text REFERENCES app_user(id) ON DELETE SET NULL,
+  pi_signed_name text, pi_signature text, pi_signed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS payment_slip_payee (
+  id text PRIMARY KEY,
+  slip_id text NOT NULL REFERENCES payment_slip(id) ON DELETE CASCADE,
+  idx int NOT NULL DEFAULT 0,
+  name text NOT NULL,
+  phone text,
+  email text,
+  designation text,
+  payment_for text,
+  amount numeric(18,2) NOT NULL DEFAULT 0,
+  sign_token text UNIQUE,
+  signed boolean NOT NULL DEFAULT false,
+  signature text,
+  signed_name text,
+  signed_at timestamptz,
+  link_sent_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_payment_slip_org ON payment_slip(org_id);
+CREATE INDEX IF NOT EXISTS idx_payment_slip_payee_slip ON payment_slip_payee(slip_id);
+CREATE INDEX IF NOT EXISTS idx_payment_slip_payee_token ON payment_slip_payee(sign_token);
 `;

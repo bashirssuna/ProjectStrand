@@ -23,6 +23,7 @@ import { recomputeRollups } from "@/server/services/activities";
 import { evaluateProject } from "@/server/services/anomaly";
 import { ensureStandardCategories } from "@/server/services/budget";
 import { reDenominateProject } from "@/server/services/currency";
+import { newSignToken } from "@/server/services/payment-slips";
 import { writeAudit, notify } from "@/server/services/audit";
 
 /* ---------------- Auth ---------------- */
@@ -1239,7 +1240,7 @@ export async function createStandaloneVoucherAction(formData: FormData) {
   const purpose = String(formData.get("purpose") || "") || null;
   const reference = String(formData.get("reference") || "") || null;
   const method = String(formData.get("method") || "bank_transfer");
-  const num = await nextNum(orgId, "voucher", "PV");
+  const num = await nextNum(orgId, "payment_voucher", "PV");
   const vid = id("pv");
   let entryId: string | null = null;
   try {
@@ -1260,6 +1261,177 @@ export async function createStandaloneVoucherAction(formData: FormData) {
     [vid, orgId, projectId, num, date, payee, amount, method, reference, purpose, accountId, expenseAccountId, entryId, userId, userName]);
   await writeAudit({ orgId, userId, action: "create", entity: "payment_voucher", entityId: num, after: { payee, amount } });
   redirect(`/finance/vouchers?created=${num}`);
+}
+
+/* ===================== PAYMENT SLIPS (bulk/individual + e-signing) ===================== */
+
+async function loadSlip(slipId: string, orgId: string): Promise<{ id: string; projectId: string | null; status: string }> {
+  const s = await one<{ id: string; projectId: string | null; status: string }>(
+    `SELECT id, project_id AS "projectId", status FROM payment_slip WHERE id=$1 AND org_id=$2`, [slipId, orgId]);
+  if (!s) redirect("/finance/payment-slips");
+  return s;
+}
+
+async function canSignAsPI(userId: string, orgId: string, projectId: string | null): Promise<boolean> {
+  const admin = await one(`SELECT 1 FROM org_membership m JOIN role r ON r.id=m.role_id
+                           WHERE m.org_id=$1 AND m.user_id=$2 AND r.key='org_admin'`, [orgId, userId]);
+  if (admin) return true;
+  const pi = projectId
+    ? await one(`SELECT 1 FROM project_member WHERE project_id=$1 AND user_id=$2 AND role IN ('pi','co_pi')`, [projectId, userId])
+    : await one(`SELECT 1 FROM project_member pm JOIN project p ON p.id=pm.project_id
+                 WHERE p.org_id=$1 AND pm.user_id=$2 AND pm.role IN ('pi','co_pi') LIMIT 1`, [orgId, userId]);
+  return Boolean(pi);
+}
+
+export async function createPaymentSlipAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const title = String(formData.get("title") || "").trim();
+  if (!title) redirect("/finance/payment-slips?err=title");
+  const category = String(formData.get("category") || "").trim() || null;
+  const slipDate = String(formData.get("slipDate") || new Date().toISOString().slice(0, 10));
+  const projectId = String(formData.get("projectId") || "") || null;
+  let currency = String(formData.get("currency") || "").trim().toUpperCase();
+  if (!currency) currency = projectId
+    ? ((await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [projectId]))?.currency ?? "UGX")
+    : ((await one<{ baseCurrency: string }>(`SELECT COALESCE(base_currency,'UGX') AS "baseCurrency" FROM organization WHERE id=$1`, [orgId]))?.baseCurrency ?? "UGX");
+  const note = String(formData.get("note") || "").trim() || null;
+  const num = await nextNum(orgId, "payment_slip", "PS");
+  const sid = id("pslip");
+  await q(`INSERT INTO payment_slip (id, org_id, project_id, number, title, category, slip_date, currency, status, note, prepared_by, prepared_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'draft',$9,$10,$11)`,
+    [sid, orgId, projectId, num, title, category, slipDate, currency, note, userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "payment_slip", entityId: num, after: { title, category } });
+  redirect(`/finance/payment-slips/${sid}`);
+}
+
+export async function addSlipPayeeAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const slipId = String(formData.get("slipId"));
+  await loadSlip(slipId, orgId);
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect(`/finance/payment-slips/${slipId}?err=name`);
+  const amount = Number(String(formData.get("amount") || "0").replace(/[^0-9.\-]/g, "")) || 0;
+  const next = (await one<{ n: number }>(`SELECT COALESCE(MAX(idx),0)+1 AS n FROM payment_slip_payee WHERE slip_id=$1`, [slipId]))?.n ?? 1;
+  await q(`INSERT INTO payment_slip_payee (id, slip_id, idx, name, phone, email, designation, payment_for, amount, sign_token)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [id("psp"), slipId, next, name,
+     String(formData.get("phone") || "").trim() || null, String(formData.get("email") || "").trim() || null,
+     String(formData.get("designation") || "").trim() || null, String(formData.get("paymentFor") || "").trim() || null,
+     amount, newSignToken()]);
+  revalidatePath(`/finance/payment-slips/${slipId}`);
+}
+
+export async function bulkAddSlipPayeesAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const slipId = String(formData.get("slipId"));
+  await loadSlip(slipId, orgId);
+  const raw = String(formData.get("rows") || "");
+  let idx = (await one<{ n: number }>(`SELECT COALESCE(MAX(idx),0) AS n FROM payment_slip_payee WHERE slip_id=$1`, [slipId]))?.n ?? 0;
+  for (const lineRaw of raw.split(/\r?\n/)) {
+    const line = lineRaw.trim();
+    if (!line) continue;
+    // tab-separated preferred (paste from a spreadsheet); fall back to comma.
+    const cols = (line.includes("\t") ? line.split("\t") : line.split(",")).map((c) => c.trim());
+    const [name, phone, email, designation, paymentFor, amountRaw] = cols;
+    if (!name) continue;
+    const amount = Number(String(amountRaw || "0").replace(/[^0-9.\-]/g, "")) || 0;
+    idx += 1;
+    await q(`INSERT INTO payment_slip_payee (id, slip_id, idx, name, phone, email, designation, payment_for, amount, sign_token)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [id("psp"), slipId, idx, name, phone || null, email || null, designation || null, paymentFor || null, amount, newSignToken()]);
+  }
+  revalidatePath(`/finance/payment-slips/${slipId}`);
+}
+
+export async function deleteSlipPayeeAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const slipId = String(formData.get("slipId"));
+  await loadSlip(slipId, orgId);
+  await q(`DELETE FROM payment_slip_payee WHERE id=$1 AND slip_id=$2`, [String(formData.get("payeeId")), slipId]);
+  revalidatePath(`/finance/payment-slips/${slipId}`);
+}
+
+export async function signSlipFinanceAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const slipId = String(formData.get("slipId"));
+  await loadSlip(slipId, orgId);
+  const signature = String(formData.get("signature") || "");
+  if (!signature) redirect(`/finance/payment-slips/${slipId}?err=sign`);
+  await q(`UPDATE payment_slip SET finance_signed_by=$2, finance_signed_name=$3, finance_signature=$4, finance_signed_at=now(),
+           status=CASE WHEN status='draft' THEN 'approved' ELSE status END WHERE id=$1`,
+    [slipId, userId, userName, signature]);
+  await writeAudit({ orgId, userId, action: "approve", entity: "payment_slip", entityId: slipId, after: { financeSigned: true } });
+  revalidatePath(`/finance/payment-slips/${slipId}`);
+}
+
+export async function signSlipPIAction(formData: FormData) {
+  const user = await requireUser();
+  const slipId = String(formData.get("slipId"));
+  const s = await one<{ orgId: string; projectId: string | null }>(`SELECT org_id AS "orgId", project_id AS "projectId" FROM payment_slip WHERE id=$1`, [slipId]);
+  if (!s) redirect("/finance/payment-slips");
+  if (!(await canSignAsPI(user.id, s.orgId, s.projectId))) redirect(`/finance/payment-slips/${slipId}?err=forbidden`);
+  const signature = String(formData.get("signature") || "");
+  if (!signature) redirect(`/finance/payment-slips/${slipId}?err=sign`);
+  await q(`UPDATE payment_slip SET pi_signed_by=$2, pi_signed_name=$3, pi_signature=$4, pi_signed_at=now(),
+           status=CASE WHEN status='draft' THEN 'approved' ELSE status END WHERE id=$1`,
+    [slipId, user.id, user.name, signature]);
+  await writeAudit({ orgId: s.orgId, userId: user.id, action: "approve", entity: "payment_slip", entityId: slipId, after: { piSigned: true } });
+  revalidatePath(`/finance/payment-slips/${slipId}`);
+}
+
+export async function setSlipStatusAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const slipId = String(formData.get("slipId"));
+  await loadSlip(slipId, orgId);
+  const status = String(formData.get("status") || "");
+  if (!["draft", "approved", "disbursed", "closed"].includes(status)) redirect(`/finance/payment-slips/${slipId}`);
+  await q(`UPDATE payment_slip SET status=$2 WHERE id=$1`, [slipId, status]);
+  await writeAudit({ orgId, userId, action: "update", entity: "payment_slip", entityId: slipId, after: { status } });
+  revalidatePath(`/finance/payment-slips/${slipId}`);
+}
+
+export async function sendSlipSigningLinksAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const slipId = String(formData.get("slipId"));
+  await loadSlip(slipId, orgId);
+  const APP_URL = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "http://localhost:3000";
+  const slip = await one<{ title: string; number: string; currency: string; orgName: string }>(
+    `SELECT s.title, s.number, s.currency, o.name AS "orgName" FROM payment_slip s JOIN organization o ON o.id=s.org_id WHERE s.id=$1`, [slipId]);
+  const payees = await q<{ id: string; name: string; email: string | null; amount: number; token: string; signed: boolean }>(
+    `SELECT id, name, email, amount::float, sign_token AS token, signed FROM payment_slip_payee WHERE slip_id=$1`, [slipId]);
+  let sent = 0;
+  for (const p of payees) {
+    if (!p.email || p.signed || !p.token) continue;
+    const link = `${APP_URL}/sign/${p.token}`;
+    const res = await sendEmail({
+      to: p.email,
+      subject: `Please sign for your payment — ${slip?.title ?? "Payment"} (${slip?.number ?? ""})`,
+      html: `<p>Dear ${p.name},</p>`
+        + `<p>${slip?.orgName ?? "Our organisation"} has prepared a payment of <strong>${slip?.currency ?? ""} ${p.amount.toLocaleString()}</strong> to you under "${slip?.title ?? ""}".</p>`
+        + `<p>Please confirm receipt by signing against your name here — no account or sign-up is needed:</p>`
+        + `<p><a href="${link}">${link}</a></p>`
+        + `<p>Thank you.</p>`,
+    });
+    if (res.status === "sent") { await q(`UPDATE payment_slip_payee SET link_sent_at=now() WHERE id=$1`, [p.id]); sent += 1; }
+    else { await q(`UPDATE payment_slip_payee SET link_sent_at=now() WHERE id=$1`, [p.id]); } // console provider: still mark attempted
+  }
+  redirect(`/finance/payment-slips/${slipId}?sent=${sent}`);
+}
+
+// PUBLIC (no login): a payee signs against their own name via their emailed token.
+export async function recordPayeeSignatureAction(formData: FormData) {
+  const token = String(formData.get("token") || "");
+  const signature = String(formData.get("signature") || "");
+  const signedName = String(formData.get("signedName") || "").trim();
+  if (!token) redirect(`/sign/invalid`);
+  const payee = await one<{ id: string; signed: boolean; name: string }>(
+    `SELECT id, signed, name FROM payment_slip_payee WHERE sign_token=$1`, [token]);
+  if (!payee) redirect(`/sign/${token}?err=notfound`);
+  if (payee.signed) redirect(`/sign/${token}?done=1`);
+  if (!signature) redirect(`/sign/${token}?err=sign`);
+  await q(`UPDATE payment_slip_payee SET signed=true, signature=$2, signed_name=$3, signed_at=now() WHERE id=$1`,
+    [payee.id, signature, signedName || payee.name]);
+  redirect(`/sign/${token}?done=1`);
 }
 
 // Recomputes a requisition's disbursed amount + status from APPROVED vouchers only.

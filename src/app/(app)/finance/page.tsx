@@ -74,6 +74,10 @@ export default async function FinanceHome() {
           <div className="font-display font-semibold">Payment vouchers</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Record payments out; posts to the ledger and feeds reconciliation.</div>
         </Link>
+        <Link href="/finance/payment-slips" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Payment slips</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Bulk or individual payments (airtime, data, transcription) on letterhead — approved &amp; e-signed by each payee.</div>
+        </Link>
         <Link href="/finance/reconcile" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
           <div className="font-display font-semibold">Bank reconciliation</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Match the bank statement against the ledger balance.</div>

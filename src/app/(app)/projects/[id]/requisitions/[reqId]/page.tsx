@@ -66,12 +66,12 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
   const vouchers = await q<{
     id: string; number: string; payee: string; amount: number; method: string; reference: string | null;
     status: string; preparedByName: string | null; preparedBy: string | null;
-    checkedByName: string | null; checkedBy: string | null; approvedByName: string | null;
+    checkedByName: string | null; checkedBy: string | null; approvedByName: string | null; expenditureId: string | null;
   }>(
     `SELECT id, number, payee, amount, method, reference, status,
             prepared_by_name AS "preparedByName", prepared_by AS "preparedBy",
             checked_by_name AS "checkedByName", checked_by AS "checkedBy",
-            approved_by_name AS "approvedByName"
+            approved_by_name AS "approvedByName", expenditure_id AS "expenditureId"
      FROM payment_voucher WHERE requisition_id=$1 ORDER BY created_at`, [reqId]
   );
   // Only APPROVED vouchers represent money actually paid out.
@@ -99,6 +99,14 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
   const canDisburse = access.permissions.has("budget.manage");
   const canApproveVoucher = access.permissions.has("requisitions.sign") || access.permissions.has("requisitions.approve");
   const approved = ["approved", "partially_funded", "disbursed", "retired", "closed"].includes(req.status);
+  // The requisition's linked budget line + its live remaining (planned − spend). Approved
+  // vouchers deduct from this line automatically.
+  const reqLine = req.budgetLineId
+    ? await one<{ code: string; description: string; remaining: number }>(
+        `SELECT bl.code, bl.description,
+                (COALESCE(bl.planned,0) - COALESCE((SELECT SUM(amount) FROM expenditure WHERE budget_line_id=bl.id),0))::float AS remaining
+           FROM budget_line bl WHERE bl.id=$1`, [req.budgetLineId])
+    : null;
   const myPending = approvals.find((a) => a.decision === "pending");
 
   return (
@@ -279,11 +287,14 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
         <div className="card p-4">
           {sp.voucher === "ok" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Voucher prepared. It now needs to be checked, then approved before payment is made.</p>}
           {sp.voucher === "checked" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Voucher checked. It now awaits final approval to release payment.</p>}
-          {sp.voucher === "approved" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Voucher approved — payment released and recorded against the requisition.</p>}
+          {sp.voucher === "approved" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Voucher approved — payment released{req.budgetLineId ? " and deducted from the budget line" : ""}, posted to the ledger and recorded against the requisition.</p>}
           {sp.voucher === "invalid" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>A payee and a positive amount are required.</p>}
           {sp.voucher === "stage" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>That voucher is not at the right stage for this action.</p>}
-          {sp.voucher === "sameprep" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>The person who prepared a voucher can't also check it — ask another finance user.</p>}
-          {sp.voucher === "samecheck" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>The person who checked a voucher can't also approve it — ask an authorised signatory.</p>}
+          {sp.voucher === "sameprep" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>The person who prepared a voucher can&apos;t also check it — ask another finance user.</p>}
+          {sp.voucher === "samecheck" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>The person who checked a voucher can&apos;t also approve it — ask an authorised signatory.</p>}
+          {req.budgetLineId
+            ? <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>Approved vouchers deduct from budget line <strong>{reqLine ? `${reqLine.code} — ${reqLine.description}` : req.budgetLine}</strong>{reqLine ? <> · remaining <strong>{money(reqLine.remaining, c)}</strong></> : null} and post to the ledger automatically.</p>
+            : <p className="text-xs mb-3" style={{ color: "var(--warn)" }}>⚠ No budget line is linked to this requisition. Link one in the requisition details above so approved vouchers deduct from the project budget and post to the ledger automatically.</p>}
           {vouchers.length === 0
             ? <p className="text-sm" style={{ color: "var(--muted)" }}>No vouchers yet. A voucher is prepared per payee, then goes through <strong>Prepared → Checked → Approved</strong>; payment is made (cash or bank) only on approval. The requested amount can be split across several payees or paid partially.</p>
             : (
@@ -303,6 +314,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
                             {v.checkedByName ? <> · Checked: {v.checkedByName}</> : null}
                             {v.approvedByName ? <> · Approved: {v.approvedByName}</> : null}
                           </div>
+                          {v.expenditureId && <div className="text-[11px] mt-0.5" style={{ color: "var(--ok)" }}>✓ deducted from budget line &amp; posted to ledger</div>}
                         </td>
                         <td className="td text-right tabular-nums">{money(v.amount, c)}</td>
                         <td className="td text-right whitespace-nowrap">
@@ -373,7 +385,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
               <Field label="Payee"><input name="payee" defaultValue={req.payee ?? ""} className="input" /></Field>
               <button className="btn btn-primary" type="submit">Record expenditure</button>
             </form>
-            <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>This posts the expenditure against the budget line, releases the commitment, and re-runs anomaly checks.</p>
+            <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>Records that the disbursed advance has been accounted for and releases any remaining commitment. The budget line is deducted automatically when each payment voucher is approved.</p>
           </div>
         </div>
       )}

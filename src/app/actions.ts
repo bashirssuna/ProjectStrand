@@ -1767,6 +1767,28 @@ export async function approveVoucherAction(formData: FormData) {
     [vid, user.id, user.name]);
   // payment is now made — recompute the requisition's disbursed total
   await recomputeDisbursement(reqId);
+  // Deduct the requisition's linked budget line and post the payment to the general
+  // ledger (debit expense, credit cash) so it flows into spending, the financial
+  // statements and audit. Idempotent per voucher via expenditure_id; only when the
+  // requisition has a budget line linked.
+  const ded = await one<{ reqLine: string | null; amount: number; number: string; payee: string; expenditureId: string | null }>(
+    `SELECT r.budget_line_id AS "reqLine", pv.amount::float AS amount, pv.number, pv.payee, pv.expenditure_id AS "expenditureId"
+       FROM payment_voucher pv JOIN requisition r ON r.id=pv.requisition_id WHERE pv.id=$1`, [vid]);
+  if (ded?.reqLine && !ded.expenditureId && ded.amount > 0) {
+    const orgRow = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
+    const expId = id("exp");
+    const today = new Date().toISOString().slice(0, 10);
+    await q(`INSERT INTO expenditure (id, project_id, budget_line_id, requisition_id, amount, date, reference, payee, approved, created_by_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9)`,
+      [expId, projectId, ded.reqLine, reqId, ded.amount, today, ded.number, ded.payee, user.id]);
+    await q(`UPDATE payment_voucher SET expenditure_id=$2, budget_line_id=$3 WHERE id=$1`, [vid, expId, ded.reqLine]);
+    if (orgRow) await postExpenditureToLedger({ orgId: orgRow.orgId, projectId, expenditureId: expId, amount: ded.amount, date: today, reference: ded.number, payee: ded.payee, postedBy: user.id, postedByName: user.name });
+    await writeAudit({ orgId: orgRow?.orgId, userId: user.id, action: "create", entity: "expenditure", entityId: expId, after: { amount: ded.amount, fromVoucher: ded.number, requisition: reqId, budgetLineId: ded.reqLine } });
+    await evaluateProject(projectId);
+    revalidatePath(`/projects/${projectId}/budget`);
+    revalidatePath(`/projects/${projectId}/spending`);
+    revalidatePath(`/finance/statements`);
+  }
   await writeAudit({ userId: user.id, action: "update", entity: "payment_voucher", entityId: vid, after: { status: "approved", paymentMade: true } });
   revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
   redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=approved`);

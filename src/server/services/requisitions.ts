@@ -177,20 +177,31 @@ export async function recordExpenditureForRequisition(input: {
     [input.reqId]
   );
   if (!req || !req.budgetLineId) throw new Error("Requisition has no budget line");
-  const eid = id("exp");
-  await q(
-    `INSERT INTO expenditure (id, project_id, budget_line_id, requisition_id, amount, date, reference, payee, approved, created_by_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-    [eid, req.projectId, req.budgetLineId, input.reqId, input.amount,
-     input.date ?? new Date().toISOString(), input.reference, input.payee ?? null,
-     input.approved ?? true, input.userId]
-  );
-  // release the commitment now that money is actually spent
+  // If the requisition was disbursed via payment vouchers, the budget line was already
+  // deducted (and posted to the ledger) when each voucher was approved. In that case this
+  // accountability step must NOT create a second expenditure or ledger entry — it only
+  // records that the advance has been accounted for and releases any remaining commitment.
+  // Legacy requisitions disbursed without voucher-linked expenditures keep the original
+  // behaviour (the budget line is deducted here).
+  const deductedAtDisbursement = ((await one<{ c: number }>(
+    `SELECT COUNT(*)::int c FROM payment_voucher WHERE requisition_id=$1 AND expenditure_id IS NOT NULL`, [input.reqId]))?.c ?? 0) > 0;
+  let eid = "";
+  if (!deductedAtDisbursement) {
+    eid = id("exp");
+    await q(
+      `INSERT INTO expenditure (id, project_id, budget_line_id, requisition_id, amount, date, reference, payee, approved, created_by_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [eid, req.projectId, req.budgetLineId, input.reqId, input.amount,
+       input.date ?? new Date().toISOString(), input.reference, input.payee ?? null,
+       input.approved ?? true, input.userId]
+    );
+    // Post the expenditure to the general ledger (no-op if GL not enabled).
+    const exOrg = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
+    if (exOrg) await postExpenditureToLedger({ orgId: exOrg.orgId, projectId: req.projectId, expenditureId: eid, amount: input.amount, date: (input.date ?? new Date().toISOString()), reference: input.reference, payee: input.payee ?? null, postedBy: input.userId });
+  }
+  // release the commitment now that money is actually spent/accounted
   await q(`DELETE FROM commitment WHERE budget_line_id=$1 AND note LIKE $2`,
     [req.budgetLineId, `Commitment for ${req.number}%`]);
-  // Post the expenditure to the general ledger (no-op if GL not enabled).
-  const exOrg = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
-  if (exOrg) await postExpenditureToLedger({ orgId: exOrg.orgId, projectId: req.projectId, expenditureId: eid, amount: input.amount, date: (input.date ?? new Date().toISOString()), reference: input.reference, payee: input.payee ?? null, postedBy: input.userId });
   // Accountability: accumulate the accounted amount. Only mark fully retired once
   // the whole disbursed advance has been accounted for (supports partial returns).
   const acct = await one<{ disbursed: number; accounted: number }>(
@@ -201,7 +212,11 @@ export async function recordExpenditureForRequisition(input: {
   await q(`UPDATE requisition SET accounted_amount=$2, status=$3, updated_at=now() WHERE id=$1`,
     [input.reqId, newAccounted, fully ? "retired" : "disbursed"]);
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
-  await writeAudit({ orgId: org?.orgId, userId: input.userId, action: "create", entity: "expenditure", entityId: eid, after: { amount: input.amount, reference: input.reference } });
+  await writeAudit({ orgId: org?.orgId, userId: input.userId,
+    action: deductedAtDisbursement ? "update" : "create",
+    entity: deductedAtDisbursement ? "requisition" : "expenditure",
+    entityId: deductedAtDisbursement ? input.reqId : eid,
+    after: { accountedFor: input.amount, reference: input.reference } });
   await evaluateProject(req.projectId);
   return eid;
 }

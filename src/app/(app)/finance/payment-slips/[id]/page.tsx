@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { requireFinanceOrg } from "../../_guard";
-import { getSlip, getPayees } from "@/server/services/payment-slips";
+import { getSlip, getPayees, linkExpired } from "@/server/services/payment-slips";
 import { PageHeader, SectionTitle, Field, Badge, Empty, Stat } from "@/components/ui";
 import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { SignField } from "@/components/sign-field";
@@ -119,7 +119,9 @@ export default async function SlipDetailPage({ params, searchParams }: {
                   <td className="td">
                     {p.signed && p.signature
                       ? <span title={p.signedAt ? fmtDateTime(p.signedAt) : ""}><img src={p.signature} alt="signature" style={{ maxHeight: 34 }} /></span>
-                      : p.linkSentAt ? <Badge tone="info">link sent</Badge> : <span className="text-xs" style={{ color: "var(--muted)" }}>not signed</span>}
+                      : p.linkSentAt
+                        ? (linkExpired(p.linkSentAt) ? <Badge tone="warn">link expired</Badge> : <Badge tone="info">link sent</Badge>)
+                        : <span className="text-xs" style={{ color: "var(--muted)" }}>not signed</span>}
                   </td>
                   <td className="td text-right">
                     <form action={deleteSlipPayeeAction}><input type="hidden" name="slipId" value={id} /><input type="hidden" name="payeeId" value={p.id} />

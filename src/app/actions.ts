@@ -23,7 +23,7 @@ import { recomputeRollups } from "@/server/services/activities";
 import { evaluateProject } from "@/server/services/anomaly";
 import { ensureStandardCategories } from "@/server/services/budget";
 import { reDenominateProject } from "@/server/services/currency";
-import { newSignToken } from "@/server/services/payment-slips";
+import { newSignToken, linkExpired } from "@/server/services/payment-slips";
 import { writeAudit, notify } from "@/server/services/audit";
 
 /* ---------------- Auth ---------------- */
@@ -1424,10 +1424,11 @@ export async function recordPayeeSignatureAction(formData: FormData) {
   const signature = String(formData.get("signature") || "");
   const signedName = String(formData.get("signedName") || "").trim();
   if (!token) redirect(`/sign/invalid`);
-  const payee = await one<{ id: string; signed: boolean; name: string }>(
-    `SELECT id, signed, name FROM payment_slip_payee WHERE sign_token=$1`, [token]);
+  const payee = await one<{ id: string; signed: boolean; name: string; linkSentAt: string | null }>(
+    `SELECT id, signed, name, link_sent_at AS "linkSentAt" FROM payment_slip_payee WHERE sign_token=$1`, [token]);
   if (!payee) redirect(`/sign/${token}?err=notfound`);
   if (payee.signed) redirect(`/sign/${token}?done=1`);
+  if (linkExpired(payee.linkSentAt)) redirect(`/sign/${token}?err=expired`);
   if (!signature) redirect(`/sign/${token}?err=sign`);
   await q(`UPDATE payment_slip_payee SET signed=true, signature=$2, signed_name=$3, signed_at=now() WHERE id=$1`,
     [payee.id, signature, signedName || payee.name]);

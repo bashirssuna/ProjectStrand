@@ -6,6 +6,13 @@ export function newSignToken(): string {
   return randomBytes(24).toString("hex");
 }
 
+// Signing links are valid for 48 hours from when they are sent to the payee.
+export const SIGN_LINK_TTL_HOURS = 48;
+export function linkExpired(linkSentAt: string | Date | null | undefined): boolean {
+  if (!linkSentAt) return false; // never sent → no clock has started
+  return Date.now() - new Date(linkSentAt).getTime() > SIGN_LINK_TTL_HOURS * 3600 * 1000;
+}
+
 export type SlipRow = {
   id: string; number: string; title: string; category: string | null; slipDate: string;
   currency: string; status: string; project: string | null;
@@ -65,10 +72,14 @@ export async function getPayees(slipId: string): Promise<PayeeRow[]> {
 }
 
 // For the public (no-login) signing page: resolve a token to its payee + slip +
-// letterhead, so the signer sees exactly what they are signing for.
+// letterhead, so the signer sees exactly what they are signing for. Also returns
+// the positions (id + idx only, NO names/amounts/contacts) of the other payees on
+// the same slip, so the document can show the signer's row in context with every
+// other row redacted server-side — their details never reach the page.
 export async function getPayeeByToken(token: string): Promise<{
   payee: PayeeRow; slip: SlipHeader;
   org: { name: string; logoDataUrl: string | null; address: string | null };
+  siblings: { id: string; idx: number }[];
 } | null> {
   const payee = await one<PayeeRow & { slipId: string }>(
     `SELECT id, idx, name, phone, email, designation, payment_for AS "paymentFor", amount::float,
@@ -89,5 +100,8 @@ export async function getPayeeByToken(token: string): Promise<{
   const org = await one<{ name: string; logoDataUrl: string | null; address: string | null }>(
     `SELECT name, logo_data_url AS "logoDataUrl", address FROM organization WHERE id=$1`, [slip.orgId]
   );
-  return { payee, slip, org: org ?? { name: "", logoDataUrl: null, address: null } };
+  const siblings = await q<{ id: string; idx: number }>(
+    `SELECT id, idx FROM payment_slip_payee WHERE slip_id=$1 ORDER BY idx, created_at`, [payee.slipId]
+  );
+  return { payee, slip, org: org ?? { name: "", logoDataUrl: null, address: null }, siblings };
 }

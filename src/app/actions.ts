@@ -1252,38 +1252,208 @@ export async function createStandaloneVoucherAction(formData: FormData) {
   }
   const num = await nextNum(orgId, "payment_voucher", "PV");
   const vid = id("pv");
-  let entryId: string | null = null;
-  try {
+  // Recorded as PREPARED and checked by Finance. It does NOT post to the ledger or
+  // deduct the budget yet — both happen when an assigned approver approves it.
+  await q(`INSERT INTO payment_voucher (id, org_id, project_id, requisition_id, number, voucher_date, payee, amount, method, reference, purpose, account_id, expense_account_id, prepared_by, prepared_by_name, checked_by, checked_by_name, checked_at, status, budget_line_id)
+           VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$13,$14,now(),'prepared',$15)`,
+    [vid, orgId, projectId, num, date, payee, amount, method, reference, purpose, accountId, expenseAccountId, userId, userName, budgetLineId]);
+  await writeAudit({ orgId, userId, action: "create", entity: "payment_voucher", entityId: num, after: { payee, amount, status: "prepared" } });
+  redirect(`/finance/vouchers/${vid}?created=${num}`);
+}
+
+// Loads a voucher in the caller's org or bounces back to the list.
+async function loadVoucher(vid: string, orgId: string): Promise<{ id: string; status: string; projectId: string | null }> {
+  const v = await one<{ id: string; status: string; projectId: string | null }>(
+    `SELECT id, COALESCE(status,'prepared') AS status, project_id AS "projectId" FROM payment_voucher WHERE id=$1 AND org_id=$2`, [vid, orgId]);
+  if (!v) redirect("/finance/vouchers");
+  return v;
+}
+
+// Org admin OR the designated approver may approve/decline a voucher.
+async function canApproveVoucher(userId: string, orgId: string, approverId: string | null): Promise<boolean> {
+  const admin = await one(`SELECT 1 FROM org_membership m JOIN role r ON r.id=m.role_id
+                           WHERE m.org_id=$1 AND m.user_id=$2 AND r.key='org_admin'`, [orgId, userId]);
+  if (admin) return true;
+  return approverId != null && approverId === userId;
+}
+
+// Posts an approved voucher to the ledger and (if linked) records the budget-line
+// expenditure. Each side-effect is independently idempotent (guarded by
+// journal_entry_id / expenditure_id), so it is safe to call more than once.
+async function postApprovedVoucher(vid: string, by: { id: string; name: string }) {
+  const v = await one<{
+    orgId: string; projectId: string | null; budgetLineId: string | null; expenditureId: string | null;
+    journalEntryId: string | null; number: string; payee: string; purpose: string | null;
+    amount: number; date: string; accountId: string | null; expenseAccountId: string | null;
+  }>(`SELECT org_id AS "orgId", project_id AS "projectId", budget_line_id AS "budgetLineId",
+             expenditure_id AS "expenditureId", journal_entry_id AS "journalEntryId", number, payee, purpose,
+             amount::float, COALESCE(voucher_date::text, created_at::text) AS date,
+             account_id AS "accountId", expense_account_id AS "expenseAccountId"
+        FROM payment_voucher WHERE id=$1`, [vid]);
+  if (!v) return;
+  // 1. Post the cash movement (debit expense, credit cash/bank) once.
+  if (!v.journalEntryId && v.accountId && v.expenseAccountId && v.amount > 0) {
     const posted = await postJournal({
-      orgId, entryDate: date, memo: `Voucher ${num} — ${payee}${purpose ? ` · ${purpose}` : ""}`,
-      reference: num, sourceType: "voucher", sourceId: vid, projectId, postedBy: userId, postedByName: userName,
+      orgId: v.orgId, entryDate: v.date.slice(0, 10),
+      memo: `Voucher ${v.number} — ${v.payee}${v.purpose ? ` · ${v.purpose}` : ""}`,
+      reference: v.number, sourceType: "voucher", sourceId: vid, projectId: v.projectId,
+      postedBy: by.id, postedByName: by.name,
       lines: [
-        { accountId: expenseAccountId, debit: amount, description: purpose ?? payee, projectId },
-        { accountId, credit: amount, description: `Payment to ${payee}`, projectId },
+        { accountId: v.expenseAccountId, debit: v.amount, description: v.purpose ?? v.payee, projectId: v.projectId },
+        { accountId: v.accountId, credit: v.amount, description: `Payment to ${v.payee}`, projectId: v.projectId },
       ],
     });
-    entryId = posted.entryId;
-  } catch (e) {
-    redirect(`/finance/vouchers?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`);
+    await q(`UPDATE payment_voucher SET journal_entry_id=$2 WHERE id=$1`, [vid, posted.entryId]);
   }
-  await q(`INSERT INTO payment_voucher (id, org_id, project_id, requisition_id, number, voucher_date, payee, amount, method, reference, purpose, account_id, expense_account_id, journal_entry_id, prepared_by, prepared_by_name, status, budget_line_id)
-           VALUES ($1,$2,$3,NULL,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'paid',$16)`,
-    [vid, orgId, projectId, num, date, payee, amount, method, reference, purpose, accountId, expenseAccountId, entryId, userId, userName, budgetLineId]);
-  await writeAudit({ orgId, userId, action: "create", entity: "payment_voucher", entityId: num, after: { payee, amount } });
-  // Record the budget-line expenditure WITHOUT re-posting to the ledger — the voucher
-  // above already posted the cash movement (debit expense, credit cash).
-  if (budgetLineId && projectId) {
+  // 2. Record the budget-line expenditure once, WITHOUT re-posting to the ledger
+  //    (the entry above already moved the cash). Drives the live budget deduction.
+  if (v.budgetLineId && v.projectId && !v.expenditureId) {
     const expId = id("exp");
     await q(`INSERT INTO expenditure (id, project_id, budget_line_id, amount, date, reference, payee, approved, created_by_id)
              VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8)`,
-      [expId, projectId, budgetLineId, amount, date, num, payee, userId]);
+      [expId, v.projectId, v.budgetLineId, v.amount, v.date.slice(0, 10), v.number, v.payee, by.id]);
     await q(`UPDATE payment_voucher SET expenditure_id=$2 WHERE id=$1`, [vid, expId]);
-    await writeAudit({ orgId, userId, action: "create", entity: "expenditure", entityId: expId, after: { amount, fromVoucher: num, budgetLineId } });
-    await evaluateProject(projectId);
-    revalidatePath(`/projects/${projectId}/budget`);
-    revalidatePath(`/projects/${projectId}/spending`);
+    await writeAudit({ orgId: v.orgId, userId: by.id, action: "create", entity: "expenditure", entityId: expId, after: { amount: v.amount, fromVoucher: v.number, budgetLineId: v.budgetLineId } });
+    await evaluateProject(v.projectId);
+    revalidatePath(`/projects/${v.projectId}/budget`);
+    revalidatePath(`/projects/${v.projectId}/spending`);
   }
-  redirect(`/finance/vouchers?created=${num}`);
+  revalidatePath(`/finance/statements`);
+}
+
+// Finance edits a voucher (only while it is still prepared/declined — once approved
+// and posted it is locked; delete & re-create instead).
+export async function updateVoucherAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const vid = String(formData.get("voucherId"));
+  const cur = await loadVoucher(vid, orgId);
+  if (cur.status === "paid") redirect(`/finance/vouchers/${vid}?err=locked`);
+  const payee = String(formData.get("payee") || "").trim();
+  const amount = Number(formData.get("amount") || 0);
+  const accountId = String(formData.get("accountId") || "");
+  const expenseAccountId = String(formData.get("expenseAccountId") || "");
+  if (!payee || amount <= 0 || !accountId || !expenseAccountId) redirect(`/finance/vouchers/${vid}?err=invalid`);
+  const date = String(formData.get("voucherDate") || new Date().toISOString().slice(0, 10));
+  let projectId = String(formData.get("projectId") || "") || null;
+  const purpose = String(formData.get("purpose") || "") || null;
+  const reference = String(formData.get("reference") || "") || null;
+  const method = String(formData.get("method") || "bank_transfer");
+  const budgetLineId = String(formData.get("budgetLineId") || "") || null;
+  if (budgetLineId) {
+    const line = await one<{ projectId: string }>(
+      `SELECT p.id AS "projectId" FROM budget_line bl JOIN budget b ON b.id=bl.budget_id JOIN project p ON p.id=b.project_id
+       WHERE bl.id=$1 AND p.org_id=$2`, [budgetLineId, orgId]);
+    if (line) projectId = projectId ?? line.projectId;
+  }
+  await q(`UPDATE payment_voucher SET payee=$2, amount=$3, account_id=$4, expense_account_id=$5, voucher_date=$6,
+           project_id=$7, purpose=$8, reference=$9, method=$10, budget_line_id=$11 WHERE id=$1`,
+    [vid, payee, amount, accountId, expenseAccountId, date, projectId, purpose, reference, method, budgetLineId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "payment_voucher", entityId: vid, after: { payee, amount } });
+  redirect(`/finance/vouchers/${vid}?updated=1`);
+}
+
+// Finance deletes a voucher. If it was already approved & posted, reverse its ledger
+// entry and remove its budget expenditure first so the books stay balanced and the
+// budget line is restored.
+export async function deleteVoucherAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const vid = String(formData.get("voucherId"));
+  const v = await one<{ number: string; payee: string; amount: number; status: string; journalEntryId: string | null; expenditureId: string | null; projectId: string | null }>(
+    `SELECT number, payee, amount::float, COALESCE(status,'prepared') AS status, journal_entry_id AS "journalEntryId",
+            expenditure_id AS "expenditureId", project_id AS "projectId" FROM payment_voucher WHERE id=$1 AND org_id=$2`, [vid, orgId]);
+  if (!v) redirect("/finance/vouchers");
+  if (v.journalEntryId) { try { await reverseJournal(orgId, v.journalEntryId, { id: userId, name: userName }); } catch { /* best effort */ } }
+  if (v.expenditureId) {
+    await q(`DELETE FROM expenditure WHERE id=$1`, [v.expenditureId]);
+    if (v.projectId) { await evaluateProject(v.projectId); revalidatePath(`/projects/${v.projectId}/budget`); revalidatePath(`/projects/${v.projectId}/spending`); }
+  }
+  await q(`DELETE FROM payment_voucher WHERE id=$1 AND org_id=$2`, [vid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "payment_voucher", entityId: v.number, before: { payee: v.payee, amount: v.amount, status: v.status } });
+  revalidatePath(`/finance/statements`);
+  redirect(`/finance/vouchers?deleted=${v.number}`);
+}
+
+// Finance designates the approver (any employee) and notifies them to log in.
+export async function assignVoucherApproverAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const vid = String(formData.get("voucherId"));
+  await loadVoucher(vid, orgId);
+  const approverId = String(formData.get("approverId") || "");
+  if (!approverId) redirect(`/finance/vouchers/${vid}?err=approver`);
+  const u = await one<{ name: string }>(`SELECT name FROM app_user WHERE id=$1`, [approverId]);
+  if (!u) redirect(`/finance/vouchers/${vid}?err=approver`);
+  await q(`UPDATE payment_voucher SET approver_id=$2, approver_name=$3 WHERE id=$1`, [vid, approverId, u.name]);
+  const meta = await one<{ payee: string; number: string }>(`SELECT payee, number FROM payment_voucher WHERE id=$1`, [vid]);
+  await notify({
+    orgId, userId: approverId, type: "approval_request",
+    title: `Voucher approval needed: ${meta?.number ?? "payment"}`,
+    body: `You have been asked to approve payment voucher ${meta?.number ?? ""} (payee ${meta?.payee ?? ""}). Please log in to approve or decline.`,
+    link: `/finance/vouchers/${vid}`, email: true,
+  });
+  await writeAudit({ orgId, userId, action: "assign", entity: "payment_voucher", entityId: vid, after: { approverId } });
+  redirect(`/finance/vouchers/${vid}?assigned=1`);
+}
+
+export async function remindVoucherApproverAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const vid = String(formData.get("voucherId"));
+  await loadVoucher(vid, orgId);
+  const v = await one<{ approverId: string | null; payee: string; number: string }>(
+    `SELECT approver_id AS "approverId", payee, number FROM payment_voucher WHERE id=$1`, [vid]);
+  if (v?.approverId) {
+    await notify({
+      orgId, userId: v.approverId, type: "approval_request",
+      title: `Reminder — voucher approval needed: ${v.number}`,
+      body: `Please log in to approve or decline payment voucher ${v.number} (payee ${v.payee}).`,
+      link: `/finance/vouchers/${vid}`, email: true,
+    });
+  }
+  redirect(`/finance/vouchers/${vid}?notified=1`);
+}
+
+// The designated approver (or an org admin) approves & signs a standalone payment
+// voucher. On approval the voucher posts to the ledger and deducts the linked budget line.
+export async function approvePaymentVoucherAction(formData: FormData) {
+  const user = await requireUser();
+  const vid = String(formData.get("voucherId"));
+  const v = await one<{ orgId: string; approverId: string | null; status: string }>(
+    `SELECT org_id AS "orgId", approver_id AS "approverId", COALESCE(status,'prepared') AS status FROM payment_voucher WHERE id=$1`, [vid]);
+  if (!v) redirect("/dashboard");
+  if (!(await canApproveVoucher(user.id, v.orgId, v.approverId))) redirect(`/finance/vouchers/${vid}?err=forbidden`);
+  if (v.status === "paid") redirect(`/finance/vouchers/${vid}`);
+  const signature = String(formData.get("signature") || "") || null;
+  try {
+    await postApprovedVoucher(vid, { id: user.id, name: user.name });
+  } catch (e) {
+    redirect(`/finance/vouchers/${vid}?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`);
+  }
+  await q(`UPDATE payment_voucher SET approved_by=$2, approved_by_name=$3, approved_at=now(),
+           approver_signature=COALESCE($4, approver_signature), status='paid' WHERE id=$1`,
+    [vid, user.id, user.name, signature]);
+  await writeAudit({ orgId: v.orgId, userId: user.id, action: "approve", entity: "payment_voucher", entityId: vid, after: { approved: true } });
+  const prep = await one<{ preparedBy: string | null; number: string }>(`SELECT prepared_by AS "preparedBy", number FROM payment_voucher WHERE id=$1`, [vid]);
+  if (prep?.preparedBy && prep.preparedBy !== user.id) {
+    await notify({ orgId: v.orgId, userId: prep.preparedBy, type: "approval_decision", title: `Voucher ${prep.number} approved`, body: `${user.name} approved voucher ${prep.number}; it has been posted to the ledger.`, link: `/finance/vouchers/${vid}`, email: true });
+  }
+  redirect(`/finance/vouchers/${vid}?approved=1`);
+}
+
+export async function declineVoucherAction(formData: FormData) {
+  const user = await requireUser();
+  const vid = String(formData.get("voucherId"));
+  const v = await one<{ orgId: string; approverId: string | null; status: string }>(
+    `SELECT org_id AS "orgId", approver_id AS "approverId", COALESCE(status,'prepared') AS status FROM payment_voucher WHERE id=$1`, [vid]);
+  if (!v) redirect("/dashboard");
+  if (!(await canApproveVoucher(user.id, v.orgId, v.approverId))) redirect(`/finance/vouchers/${vid}?err=forbidden`);
+  if (v.status === "paid") redirect(`/finance/vouchers/${vid}?err=alreadypaid`);
+  const reason = String(formData.get("reason") || "").trim() || null;
+  await q(`UPDATE payment_voucher SET status='declined', decline_reason=$2 WHERE id=$1`, [vid, reason]);
+  await writeAudit({ orgId: v.orgId, userId: user.id, action: "decline", entity: "payment_voucher", entityId: vid, after: { declined: true, reason, by: user.name } });
+  const prep = await one<{ preparedBy: string | null; number: string }>(`SELECT prepared_by AS "preparedBy", number FROM payment_voucher WHERE id=$1`, [vid]);
+  if (prep?.preparedBy && prep.preparedBy !== user.id) {
+    await notify({ orgId: v.orgId, userId: prep.preparedBy, type: "approval_decision", title: `Voucher ${prep.number} declined`, body: `${user.name} declined voucher ${prep.number}.${reason ? ` Reason: ${reason}` : ""}`, link: `/finance/vouchers/${vid}`, email: true });
+  }
+  redirect(`/finance/vouchers/${vid}?declined=1`);
 }
 
 /* ===================== PAYMENT SLIPS (bulk/individual + e-signing) ===================== */

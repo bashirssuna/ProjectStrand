@@ -7,7 +7,7 @@ import { label } from "@/lib/enums";
 import { createStandaloneVoucherAction } from "@/app/actions";
 import { budgetLineOptions } from "@/server/services/payment-slips";
 
-export default async function VouchersPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string }> }) {
+export default async function VouchersPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string; deleted?: string }> }) {
   const { orgId } = await requireFinanceOrg();
   const sp = await searchParams;
   const c = (await one<{ currency: string }>(`SELECT currency FROM project WHERE org_id=$1 ORDER BY created_at LIMIT 1`, [orgId]))?.currency ?? "USD";
@@ -30,10 +30,11 @@ export default async function VouchersPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="max-w-4xl">
-      <PageHeader title="Payment vouchers" subtitle="Record payments out — these post to the ledger and feed bank reconciliation"
+      <PageHeader title="Payment vouchers" subtitle="Record payments out — a voucher goes to an approver, then posts to the ledger and deducts the budget on approval"
         actions={<div className="flex gap-2"><Link href="/finance/reconcile" className="btn btn-sm">Reconcile →</Link><Link href="/finance" className="btn btn-sm">← Finance</Link></div>} />
 
-      {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Voucher {sp.created} recorded and posted to the ledger.</div>}
+      {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Voucher {sp.created} recorded.</div>}
+      {sp.deleted && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Voucher {sp.deleted} deleted.</div>}
       {sp.err === "invalid" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Enter a payee, a positive amount, and both the cash/bank and expense accounts.</div>}
       {sp.err && sp.err !== "invalid" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{decodeURIComponent(sp.err)}</div>}
 
@@ -45,14 +46,14 @@ export default async function VouchersPage({ searchParams }: { searchParams: Pro
             <tbody>
               {vouchers.map((v) => (
                 <tr key={v.id}>
-                  <td className="td font-mono text-xs">{v.number}</td>
+                  <td className="td font-mono text-xs"><Link href={`/finance/vouchers/${v.id}`} className="hover:underline" style={{ color: "var(--brand)" }}>{v.number}</Link></td>
                   <td className="td whitespace-nowrap">{v.voucherDate ? fmtDate(v.voucherDate) : "—"}</td>
                   <td className="td font-mono text-xs">{v.project ?? "—"}</td>
                   <td className="td">{v.payee}</td>
                   <td className="td">{v.purpose ?? "—"}</td>
                   <td className="td text-right tabular-nums">{money(v.amount, c)}</td>
-                  <td className="td"><Badge tone={v.status === "paid" || v.status === "approved" ? "ok" : "muted"}>{label(v.status)}</Badge></td>
-                  <td className="td text-right"><a href={`/print/voucher/${v.id}`} target="_blank" rel="noopener" className="btn btn-sm">🖨</a></td>
+                  <td className="td"><Badge tone={v.status === "paid" || v.status === "approved" ? "ok" : v.status === "declined" ? "danger" : "muted"}>{label(v.status)}</Badge></td>
+                  <td className="td text-right whitespace-nowrap"><Link href={`/finance/vouchers/${v.id}`} className="btn btn-sm">Open →</Link></td>
                 </tr>
               ))}
             </tbody>
@@ -83,7 +84,10 @@ export default async function VouchersPage({ searchParams }: { searchParams: Pro
           <Field label="Payment method"><select name="method" className="select"><option value="bank_transfer">Bank transfer</option><option value="cheque">Cheque</option><option value="cash">Cash</option><option value="mobile_money">Mobile money</option></select></Field>
           <Field label="Reference / cheque no."><input name="reference" className="input" /></Field>
           <div className="sm:col-span-3"><Field label="Description"><input name="purpose" className="input" placeholder="What the payment is for" /></Field></div>
-          <div className="sm:col-span-3 flex justify-end"><button className="btn btn-primary" type="submit">Record &amp; post voucher</button></div>
+          <div className="sm:col-span-3 flex items-center justify-between gap-3">
+            <span className="text-xs" style={{ color: "var(--muted)" }}>The voucher is recorded as <strong>prepared</strong> and sent to an approver. It posts to the ledger and deducts the budget only after approval.</span>
+            <button className="btn btn-primary" type="submit">Record voucher</button>
+          </div>
         </form>
       )}
     </div>

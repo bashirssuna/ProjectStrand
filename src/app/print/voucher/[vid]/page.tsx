@@ -18,14 +18,14 @@ export default async function PrintVoucherPage({ params }: { params: Promise<{ v
     reference: string | null; purpose: string | null; voucherDate: string; status: string;
     preparedByName: string | null; preparedById: string | null; preparedAt: string;
     checkedByName: string | null; checkedById: string | null; checkedAt: string | null;
-    approvedByName: string | null; approvedById: string | null; approvedAt: string | null;
+    approvedByName: string | null; approvedById: string | null; approvedAt: string | null; approverSignature: string | null;
     reqNumber: string | null; reqTitle: string | null; projectTitle: string | null; projectCode: string | null; currency: string;
   }>(
     `SELECT pv.project_id AS "projectId", COALESCE(pv.org_id, p.org_id) AS "orgId", pv.number, pv.payee, pv.amount, pv.method, pv.reference,
             pv.purpose, COALESCE(pv.voucher_date::text, pv.created_at::text) AS "voucherDate", COALESCE(pv.status,'prepared') AS status,
             pv.prepared_by_name AS "preparedByName", pv.prepared_by AS "preparedById", pv.created_at AS "preparedAt",
             pv.checked_by_name AS "checkedByName", pv.checked_by AS "checkedById", pv.checked_at AS "checkedAt",
-            pv.approved_by_name AS "approvedByName", pv.approved_by AS "approvedById", pv.approved_at AS "approvedAt",
+            pv.approved_by_name AS "approvedByName", pv.approved_by AS "approvedById", pv.approved_at AS "approvedAt", pv.approver_signature AS "approverSignature",
             r.number AS "reqNumber", r.title AS "reqTitle",
             p.title AS "projectTitle", p.code AS "projectCode", COALESCE(p.currency, o.base_currency, 'USD') AS currency
      FROM payment_voucher pv
@@ -52,7 +52,7 @@ export default async function PrintVoucherPage({ params }: { params: Promise<{ v
   const stages = [
     { label: "Prepared by", name: v.preparedByName, at: v.preparedAt, sig: await sigFor(v.preparedById) },
     { label: "Checked by", name: v.checkedByName, at: v.checkedAt, sig: await sigFor(v.checkedById) },
-    { label: "Approved by", name: v.approvedByName, at: v.approvedAt, sig: await sigFor(v.approvedById) },
+    { label: "Approved by", name: v.approvedByName, at: v.approvedAt, sig: v.approverSignature ?? await sigFor(v.approvedById) },
   ];
 
   const lh = await getLetterhead(v.orgId);
@@ -71,7 +71,10 @@ export default async function PrintVoucherPage({ params }: { params: Promise<{ v
         </div>
         <div style={{ textAlign: "center", marginBottom: 14, fontSize: 12 }}>
           Status: <strong>{label(v.status)}</strong>
-          {(v.status === "approved" || v.status === "paid") && v.approvedAt ? <> · Paid on {fmtDate(v.approvedAt)}</> : v.status === "paid" ? <> · Paid</> : <> · <em>payment pending approval</em></>}
+          {v.status === "declined" ? <> · <em>declined</em></>
+            : (v.status === "approved" || v.status === "paid") && v.approvedAt ? <> · Paid on {fmtDate(v.approvedAt)}</>
+            : v.status === "paid" ? <> · Paid</>
+            : <> · <em>payment pending approval</em></>}
         </div>
 
         <table style={{ width: "100%", borderCollapse: "collapse" }}>

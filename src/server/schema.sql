@@ -1732,3 +1732,9 @@ ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS budget_line_id text REFERENCES
 ALTER TABLE payment_slip ADD COLUMN IF NOT EXISTS expenditure_id text;
 ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS budget_line_id text REFERENCES budget_line(id) ON DELETE SET NULL;
 ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS expenditure_id text;
+-- Voucher approval workflow: a chosen employee (not necessarily an admin) approves
+-- or declines; their name/signature link automatically and the budget deducts on approval.
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approver_id text REFERENCES app_user(id) ON DELETE SET NULL;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approver_name text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approver_signature text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS decline_reason text;

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { requireLabOrg } from "../../_guard";
 import { q } from "@/server/db";
 import { ensureSampleTypes, accessibleProjectIds, canSeePII } from "@/server/services/lab";
+import { canCreateProjects } from "@/server/policy";
 import { PageHeader, SectionTitle, Field } from "@/components/ui";
 import { createSampleAction } from "@/app/actions";
 
@@ -19,9 +20,10 @@ export default async function RegisterSample({ searchParams }: { searchParams: P
   );
   const types = await q<{ id: string; category: string; type: string }>(`SELECT id, category, type FROM lab_sample_type WHERE org_id=$1 ORDER BY category, type`, [orgId]);
   const seePII = canSeePII(isOrgAdmin, isSuperAdmin);
+  const canCreate = await canCreateProjects(userId, isSuperAdmin);
 
-  if (projects.length === 0) {
-    return <div><PageHeader title="Register sample" /><div className="card p-4 text-sm" style={{ color: "var(--muted)" }}>You don&apos;t have access to any project yet. Ask an administrator to add you to a project before registering samples.</div></div>;
+  if (projects.length === 0 && !canCreate) {
+    return <div><PageHeader title="Register sample" /><div className="card p-4 text-sm" style={{ color: "var(--muted)" }}>You don&apos;t have access to any project yet, and your role can&apos;t create one. Ask an administrator to add you to a project before registering samples.</div></div>;
   }
   const today = new Date().toISOString().slice(0, 10);
 
@@ -29,7 +31,8 @@ export default async function RegisterSample({ searchParams }: { searchParams: P
     <div className="max-w-3xl">
       <PageHeader title="Register sample" subtitle="Add a biospecimen to the registry" actions={<Link href="/lab/samples" className="btn btn-sm">← Registry</Link>} />
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Sample {decodeURIComponent(sp.created)} registered. Add another below.</div>}
-      {sp.err === "project" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Choose a valid project.</div>}
+      {sp.err === "project" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Choose an existing project or enter a new project name.</div>}
+      {sp.err === "projectperm" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Your role can&apos;t create new projects. Select an existing project instead.</div>}
 
       <form action={createSampleAction} className="space-y-5">
         {/* Participant */}
@@ -49,11 +52,15 @@ export default async function RegisterSample({ searchParams }: { searchParams: P
           <SectionTitle>Sample details</SectionTitle>
           <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>The sample ID is generated automatically as <span className="font-mono">PROJECT-{new Date().getFullYear()}-NNNN</span> when you save.</p>
           <div className="grid sm:grid-cols-2 gap-3">
-            <Field label="Project"><select name="projectId" required defaultValue={sp.projectId ?? (projects[0]?.id ?? "")} className="select">{projects.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.title}</option>)}</select></Field>
+            <Field label="Project (existing)"><select name="projectId" defaultValue={sp.projectId ?? (projects[0]?.id ?? "")} className="select">{projects.length === 0 && <option value="">— none yet —</option>}{projects.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.title}</option>)}</select></Field>
+            {canCreate && <Field label="…or new project name"><input name="newProjectName" className="input" placeholder="Type to register under a new project" /></Field>}
+          </div>
+          {canCreate && <p className="text-xs mt-1 mb-3" style={{ color: "var(--muted)" }}>Enter a new project name to register this sample under a project that doesn&apos;t exist yet — it&apos;s created and used instead of the selection above.</p>}
+          <div className="grid sm:grid-cols-2 gap-3 mt-3">
             <Field label="Sample type"><select name="sampleTypeId" className="select"><option value="">— choose —</option>{types.map((t) => <option key={t.id} value={t.id}>{t.category} · {t.type}</option>)}</select></Field>
+            <Field label="Condition on receipt"><select name="condition" className="select">{CONDITIONS.map((c) => <option key={c} value={c}>{c[0].toUpperCase() + c.slice(1)}</option>)}</select></Field>
             <Field label="Collection date"><input type="date" name="collectionDate" required defaultValue={today} className="input" /></Field>
             <Field label="Collection time"><input name="collectionTime" className="input" placeholder="HH:MM (24h)" /></Field>
-            <Field label="Condition on receipt"><select name="condition" className="select">{CONDITIONS.map((c) => <option key={c} value={c}>{c[0].toUpperCase() + c.slice(1)}</option>)}</select></Field>
           </div>
           <div className="mt-3 grid gap-3">
             <Field label="Abnormalities"><textarea name="abnormalities" rows={2} className="textarea" placeholder="Note any abnormalities (leave blank if none)" /></Field>

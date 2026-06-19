@@ -3972,8 +3972,22 @@ async function requireLabActor() {
 // Register a sample. Creates the participant inline if a new Study ID is supplied,
 // auto-generates the sample code (PROJ-YYYY-NNNN) and the age at collection.
 export async function createSampleAction(formData: FormData) {
-  const { orgId, userId, userName } = await requireLabActor();
-  const projectId = String(formData.get("projectId") || "");
+  const { orgId, userId, userName, isSuperAdmin } = await requireLabActor();
+  // Resolve the project. A manually-entered new project name takes precedence: if a
+  // project with the derived code already exists it is reused, otherwise a lightweight
+  // project is created (only for users allowed to create projects).
+  let projectId = String(formData.get("projectId") || "");
+  const newProjectName = String(formData.get("newProjectName") || "").trim();
+  if (newProjectName) {
+    if (!(await canCreateProjects(userId, isSuperAdmin))) redirect("/lab/samples/new?err=projectperm");
+    const code = (newProjectName.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 24)) || "PROJECT";
+    const existing = await one<{ id: string }>(`SELECT id FROM project WHERE org_id=$1 AND UPPER(code)=$2 LIMIT 1`, [orgId, code]);
+    if (existing) projectId = existing.id;
+    else {
+      const orgCcy = (await one<{ c: string }>(`SELECT base_currency c FROM organization WHERE id=$1`, [orgId]))?.c ?? "USD";
+      projectId = await createProject({ orgId, userId, code, title: newProjectName, currency: orgCcy, addCreatorAsPi: !isSuperAdmin });
+    }
+  }
   if (!projectId || !(await one(`SELECT id FROM project WHERE id=$1 AND org_id=$2`, [projectId, orgId]))) redirect("/lab/samples/new?err=project");
   const collectionDate = String(formData.get("collectionDate") || new Date().toISOString().slice(0, 10));
 

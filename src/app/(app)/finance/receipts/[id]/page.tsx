@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { requireFinanceOrg } from "../../_guard";
 import { q, one } from "@/server/db";
 import { PageHeader, SectionTitle, Field, Badge, Stat } from "@/components/ui";
-import { money, fmtDate } from "@/lib/format";
+import { money, fmtDate, dateInput } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { currencyOptions } from "@/lib/currencies";
 import { ConfirmSubmit } from "@/components/confirm-submit";
@@ -78,7 +78,7 @@ export default async function ReceiptDetailPage({ params, searchParams }: { para
               <select name="incomeAccountId" className="select" defaultValue={r.incomeAccountId ?? ""}><option value="">— default (Grant income) —</option>{incomeAccts.map((a) => <option key={a.id} value={a.id}>{a.code} · {a.name}</option>)}</select>
             </Field>
             <Field label="Method"><select name="method" className="select" defaultValue={r.method}><option value="bank_transfer">Bank transfer</option><option value="mobile_money">Mobile money</option><option value="cheque">Cheque</option><option value="cash">Cash</option></select></Field>
-            <Field label="Date"><input type="date" name="receiptDate" defaultValue={r.receiptDate.slice(0, 10)} className="input" /></Field>
+            <Field label="Date"><input type="date" name="receiptDate" defaultValue={dateInput(r.receiptDate)} className="input" /></Field>
             <Field label="Reference"><input name="reference" defaultValue={r.reference ?? ""} className="input" /></Field>
             <Field label="Note"><input name="note" defaultValue={r.note ?? ""} className="input" /></Field>
             <div className="sm:col-span-2 flex justify-end"><button className="btn btn-primary" type="submit">Save changes</button></div>

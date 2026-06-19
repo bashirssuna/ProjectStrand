@@ -1759,3 +1759,82 @@ ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS authorised_by text;
 ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS authorised_by_name text;
 ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS authorised_signature text;
 ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS authorised_at timestamptz;
+
+-- ===================== Laboratory (LIMS) =====================
+-- Participant master index. Names are PII and masked from unauthorised roles.
+CREATE TABLE IF NOT EXISTS lab_participant (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  study_id text NOT NULL,
+  name text,
+  date_of_birth date,
+  sex text,
+  enrollment_date date NOT NULL DEFAULT CURRENT_DATE,
+  consent_status text NOT NULL DEFAULT 'valid', -- valid | expired | withdrawn
+  withdrawal_date date,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, study_id)
+);
+-- Sample type taxonomy (Category -> Type -> Sub-type) seeded per org.
+CREATE TABLE IF NOT EXISTS lab_sample_type (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  category text NOT NULL,
+  type text NOT NULL,
+  sub_type text,
+  default_temp text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Core sample registry. Each sample is scoped to a project (and org); aliquots point
+-- to their parent via parent_sample_id.
+CREATE TABLE IF NOT EXISTS lab_sample (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  sample_code text NOT NULL,             -- PROJ-YYYY-NNNN
+  parent_sample_id text REFERENCES lab_sample(id) ON DELETE SET NULL,
+  participant_id text REFERENCES lab_participant(id) ON DELETE SET NULL,
+  sample_type_id text REFERENCES lab_sample_type(id) ON DELETE SET NULL,
+  age_years int, age_months int,
+  collection_date date NOT NULL,
+  collection_time text,
+  date_aliquoted date,
+  number_of_aliquots int NOT NULL DEFAULT 0,
+  aliquot_volume double precision,
+  aliquot_unit text NOT NULL DEFAULT 'µL',
+  quantity_remaining double precision,   -- current volume/count on hand
+  storage_room text, storage_equipment text, storage_rack text,
+  storage_shelf text, storage_box text, storage_position text,
+  date_stored date, storage_temp text,
+  stored_by_id text, stored_by_name text,
+  condition_on_receipt text DEFAULT 'intact',
+  abnormalities text, comments text,
+  status text NOT NULL DEFAULT 'active', -- active | depleted | quarantined | in_transit | disposed
+  disposal_date date, disposal_method text, disposal_reason text, disposal_witness text,
+  disposed_by_id text, disposed_by_name text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, sample_code)
+);
+-- Retrieval / chain-of-custody log: each removal (and optional return) of a sample.
+CREATE TABLE IF NOT EXISTS lab_retrieval (
+  id text PRIMARY KEY,
+  sample_id text NOT NULL REFERENCES lab_sample(id) ON DELETE CASCADE,
+  date_retrieved timestamptz NOT NULL DEFAULT now(),
+  quantity_removed double precision,
+  quantity_remaining double precision,
+  purpose text, destination text, new_shelf text,
+  retrieved_by_id text, retrieved_by_name text,
+  authorized_by_id text, authorized_by_name text,
+  returned_date timestamptz, returned_to_shelf text, temp_exposure_minutes int,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+-- PII access audit: every reveal of a participant's name.
+CREATE TABLE IF NOT EXISTS lab_pii_access (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  user_id text, user_name text,
+  participant_id text, sample_id text,
+  accessed_at timestamptz NOT NULL DEFAULT now()
+);

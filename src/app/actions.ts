@@ -3957,3 +3957,146 @@ export async function addDepartmentFromAccessAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "create", entity: "department", entityId: name, after: { name } });
   redirect("/organization/access?dept=added");
 }
+
+/* ============================ Laboratory (LIMS) ============================ */
+import { nextSampleCode, calcAge, canSeePII } from "@/server/services/lab";
+
+// Resolve the org for the current user (any member), returning admin status too.
+async function requireLabActor() {
+  const user = await requireUser();
+  const org = await getUserOrg(user.id);
+  if (!org) redirect("/dashboard");
+  return { orgId: org.id, userId: user.id, userName: user.name, isOrgAdmin: !!org.isOrgAdmin, isSuperAdmin: !!user.isSuperAdmin };
+}
+
+// Register a sample. Creates the participant inline if a new Study ID is supplied,
+// auto-generates the sample code (PROJ-YYYY-NNNN) and the age at collection.
+export async function createSampleAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireLabActor();
+  const projectId = String(formData.get("projectId") || "");
+  if (!projectId || !(await one(`SELECT id FROM project WHERE id=$1 AND org_id=$2`, [projectId, orgId]))) redirect("/lab/samples/new?err=project");
+  const collectionDate = String(formData.get("collectionDate") || new Date().toISOString().slice(0, 10));
+
+  // Resolve / create participant from Study ID.
+  let participantId: string | null = null;
+  let dob: string | null = null;
+  const studyId = String(formData.get("studyId") || "").trim();
+  if (studyId) {
+    const existing = await one<{ id: string; dob: string | null }>(`SELECT id, date_of_birth AS dob FROM lab_participant WHERE org_id=$1 AND study_id=$2`, [orgId, studyId]);
+    if (existing) { participantId = existing.id; dob = existing.dob; }
+    else {
+      const pid = id("lpar");
+      dob = String(formData.get("participantDob") || "") || null;
+      await q(`INSERT INTO lab_participant (id, org_id, study_id, name, date_of_birth, sex) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [pid, orgId, studyId, String(formData.get("participantName") || "") || null, dob, String(formData.get("participantSex") || "") || null]);
+      participantId = pid;
+    }
+  }
+  const age = calcAge(dob, collectionDate);
+
+  const numAliquots = Number(formData.get("numberOfAliquots") || 0);
+  const aliquotVolume = formData.get("aliquotVolume") ? Number(formData.get("aliquotVolume")) : null;
+  // Starting quantity on hand: total volume if volume-based, else the aliquot count.
+  const startQty = aliquotVolume != null ? aliquotVolume * Math.max(numAliquots, 1) : (numAliquots > 0 ? numAliquots : null);
+
+  const sampleId = id("lsmp");
+  const code = await nextSampleCode(projectId);
+  await q(`INSERT INTO lab_sample (id, org_id, project_id, sample_code, participant_id, sample_type_id, age_years, age_months,
+             collection_date, collection_time, date_aliquoted, number_of_aliquots, aliquot_volume, aliquot_unit, quantity_remaining,
+             storage_room, storage_equipment, storage_rack, storage_shelf, storage_box, storage_position, date_stored, storage_temp,
+             stored_by_id, stored_by_name, condition_on_receipt, abnormalities, comments, status, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,'active',$29,$30)`,
+    [sampleId, orgId, projectId, code, participantId, String(formData.get("sampleTypeId") || "") || null,
+     age.years, age.months, collectionDate, String(formData.get("collectionTime") || "") || null,
+     String(formData.get("dateAliquoted") || "") || null, numAliquots, aliquotVolume, String(formData.get("aliquotUnit") || "µL"), startQty,
+     String(formData.get("storageRoom") || "") || null, String(formData.get("storageEquipment") || "") || null,
+     String(formData.get("storageRack") || "") || null, String(formData.get("storageShelf") || "") || null,
+     String(formData.get("storageBox") || "") || null, String(formData.get("storagePosition") || "") || null,
+     String(formData.get("dateStored") || "") || null, String(formData.get("storageTemp") || "") || null,
+     userId, userName, String(formData.get("condition") || "intact"),
+     String(formData.get("abnormalities") || "") || null, String(formData.get("comments") || "") || null,
+     userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "lab_sample", entityId: code, after: { projectId, studyId: studyId || null } });
+  if (formData.get("another") === "1") redirect(`/lab/samples/new?created=${encodeURIComponent(code)}&projectId=${projectId}`);
+  redirect(`/lab/samples/${sampleId}?created=1`);
+}
+
+// Log a retrieval (removal) of sample material. Blocks if consent is withdrawn; updates
+// the quantity on hand and marks the sample depleted when it reaches zero.
+export async function retrieveSampleAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireLabActor();
+  const sid = String(formData.get("sampleId") || "");
+  const s = await one<{ id: string; status: string; qty: number | null; consent: string | null; code: string }>(
+    `SELECT s.id, s.status, s.quantity_remaining AS qty, pa.consent_status AS consent, s.sample_code AS code
+     FROM lab_sample s LEFT JOIN lab_participant pa ON pa.id=s.participant_id WHERE s.id=$1 AND s.org_id=$2`, [sid, orgId]);
+  if (!s) redirect("/lab/samples");
+  if (s.status === "disposed") redirect(`/lab/samples/${sid}?err=disposed`);
+  if (s.consent === "withdrawn") redirect(`/lab/samples/${sid}?err=consent`);
+  const removed = formData.get("quantityRemoved") ? Number(formData.get("quantityRemoved")) : null;
+  const remaining = s.qty != null && removed != null ? Math.max(0, s.qty - removed) : s.qty;
+  await q(`INSERT INTO lab_retrieval (id, sample_id, date_retrieved, quantity_removed, quantity_remaining, purpose, destination, retrieved_by_id, retrieved_by_name, authorized_by_id, authorized_by_name)
+           VALUES ($1,$2,now(),$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [id("lret"), sid, removed, remaining, String(formData.get("purpose") || "") || null, String(formData.get("destination") || "") || null,
+     userId, userName, String(formData.get("authorizedById") || "") || null, String(formData.get("authorizedByName") || "") || null]);
+  const depleted = remaining != null && remaining <= 0;
+  await q(`UPDATE lab_sample SET quantity_remaining=$2, status=CASE WHEN $3 THEN 'depleted' ELSE status END, updated_at=now() WHERE id=$1`,
+    [sid, remaining, depleted]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_sample", entityId: s.code, after: { retrieved: removed, remaining, depleted } });
+  redirect(`/lab/samples/${sid}?retrieved=1`);
+}
+
+// Record the return of a sample to storage (closes the latest open retrieval).
+export async function returnSampleAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireLabActor();
+  const sid = String(formData.get("sampleId") || "");
+  const s = await one<{ code: string }>(`SELECT sample_code AS code FROM lab_sample WHERE id=$1 AND org_id=$2`, [sid, orgId]);
+  if (!s) redirect("/lab/samples");
+  const open = await one<{ id: string }>(`SELECT id FROM lab_retrieval WHERE sample_id=$1 AND returned_date IS NULL ORDER BY date_retrieved DESC LIMIT 1`, [sid]);
+  const shelf = String(formData.get("returnedToShelf") || "") || null;
+  if (open) {
+    await q(`UPDATE lab_retrieval SET returned_date=now(), returned_to_shelf=$2, temp_exposure_minutes=$3 WHERE id=$1`,
+      [open.id, shelf, formData.get("tempExposureMinutes") ? Number(formData.get("tempExposureMinutes")) : null]);
+  }
+  if (shelf) await q(`UPDATE lab_sample SET storage_shelf=$2, updated_at=now() WHERE id=$1`, [sid, shelf]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_sample", entityId: s.code, after: { returned: true, by: userName } });
+  redirect(`/lab/samples/${sid}?returned=1`);
+}
+
+// Dispose of a sample (lab managers only). Reason + witness are required and retained.
+export async function disposeSampleAction(formData: FormData) {
+  const { orgId, userId, userName, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  if (!(isOrgAdmin || isSuperAdmin)) redirect("/lab/samples?err=forbidden");
+  const sid = String(formData.get("sampleId") || "");
+  const s = await one<{ code: string }>(`SELECT sample_code AS code FROM lab_sample WHERE id=$1 AND org_id=$2`, [sid, orgId]);
+  if (!s) redirect("/lab/samples");
+  const reason = String(formData.get("reason") || "").trim();
+  if (!reason) redirect(`/lab/samples/${sid}?err=reason`);
+  await q(`UPDATE lab_sample SET status='disposed', disposal_date=CURRENT_DATE, disposal_method=$2, disposal_reason=$3, disposal_witness=$4, disposed_by_id=$5, disposed_by_name=$6, updated_at=now() WHERE id=$1`,
+    [sid, String(formData.get("method") || "") || null, reason, String(formData.get("witness") || "") || null, userId, userName]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_sample", entityId: s.code, before: { status: "active" }, after: { status: "disposed", reason } });
+  redirect(`/lab/samples/${sid}?disposed=1`);
+}
+
+// Update consent status for a participant (e.g. record a withdrawal). Lab managers only.
+export async function updateConsentAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  const sid = String(formData.get("sampleId") || "");
+  if (!(isOrgAdmin || isSuperAdmin)) redirect(`/lab/samples/${sid}?err=forbidden`);
+  const participantId = String(formData.get("participantId") || "");
+  const status = String(formData.get("consentStatus") || "valid");
+  if (!participantId) redirect(`/lab/samples/${sid}`);
+  await q(`UPDATE lab_participant SET consent_status=$2, withdrawal_date=CASE WHEN $2='withdrawn' THEN CURRENT_DATE ELSE withdrawal_date END WHERE id=$1 AND org_id=$3`, [participantId, status, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_participant", entityId: participantId, after: { consentStatus: status } });
+  redirect(`/lab/samples/${sid}?consent=1`);
+}
+
+// Reveal a participant's name (lab managers only) and log the PII access.
+export async function revealParticipantNameAction(formData: FormData) {
+  const { orgId, userId, userName, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  const sid = String(formData.get("sampleId") || "");
+  if (!canSeePII(isOrgAdmin, isSuperAdmin)) redirect(`/lab/samples/${sid}?err=forbidden`);
+  const participantId = String(formData.get("participantId") || "") || null;
+  await q(`INSERT INTO lab_pii_access (id, org_id, user_id, user_name, participant_id, sample_id) VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id("lpii"), orgId, userId, userName, participantId, sid]);
+  redirect(`/lab/samples/${sid}?reveal=1`);
+}

@@ -54,6 +54,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <nav className="p-3 space-y-1 overflow-y-auto">
             <NavLink href="/dashboard">▣ Dashboard</NavLink>
             <NavLink href="/projects">❏ Projects</NavLink>
+            <NavLink href="/lab">⚗ Laboratory</NavLink>
             {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/subawards">⤳ Sub-awards</NavLink>}
             {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/collaborations">⚘ Collaborations</NavLink>}
 

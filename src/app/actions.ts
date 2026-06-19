@@ -3959,7 +3959,7 @@ export async function addDepartmentFromAccessAction(formData: FormData) {
 }
 
 /* ============================ Laboratory (LIMS) ============================ */
-import { nextSampleCode, calcAge, canSeePII } from "@/server/services/lab";
+import { nextSampleCode, calcAge, canSeePII, accessibleProjectIds } from "@/server/services/lab";
 
 // Resolve the org for the current user (any member), returning admin status too.
 async function requireLabActor() {
@@ -4123,4 +4123,112 @@ export async function revealParticipantNameAction(formData: FormData) {
   await q(`INSERT INTO lab_pii_access (id, org_id, user_id, user_name, participant_id, sample_id) VALUES ($1,$2,$3,$4,$5,$6)`,
     [id("lpii"), orgId, userId, userName, participantId, sid]);
   redirect(`/lab/samples/${sid}?reveal=1`);
+}
+
+// Edit a sample record. Computes a field-level diff and records a single audit entry
+// (before/after) so every change to a sample is traceable. Blocked once disposed.
+export async function editSampleAction(formData: FormData) {
+  const { orgId, userId, userName, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  const sid = String(formData.get("sampleId") || "");
+  const isAdmin = isOrgAdmin || isSuperAdmin;
+  const s = await one<{
+    code: string; projectId: string; status: string; sampleTypeId: string | null; typeName: string | null; participantId: string | null;
+    collectionDate: string | null; collectionTime: string | null; dateAliquoted: string | null; numberOfAliquots: number; aliquotVolume: number | null; aliquotUnit: string;
+    condition: string | null; abnormalities: string | null; comments: string | null;
+    room: string | null; equipment: string | null; rack: string | null; shelf: string | null; box: string | null; position: string | null; dateStored: string | null; storageTemp: string | null;
+    pName: string | null; dob: string | null; pSex: string | null;
+  }>(
+    `SELECT s.sample_code AS code, s.project_id AS "projectId", s.status, s.sample_type_id AS "sampleTypeId", st.type AS "typeName", s.participant_id AS "participantId",
+            s.collection_date::text AS "collectionDate", s.collection_time AS "collectionTime", s.date_aliquoted::text AS "dateAliquoted", s.number_of_aliquots AS "numberOfAliquots",
+            s.aliquot_volume AS "aliquotVolume", s.aliquot_unit AS "aliquotUnit", s.condition_on_receipt AS condition, s.abnormalities, s.comments,
+            s.storage_room AS room, s.storage_equipment AS equipment, s.storage_rack AS rack, s.storage_shelf AS shelf, s.storage_box AS box, s.storage_position AS position,
+            s.date_stored::text AS "dateStored", s.storage_temp AS "storageTemp", pa.name AS "pName", pa.date_of_birth::text AS dob, pa.sex AS "pSex"
+     FROM lab_sample s LEFT JOIN lab_sample_type st ON st.id=s.sample_type_id LEFT JOIN lab_participant pa ON pa.id=s.participant_id
+     WHERE s.id=$1 AND s.org_id=$2`, [sid, orgId]
+  );
+  if (!s) redirect("/lab/samples");
+  if (!isAdmin) { const ids = await accessibleProjectIds(userId, orgId, false); if (!ids.includes(s.projectId)) redirect("/lab/samples"); }
+  if (s.status === "disposed") redirect(`/lab/samples/${sid}?err=disposed`);
+
+  const orNull = (v: FormDataEntryValue | null) => { const x = String(v ?? "").trim(); return x || null; };
+  const numOrNull = (v: FormDataEntryValue | null) => { const x = String(v ?? "").trim(); return x ? Number(x) : null; };
+
+  // Resolve sample type (dropdown or typed custom — found/created under "Other").
+  let sampleTypeId = String(formData.get("sampleTypeId") || "") || null;
+  const newType = String(formData.get("newSampleType") || "").trim();
+  if (newType) {
+    const ex = await one<{ id: string }>(`SELECT id FROM lab_sample_type WHERE org_id=$1 AND LOWER(type)=LOWER($2) LIMIT 1`, [orgId, newType]);
+    if (ex) sampleTypeId = ex.id;
+    else { const tid = id("lst"); await q(`INSERT INTO lab_sample_type (id, org_id, category, type) VALUES ($1,$2,'Other',$3)`, [tid, orgId, newType]); sampleTypeId = tid; }
+  }
+  const newTypeName = sampleTypeId ? ((await one<{ type: string }>(`SELECT type FROM lab_sample_type WHERE id=$1`, [sampleTypeId]))?.type ?? null) : null;
+
+  const collectionDate = String(formData.get("collectionDate") || s.collectionDate || new Date().toISOString().slice(0, 10));
+  const collectionTime = orNull(formData.get("collectionTime"));
+  const dateAliquoted = orNull(formData.get("dateAliquoted"));
+  const numberOfAliquots = Number(formData.get("numberOfAliquots") || 0);
+  const aliquotVolume = numOrNull(formData.get("aliquotVolume"));
+  const aliquotUnit = String(formData.get("aliquotUnit") || s.aliquotUnit || "µL");
+  const condition = String(formData.get("condition") || s.condition || "intact");
+  const abnormalities = orNull(formData.get("abnormalities"));
+  const comments = orNull(formData.get("comments"));
+  const room = orNull(formData.get("storageRoom")), equipment = orNull(formData.get("storageEquipment")), rack = orNull(formData.get("storageRack"));
+  const shelf = orNull(formData.get("storageShelf")), box = orNull(formData.get("storageBox")), position = orNull(formData.get("storagePosition"));
+  const dateStored = orNull(formData.get("dateStored")), storageTemp = orNull(formData.get("storageTemp"));
+  // Status edit is limited to active <-> quarantined (depleted / in_transit / disposed are action-driven).
+  const formStatus = String(formData.get("status") || s.status);
+  const editable = (x: string) => x === "active" || x === "quarantined";
+  const newStatus = editable(s.status) && editable(formStatus) ? formStatus : s.status;
+
+  // Participant fields (only when a participant is linked).
+  const pName = s.participantId ? orNull(formData.get("participantName")) : s.pName;
+  const newDob = s.participantId ? orNull(formData.get("participantDob")) : s.dob;
+  const pSex = s.participantId ? orNull(formData.get("participantSex")) : s.pSex;
+  const age = calcAge(s.participantId ? newDob : s.dob, collectionDate);
+
+  // Build a readable diff.
+  const changes: { k: string; from: string; to: string }[] = [];
+  const track = (label: string, oldV: unknown, newV: unknown) => {
+    const o = oldV == null || oldV === "" ? "" : String(oldV);
+    const n = newV == null || newV === "" ? "" : String(newV);
+    if (o !== n) changes.push({ k: label, from: o || "—", to: n || "—" });
+  };
+  track("Sample type", s.typeName, newTypeName);
+  track("Collection date", s.collectionDate, collectionDate);
+  track("Collection time", s.collectionTime, collectionTime);
+  track("Date aliquoted", s.dateAliquoted, dateAliquoted);
+  track("No. of aliquots", s.numberOfAliquots, numberOfAliquots);
+  track("Volume each", s.aliquotVolume, aliquotVolume);
+  track("Aliquot unit", s.aliquotUnit, aliquotUnit);
+  track("Condition", s.condition, condition);
+  track("Abnormalities", s.abnormalities, abnormalities);
+  track("Comments", s.comments, comments);
+  track("Storage room", s.room, room);
+  track("Freezer/equipment", s.equipment, equipment);
+  track("Rack", s.rack, rack);
+  track("Shelf", s.shelf, shelf);
+  track("Box", s.box, box);
+  track("Position", s.position, position);
+  track("Date stored", s.dateStored, dateStored);
+  track("Storage temp", s.storageTemp, storageTemp);
+  track("Status", s.status, newStatus);
+  if (s.participantId) { track("Participant name", s.pName, pName); track("Date of birth", s.dob, newDob); track("Sex", s.pSex, pSex); }
+
+  await q(`UPDATE lab_sample SET sample_type_id=$2, collection_date=$3, collection_time=$4, date_aliquoted=$5, number_of_aliquots=$6, aliquot_volume=$7, aliquot_unit=$8,
+             condition_on_receipt=$9, abnormalities=$10, comments=$11, storage_room=$12, storage_equipment=$13, storage_rack=$14, storage_shelf=$15, storage_box=$16, storage_position=$17,
+             date_stored=$18, storage_temp=$19, age_years=$20, age_months=$21, status=$22, updated_at=now() WHERE id=$1`,
+    [sid, sampleTypeId, collectionDate, collectionTime, dateAliquoted, numberOfAliquots, aliquotVolume, aliquotUnit, condition, abnormalities, comments,
+     room, equipment, rack, shelf, box, position, dateStored, storageTemp, age.years, age.months, newStatus]);
+  if (s.participantId && (s.pName !== pName || s.dob !== newDob || s.pSex !== pSex)) {
+    await q(`UPDATE lab_participant SET name=$2, date_of_birth=$3, sex=$4 WHERE id=$1 AND org_id=$5`, [s.participantId, pName, newDob, pSex, orgId]);
+  }
+  if (changes.length > 0) {
+    await writeAudit({
+      orgId, userId, action: "update", entity: "lab_sample", entityId: s.code,
+      before: Object.fromEntries(changes.map((c) => [c.k, c.from])),
+      after: Object.fromEntries(changes.map((c) => [c.k, c.to])),
+      meta: { editedBy: userName, fields: changes.length },
+    });
+  }
+  redirect(`/lab/samples/${sid}?edited=${changes.length > 0 ? changes.length : 0}`);
 }

@@ -8,7 +8,7 @@ import { fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { retrieveSampleAction, returnSampleAction, disposeSampleAction, revealParticipantNameAction, updateConsentAction } from "@/app/actions";
 
-type SP = { reveal?: string; retrieved?: string; returned?: string; disposed?: string; consent?: string; err?: string };
+type SP = { reveal?: string; retrieved?: string; returned?: string; disposed?: string; consent?: string; edited?: string; err?: string };
 
 export default async function SampleDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<SP> }) {
   const { id } = await params;
@@ -53,6 +53,25 @@ export default async function SampleDetail({ params, searchParams }: { params: P
     `SELECT id, date_retrieved AS "dateRetrieved", quantity_removed AS "quantityRemoved", quantity_remaining AS "quantityRemaining", purpose, destination, retrieved_by_name AS "retrievedByName", authorized_by_name AS "authorizedByName", returned_date AS "returnedDate", returned_to_shelf AS "returnedToShelf" FROM lab_retrieval WHERE sample_id=$1 ORDER BY date_retrieved ASC`, [id]
   );
 
+  // Change history (audit trail) for this sample record.
+  const history = await q<{ action: string; actor: string | null; createdAt: string; before: string | null; after: string | null; meta: string | null }>(
+    `SELECT a.action, a.created_at AS "createdAt", a.before, a.after, a.meta, u.name AS actor
+     FROM audit_log a LEFT JOIN app_user u ON u.id=a.user_id
+     WHERE a.entity='lab_sample' AND a.entity_id=$1 ORDER BY a.created_at DESC`, [s.code]
+  );
+  const parse = (j: string | null): Record<string, unknown> | null => { if (!j) return null; try { const v = JSON.parse(j); return v && typeof v === "object" ? v as Record<string, unknown> : null; } catch { return null; } };
+  const histRows = history.map((h) => {
+    const before = parse(h.before), after = parse(h.after), meta = parse(h.meta);
+    let title = "Updated";
+    if (h.action === "create") title = "Registered";
+    else if (meta && "fields" in meta) title = "Edited";
+    else if (after && "retrieved" in after) title = "Retrieved";
+    else if (after && "returned" in after) title = "Returned to storage";
+    else if (after && after["status"] === "disposed") title = "Disposed";
+    const isEdit = title === "Edited" && before && after;
+    return { title, actor: h.actor, createdAt: h.createdAt, before, after, isEdit };
+  });
+
   const revealed = seePII && sp.reveal === "1";
   const nameDisplay = revealed ? (s.participantName ?? "—") : maskName(s.participantName, false);
   const storagePath = [s.room, s.equipment, s.rack, s.shelf, s.box, s.position].filter(Boolean).join(" / ") || "Not stored";
@@ -73,7 +92,8 @@ export default async function SampleDetail({ params, searchParams }: { params: P
 
   return (
     <div className="max-w-5xl">
-      <PageHeader title={s.code} subtitle={`${s.typeName ?? "Sample"}${s.projectCode ? ` · ${s.projectCode}` : ""}`} actions={<Link href="/lab/samples" className="btn btn-sm">← Registry</Link>} />
+      <PageHeader title={s.code} subtitle={`${s.typeName ?? "Sample"}${s.projectCode ? ` · ${s.projectCode}` : ""}`} actions={<div className="flex gap-2">{!disposed && <Link href={`/lab/samples/${s.id}/edit`} className="btn btn-sm">Edit</Link>}<Link href="/lab/samples" className="btn btn-sm">← Registry</Link></div>} />
+      {sp.edited && (sp.edited === "0" ? <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)" }}>No changes to save.</div> : <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved {sp.edited} change{sp.edited === "1" ? "" : "s"} — recorded in the history below.</div>)}
       {sp.retrieved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Retrieval logged.</div>}
       {sp.returned && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Return to storage recorded.</div>}
       {sp.disposed && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Sample disposed.</div>}
@@ -208,6 +228,39 @@ export default async function SampleDetail({ params, searchParams }: { params: P
               ))}
             </ol>
           </div>
+        </div>
+      </div>
+
+      {/* Change history (audit trail) */}
+      <div className="mt-5">
+        <SectionTitle>Change history</SectionTitle>
+        <div className="card p-4">
+          {histRows.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No history yet.</p> : (
+            <ol className="space-y-4">
+              {histRows.map((h, i) => (
+                <li key={i} className="relative pl-5">
+                  <span style={{ position: "absolute", left: 0, top: 4, width: 9, height: 9, borderRadius: "50%", background: h.title === "Disposed" ? "var(--danger)" : h.title === "Edited" ? "var(--info)" : h.title === "Retrieved" ? "var(--warn)" : "var(--brand)" }} />
+                  {i < histRows.length - 1 && <span style={{ position: "absolute", left: 4, top: 13, bottom: -16, width: 1, background: "var(--border)" }} />}
+                  <div className="text-sm font-medium">{h.title}</div>
+                  <div className="text-xs" style={{ color: "var(--muted)" }}>{fmtDateTime(h.createdAt)}{h.actor ? ` · ${h.actor}` : ""}</div>
+                  {h.isEdit && h.after ? (
+                    <ul className="mt-1 space-y-0.5">
+                      {Object.keys(h.after).map((k) => (
+                        <li key={k} className="text-xs">
+                          <span style={{ color: "var(--muted)" }}>{k}: </span>
+                          <span style={{ textDecoration: "line-through", color: "var(--muted)" }}>{String((h.before as Record<string, unknown>)?.[k] ?? "—")}</span>
+                          <span style={{ color: "var(--muted)" }}> → </span>
+                          <span>{String((h.after as Record<string, unknown>)[k] ?? "—")}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (h.after && Object.keys(h.after).length > 0 ? (
+                    <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>{Object.entries(h.after).map(([k, v]) => `${k}: ${String(v)}`).join(" · ")}</div>
+                  ) : null)}
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
       </div>
     </div>

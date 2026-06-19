@@ -58,10 +58,12 @@ export default async function RegisterSample({ searchParams }: { searchParams: P
           {canCreate && <p className="text-xs mt-1 mb-3" style={{ color: "var(--muted)" }}>Enter a new project name to register this sample under a project that doesn&apos;t exist yet — it&apos;s created and used instead of the selection above.</p>}
           <div className="grid sm:grid-cols-2 gap-3 mt-3">
             <Field label="Sample type"><select name="sampleTypeId" className="select"><option value="">— choose —</option>{types.map((t) => <option key={t.id} value={t.id}>{t.category} · {t.type}</option>)}</select></Field>
+            <Field label="…or new sample type"><input name="newSampleType" className="input" placeholder="e.g. Semen, Sputum, Swab…" /></Field>
             <Field label="Condition on receipt"><select name="condition" className="select">{CONDITIONS.map((c) => <option key={c} value={c}>{c[0].toUpperCase() + c.slice(1)}</option>)}</select></Field>
             <Field label="Collection date"><input type="date" name="collectionDate" required defaultValue={today} className="input" /></Field>
             <Field label="Collection time"><input name="collectionTime" className="input" placeholder="HH:MM (24h)" /></Field>
           </div>
+          <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>Not in the list? Type the sample type above (e.g. Semen) and it&apos;s added to your catalogue for next time.</p>
           <div className="mt-3 grid gap-3">
             <Field label="Abnormalities"><textarea name="abnormalities" rows={2} className="textarea" placeholder="Note any abnormalities (leave blank if none)" /></Field>
             <Field label="Comments"><textarea name="comments" rows={2} className="textarea" /></Field>

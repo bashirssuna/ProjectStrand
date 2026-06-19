@@ -4008,6 +4008,16 @@ export async function createSampleAction(formData: FormData) {
   }
   const age = calcAge(dob, collectionDate);
 
+  // Resolve the sample type: a typed custom type is found (case-insensitive) or created
+  // under the "Other" category, so labs can record specimens outside the standard list.
+  let sampleTypeId = String(formData.get("sampleTypeId") || "") || null;
+  const newType = String(formData.get("newSampleType") || "").trim();
+  if (newType) {
+    const existingType = await one<{ id: string }>(`SELECT id FROM lab_sample_type WHERE org_id=$1 AND LOWER(type)=LOWER($2) LIMIT 1`, [orgId, newType]);
+    if (existingType) sampleTypeId = existingType.id;
+    else { const tid = id("lst"); await q(`INSERT INTO lab_sample_type (id, org_id, category, type) VALUES ($1,$2,'Other',$3)`, [tid, orgId, newType]); sampleTypeId = tid; }
+  }
+
   const numAliquots = Number(formData.get("numberOfAliquots") || 0);
   const aliquotVolume = formData.get("aliquotVolume") ? Number(formData.get("aliquotVolume")) : null;
   // Starting quantity on hand: total volume if volume-based, else the aliquot count.
@@ -4020,7 +4030,7 @@ export async function createSampleAction(formData: FormData) {
              storage_room, storage_equipment, storage_rack, storage_shelf, storage_box, storage_position, date_stored, storage_temp,
              stored_by_id, stored_by_name, condition_on_receipt, abnormalities, comments, status, created_by_id, created_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,'active',$29,$30)`,
-    [sampleId, orgId, projectId, code, participantId, String(formData.get("sampleTypeId") || "") || null,
+    [sampleId, orgId, projectId, code, participantId, sampleTypeId,
      age.years, age.months, collectionDate, String(formData.get("collectionTime") || "") || null,
      String(formData.get("dateAliquoted") || "") || null, numAliquots, aliquotVolume, String(formData.get("aliquotUnit") || "µL"), startQty,
      String(formData.get("storageRoom") || "") || null, String(formData.get("storageEquipment") || "") || null,

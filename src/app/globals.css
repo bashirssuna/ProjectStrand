@@ -42,6 +42,101 @@
   --shadow: 0 1px 2px rgba(20, 20, 30, 0.05), 0 4px 16px rgba(20, 20, 30, 0.07);
 }
 
+/* Sand — warm cream, terracotta accent (light) */
+.sand {
+  --bg: #f5f0e8;
+  --surface: #efe7da;
+  --panel: #fffdf9;
+  --border: #e6dccb;
+  --border-strong: #d8ccb6;
+  --muted: #6f6557;
+  --fg: #2a2218;
+  --brand: #b05f3c;
+  --brand-fg: #ffffff;
+  --ok: #4a8c5a;
+  --warn: #c08036;
+  --danger: #c0433f;
+  --info: #6b7a8f;
+  --ring: rgba(176, 95, 60, 0.22);
+  --shadow: 0 1px 2px rgba(60, 40, 20, 0.05), 0 4px 16px rgba(60, 40, 20, 0.08);
+}
+
+/* Ocean — cool light, teal accent */
+.ocean {
+  --bg: #eef3f5;
+  --surface: #e3edf0;
+  --panel: #ffffff;
+  --border: #d5e2e6;
+  --border-strong: #c2d4da;
+  --muted: #5d6a70;
+  --fg: #16242a;
+  --brand: #1f7a8c;
+  --brand-fg: #ffffff;
+  --ok: #2d9e7a;
+  --warn: #c4844b;
+  --danger: #c0433f;
+  --info: #3d7a8c;
+  --ring: rgba(31, 122, 140, 0.22);
+  --shadow: 0 1px 2px rgba(20, 30, 35, 0.05), 0 4px 16px rgba(20, 30, 35, 0.07);
+}
+
+/* Forest — sage light, green accent */
+.forest {
+  --bg: #eef3ee;
+  --surface: #e3ebe3;
+  --panel: #ffffff;
+  --border: #d6e0d6;
+  --border-strong: #c4d2c4;
+  --muted: #5e685e;
+  --fg: #1a241a;
+  --brand: #3d7a4e;
+  --brand-fg: #ffffff;
+  --ok: #2d9e5a;
+  --warn: #b5712f;
+  --danger: #c0433f;
+  --info: #4f7b6b;
+  --ring: rgba(61, 122, 78, 0.22);
+  --shadow: 0 1px 2px rgba(20, 35, 20, 0.05), 0 4px 16px rgba(20, 35, 20, 0.07);
+}
+
+/* Midnight — deep navy, sky-blue accent (dark) */
+.midnight {
+  --bg: #0a1020;
+  --surface: #121a2e;
+  --panel: #0e1424;
+  --border: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --muted: #8b97b0;
+  --fg: #e6eaf2;
+  --brand: #5a9bd4;
+  --brand-fg: #0a1020;
+  --ok: #2d9e5a;
+  --warn: #c4a04b;
+  --danger: #d45a5a;
+  --info: #6b8fd4;
+  --ring: rgba(90, 155, 212, 0.25);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+/* Slate — cool dark gray, violet accent (dark) */
+.slate {
+  --bg: #10131a;
+  --surface: #191d27;
+  --panel: #14171f;
+  --border: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --muted: #8b909c;
+  --fg: #e7e8ec;
+  --brand: #8b7fd4;
+  --brand-fg: #0f1018;
+  --ok: #2d9e5a;
+  --warn: #c4a04b;
+  --danger: #d45a5a;
+  --info: #7f8fd4;
+  --ring: rgba(139, 127, 212, 0.25);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
 html, body { background: var(--bg); color: var(--fg); }
 
 body {

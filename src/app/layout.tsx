@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
+import { normalizeTheme } from "@/lib/themes";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -8,9 +9,9 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const theme = (await cookies()).get("strand_theme")?.value;
+  const theme = normalizeTheme((await cookies()).get("strand_theme")?.value);
   return (
-    <html lang="en" className={theme === "dark" ? "" : "light"} suppressHydrationWarning>
+    <html lang="en" className={theme} suppressHydrationWarning>
       <body>{children}</body>
     </html>
   );

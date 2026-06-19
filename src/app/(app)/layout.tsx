@@ -6,7 +6,7 @@ import { canCreateProjects } from "@/server/policy";
 import { getUserOrg } from "@/server/services/accounts";
 import { q } from "@/server/db";
 import { NavLink } from "@/components/nav";
-import { ThemeToggle } from "@/components/theme-toggle";
+import { ThemePicker } from "@/components/theme-picker";
 import { signOut } from "@/app/actions";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -103,7 +103,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <Link href="/notifications" className="btn btn-sm relative" title="Notifications">
               🔔 {unread[0]?.c ? <span className="ml-1 text-xs rounded-full px-1.5" style={{ background: "var(--brand)", color: "var(--brand-fg)" }}>{unread[0].c}</span> : null}
             </Link>
-            <ThemeToggle />
+            <ThemePicker />
             <div className="flex items-center gap-2 pl-2 ml-1 border-l" style={{ borderColor: "var(--border)" }}>
               <div className="h-8 w-8 rounded-full grid place-items-center text-xs font-semibold" style={{ background: "var(--brand)", color: "var(--brand-fg)" }}>{initials}</div>
               <div className="hidden sm:block leading-tight">

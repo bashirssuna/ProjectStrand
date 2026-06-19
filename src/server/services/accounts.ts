@@ -274,6 +274,14 @@ export async function requestUpgrade(userId: string): Promise<void> {
 // project memberships are untouched). The removed user is notified.
 export async function removeProjectMember(projectId: string, userId: string, actorId: string): Promise<void> {
   const proj = await one<{ orgId: string; title: string }>(`SELECT org_id AS "orgId", title FROM project WHERE id=$1`, [projectId]);
+  // Reset this person's footprint on the project before removing their membership:
+  // unassign their activities and tasks, drop any approver designation they hold on the
+  // project's payment vouchers/slips, and remove them from the project team (HR assignment).
+  await q(`UPDATE activity SET owner_id=NULL WHERE project_id=$1 AND owner_id=$2`, [projectId, userId]);
+  await q(`UPDATE task SET owner_id=NULL WHERE owner_id=$2 AND activity_id IN (SELECT id FROM activity WHERE project_id=$1)`, [projectId, userId]);
+  await q(`UPDATE payment_slip SET approver_id=NULL, approver_name=NULL, approver_title=NULL WHERE project_id=$1 AND approver_id=$2`, [projectId, userId]);
+  await q(`UPDATE payment_voucher SET approver_id=NULL, approver_name=NULL WHERE project_id=$1 AND approver_id=$2`, [projectId, userId]);
+  await q(`DELETE FROM employee_project WHERE project_id=$1 AND employee_id IN (SELECT id FROM employee WHERE user_id=$2)`, [projectId, userId]);
   await q(`DELETE FROM project_member WHERE project_id=$1 AND user_id=$2`, [projectId, userId]);
   await notify({
     orgId: proj?.orgId ?? null, userId, type: "access_revoked",

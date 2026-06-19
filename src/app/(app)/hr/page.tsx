@@ -8,6 +8,8 @@ export default async function HrHome() {
   const emp = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM employee WHERE org_id=$1 AND status<>'terminated'`, [orgId]))?.c ?? 0;
   const pendingLeave = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM leave_request WHERE org_id=$1 AND status='pending'`, [orgId]))?.c ?? 0;
   const pendingTs = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM timesheet WHERE org_id=$1 AND status='submitted'`, [orgId]))?.c ?? 0;
+  // Staff whose contract end date falls within the next 60 days, or has already passed.
+  const expiring = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM employee WHERE org_id=$1 AND status<>'terminated' AND end_date IS NOT NULL AND end_date <= (CURRENT_DATE + INTERVAL '60 days')`, [orgId]))?.c ?? 0;
   return (
     <div>
       <PageHeader title="Human Resources" subtitle={`Staff, leave, timesheets & payroll for ${orgName}`} />
@@ -15,7 +17,9 @@ export default async function HrHome() {
         <Stat label="Active employees" value={String(emp)} />
         <Stat label="Leave requests pending" value={String(pendingLeave)} tone={pendingLeave ? "warn" : undefined} />
         <Stat label="Timesheets to approve" value={String(pendingTs)} tone={pendingTs ? "warn" : undefined} />
-        <Stat label="Module" value="HR" sub="institution-level" />
+        <Link href="/hr/employees" style={{ display: "block" }}>
+          <Stat label="Contracts expiring soon" value={String(expiring)} sub="within 60 days / overdue" tone={expiring ? "warn" : undefined} />
+        </Link>
       </div>
       <SectionTitle>HR tools</SectionTitle>
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">

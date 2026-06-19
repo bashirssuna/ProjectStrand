@@ -11,9 +11,9 @@ const FILTERS: [string, string][] = [
   ["completed", "Completed"], ["draft", "Draft"], ["archived", "Archived"],
 ];
 
-export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ status?: string }> }) {
+export default async function ProjectsPage({ searchParams }: { searchParams: Promise<{ status?: string; deleted?: string }> }) {
   const user = await requireUser();
-  const { status = "all" } = await searchParams;
+  const { status = "all", deleted } = await searchParams;
   const all = await listProjectsForUser(user.id, user.isSuperAdmin);
   const mayCreate = await canCreateProjects(user.id, user.isSuperAdmin);
   const summaries = await Promise.all(all.map((p) => getProjectSummary(p.id)));
@@ -30,6 +30,7 @@ export default async function ProjectsPage({ searchParams }: { searchParams: Pro
         subtitle={user.isSuperAdmin ? "Every project across the organisation." : "Projects you're a member of."}
         actions={mayCreate ? <Link href="/projects/new" className="btn btn-primary">+ New project</Link> : undefined}
       />
+      {deleted && <div className="card p-3 mb-4 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Project {decodeURIComponent(deleted)} and everything connected to it were permanently deleted.</div>}
 
       <div className="flex flex-wrap gap-1.5 mb-5">
         {FILTERS.map(([key, name]) => {

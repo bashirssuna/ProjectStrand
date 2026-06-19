@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireHrOrg } from "../_guard";
 import { q, one } from "@/server/db";
 import { PageHeader, SectionTitle, Field, Badge, Empty } from "@/components/ui";
-import { money } from "@/lib/format";
+import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { addEmployeeAction } from "@/app/actions";
 import { COMMON_DEPARTMENTS } from "@/lib/departments";
@@ -40,11 +40,47 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
   const assignedIds = new Set(projAssign.map((a) => a.empId));
   const unassignedToProject = employees.filter((e) => !assignedIds.has(e.id));
 
+  // Staff whose fixed-term contracts are within 60 days of expiry, or already expired.
+  const expiring = await q<{ id: string; firstName: string; lastName: string; jobTitle: string | null; contractType: string; endDate: string; daysLeft: number }>(
+    `SELECT id, first_name AS "firstName", last_name AS "lastName", job_title AS "jobTitle", contract_type AS "contractType",
+            end_date AS "endDate", (end_date - CURRENT_DATE)::int AS "daysLeft"
+       FROM employee
+      WHERE org_id=$1 AND status <> 'terminated' AND end_date IS NOT NULL AND end_date <= (CURRENT_DATE + INTERVAL '60 days')
+      ORDER BY end_date ASC`, [orgId]
+  );
+
   return (
     <div className="max-w-5xl">
       <PageHeader title="Employees" subtitle="Staff records and employment details" actions={<Link href="/hr" className="btn btn-sm">← HR</Link>} />
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Employee added.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>First and last name are required.</div>}
+
+      {expiring.length > 0 && (
+        <div className="card p-4 mb-6" style={{ borderColor: "var(--warn)" }}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="font-medium">Contracts expiring soon</div>
+            <Badge tone="warn">{expiring.length}</Badge>
+          </div>
+          <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>Staff whose contract end date falls within the next 60 days, or has already passed. Open a record to renew (extend the End date) or to terminate.</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr><th className="th text-left">Name</th><th className="th text-left">Title</th><th className="th text-left">Contract</th><th className="th text-left">Ends</th><th className="th text-left">Remaining</th><th className="th" /></tr></thead>
+              <tbody>
+                {expiring.map((e) => (
+                  <tr key={e.id}>
+                    <td className="td">{e.firstName} {e.lastName}</td>
+                    <td className="td">{e.jobTitle ?? "—"}</td>
+                    <td className="td">{label(e.contractType)}</td>
+                    <td className="td whitespace-nowrap">{fmtDate(e.endDate)}</td>
+                    <td className="td">{e.daysLeft < 0 ? <Badge tone="danger">expired {Math.abs(e.daysLeft)}d ago</Badge> : e.daysLeft === 0 ? <Badge tone="danger">expires today</Badge> : <Badge tone="warn">{e.daysLeft}d left</Badge>}</td>
+                    <td className="td text-right"><Link href={`/hr/employees/${e.id}`} className="btn btn-sm">Open</Link></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <SectionTitle>Staff</SectionTitle>

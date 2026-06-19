@@ -2,7 +2,8 @@ import { redirect } from "next/navigation";
 import { getProjectSummary, healthScore } from "@/server/services/projects";
 import { getProjectAccess } from "@/server/policy";
 import { q } from "@/server/db";
-import { resolveFlagAction, setProjectStatusAction } from "@/app/actions";
+import { resolveFlagAction, setProjectStatusAction, deleteProjectAction } from "@/app/actions";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Stat, Badge, ProgressBar, SectionTitle, Empty, severityTone } from "@/components/ui";
 import { money, pct, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
@@ -28,7 +29,7 @@ export default async function ProjectOverview({ params }: { params: Promise<{ id
   return (
     <div className="space-y-7">
       {access.permissions.has("project.administer") && (
-        <div className="flex justify-end">
+        <div className="flex flex-wrap justify-end items-end gap-2">
           <form action={setProjectStatusAction} className="flex items-end gap-2">
             <input type="hidden" name="projectId" value={id} />
             <div>
@@ -42,6 +43,14 @@ export default async function ProjectOverview({ params }: { params: Promise<{ id
               </select>
             </div>
             <button className="btn" type="submit">Update status</button>
+          </form>
+          <form action={deleteProjectAction}>
+            <input type="hidden" name="projectId" value={id} />
+            <ConfirmSubmit
+              message={`Permanently delete "${summary.project.code}" and EVERYTHING connected to it — budgets, activities, requisitions, vouchers, slips, receipts, invoices, ledger entries and members? This cannot be undone.`}
+              className="btn" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
+              Delete project
+            </ConfirmSubmit>
           </form>
         </div>
       )}

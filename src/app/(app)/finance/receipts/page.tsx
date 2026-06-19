@@ -7,7 +7,7 @@ import { currencyOptions } from "@/lib/currencies";
 import { label } from "@/lib/enums";
 import { createReceiptAction } from "@/app/actions";
 
-export default async function ReceiptsPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string }> }) {
+export default async function ReceiptsPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string; deleted?: string }> }) {
   const { orgId } = await requireFinanceOrg();
   const sp = await searchParams;
   const base = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
@@ -27,6 +27,7 @@ export default async function ReceiptsPage({ searchParams }: { searchParams: Pro
     <div className="max-w-5xl">
       <PageHeader title="Receipts" subtitle="Record money received and settle invoices" actions={<Link href="/finance" className="btn btn-sm">← Finance</Link>} />
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Receipt {sp.created} recorded and posted to the ledger.</div>}
+      {sp.deleted && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Receipt {sp.deleted} deleted and its ledger entry reversed.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{sp.err === "amount" ? "Amount must be positive." : decodeURIComponent(sp.err)}</div>}
 
       <SectionTitle>Receipts</SectionTitle>
@@ -37,13 +38,13 @@ export default async function ReceiptsPage({ searchParams }: { searchParams: Pro
             <tbody>
               {receipts.map((r) => (
                 <tr key={r.id}>
-                  <td className="td font-mono text-xs">{r.number}</td>
+                  <td className="td font-mono text-xs"><Link href={`/finance/receipts/${r.id}`} className="hover:underline" style={{ color: "var(--brand)" }}>{r.number}</Link></td>
                   <td className="td whitespace-nowrap">{fmtDate(r.receiptDate)}</td>
                   <td className="td">{r.customer ?? "—"}</td>
                   <td className="td">{label(r.method)}</td>
                   <td className="td font-mono text-xs">{r.invoiceNo ?? "—"}</td>
                   <td className="td text-right tabular-nums">{money(r.amount, r.currency)}</td>
-                  <td className="td text-right"><a href={`/print/receipt/${r.id}`} target="_blank" rel="noopener" className="btn btn-sm">🖨</a></td>
+                  <td className="td text-right whitespace-nowrap"><Link href={`/finance/receipts/${r.id}`} className="btn btn-sm">Open →</Link></td>
                 </tr>
               ))}
             </tbody>

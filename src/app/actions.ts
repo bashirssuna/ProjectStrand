@@ -938,6 +938,41 @@ export async function archiveProjectAction(formData: FormData) {
   return setProjectStatusAction(formData);
 }
 
+// Permanently deletes a project and everything connected to it — including all payments.
+// Most project-scoped tables cascade through their project foreign key. Three tables
+// reference budget_line with RESTRICT (expenditure, commitment, requisition), and the
+// org-scoped finance documents (receipts, invoices, slips, vouchers, fixed assets) plus
+// the project's ledger entries are nullable / un-keyed — so those are removed explicitly
+// first, in dependency order, before the project itself is deleted.
+export async function deleteProjectAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.administer");
+  const proj = await one<{ orgId: string; code: string; title: string }>(`SELECT org_id AS "orgId", code, title FROM project WHERE id=$1`, [projectId]);
+  if (!proj) redirect("/projects");
+  // Org-scoped finance documents (receipt → invoice is RESTRICT, so receipts first).
+  await q(`DELETE FROM receipt WHERE project_id=$1 OR invoice_id IN (SELECT id FROM invoice WHERE project_id=$1)`, [projectId]);
+  await q(`DELETE FROM invoice WHERE project_id=$1`, [projectId]);            // invoice lines cascade
+  await q(`DELETE FROM payment_slip WHERE project_id=$1`, [projectId]);       // FK would only null these; payees cascade
+  await q(`DELETE FROM payment_voucher WHERE project_id=$1`, [projectId]);    // standalone/requisition vouchers tagged to the project
+  await q(`DELETE FROM fixed_asset WHERE project_id=$1`, [projectId]);
+  // RESTRICT paths to budget_line — remove before the budgets cascade.
+  await q(`DELETE FROM expenditure WHERE project_id=$1`, [projectId]);
+  await q(`DELETE FROM commitment WHERE project_id=$1`, [projectId]);
+  await q(`DELETE FROM requisition WHERE project_id=$1`, [projectId]);        // cascades approvals/activities + any remaining vouchers
+  // Un-match any bank statement lines reconciled against this project's entries before
+  // those entries are removed, so the bank reconciliation doesn't show phantom matches.
+  await q(`UPDATE bank_statement_line SET matched_entry_id=NULL, reconciled=false WHERE matched_entry_id IN (SELECT id FROM journal_entry WHERE project_id=$1)`, [projectId]);
+  // The project's ledger entries (journal lines cascade). Removing balanced project
+  // entries keeps the rest of the ledger balanced.
+  await q(`DELETE FROM journal_entry WHERE project_id=$1`, [projectId]);
+  // Finally the project — cascades budgets, budget lines, activities, tasks, objectives,
+  // SOW, reports, documents, members, risks, meetings, calendar, etc.
+  await q(`DELETE FROM project WHERE id=$1`, [projectId]);
+  await writeAudit({ orgId: proj.orgId, userId: user.id, action: "delete", entity: "project", entityId: proj.code, before: { title: proj.title, deletedConnectedRecords: true } });
+  redirect(`/projects?deleted=${encodeURIComponent(proj.code)}`);
+}
+
 /* ---------------- Risks & issues ---------------- */
 export async function addRiskAction(formData: FormData) {
   const user = await requireUser();
@@ -2205,6 +2240,77 @@ export async function createReceiptAction(formData: FormData) {
   redirect(`/finance/receipts?created=${num}`);
 }
 
+// Loads a receipt in the caller's org or bounces to the list.
+async function loadReceipt(rid: string, orgId: string): Promise<{ id: string; reconciled: boolean; journalEntryId: string | null; invoiceId: string | null }> {
+  const r = await one<{ id: string; reconciled: boolean; journalEntryId: string | null; invoiceId: string | null }>(
+    `SELECT id, reconciled, journal_entry_id AS "journalEntryId", invoice_id AS "invoiceId" FROM receipt WHERE id=$1 AND org_id=$2`, [rid, orgId]);
+  if (!r) redirect("/finance/receipts");
+  return r;
+}
+
+// Removes a receipt's posted effect: subtracts what it paid from its invoice (recomputing
+// the invoice status) using the base amount actually posted to the ledger. Returns the entry id.
+async function undoReceiptInvoiceEffect(receiptId: string, journalEntryId: string | null, invoiceId: string | null) {
+  if (!journalEntryId) return;
+  const base = (await one<{ t: number }>(`SELECT COALESCE(SUM(debit),0)::float t FROM journal_line WHERE entry_id=$1`, [journalEntryId]))?.t ?? 0;
+  if (invoiceId && base > 0) {
+    const inv = await one<{ total: number; paid: number }>(`SELECT total::float, amount_paid::float AS paid FROM invoice WHERE id=$1`, [invoiceId]);
+    if (inv) {
+      const paid = Math.max(0, Number(inv.paid) - base);
+      const status = paid <= 0.0001 ? "issued" : paid >= inv.total - 0.0001 ? "paid" : "part_paid";
+      await q(`UPDATE invoice SET amount_paid=$2, status=$3 WHERE id=$1`, [invoiceId, paid, status]);
+    }
+  }
+}
+
+// Finance edits a receipt (blocked once it has been reconciled). The old posting is
+// removed and the receipt is re-posted with the new values so the ledger and the
+// invoice's paid amount stay correct.
+export async function editReceiptAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const rid = String(formData.get("receiptId"));
+  const cur = await loadReceipt(rid, orgId);
+  if (cur.reconciled) redirect(`/finance/receipts/${rid}?err=reconciled`);
+  const amount = Number(formData.get("amount") || 0);
+  if (amount <= 0) redirect(`/finance/receipts/${rid}?err=amount`);
+  // undo the old posting + invoice effect, then clear the old entry
+  await undoReceiptInvoiceEffect(rid, cur.journalEntryId, cur.invoiceId);
+  if (cur.journalEntryId) await q(`DELETE FROM journal_entry WHERE id=$1`, [cur.journalEntryId]); // cascades its lines
+  const invoiceId = String(formData.get("invoiceId") || "") || null;
+  let projectId = String(formData.get("projectId") || "") || null;
+  let customerId = String(formData.get("customerId") || "") || null;
+  if (invoiceId) {
+    const inv = await one<{ p: string | null; c: string | null }>(`SELECT project_id p, customer_id c FROM invoice WHERE id=$1`, [invoiceId]);
+    if (inv) { projectId = projectId ?? inv.p; customerId = customerId ?? inv.c; }
+  }
+  await q(`UPDATE receipt SET invoice_id=$2, customer_id=$3, project_id=$4, receipt_date=$5, amount=$6, currency=$7, method=$8,
+           reference=$9, note=$10, deposit_account_id=$11, income_account_id=$12, journal_entry_id=NULL WHERE id=$1`,
+    [rid, invoiceId, customerId, projectId, String(formData.get("receiptDate") || new Date().toISOString().slice(0, 10)),
+     amount, String(formData.get("currency") || "USD"), String(formData.get("method") || "bank_transfer"),
+     String(formData.get("reference") || "") || null, String(formData.get("note") || "") || null,
+     String(formData.get("depositAccountId") || "") || null, String(formData.get("incomeAccountId") || "") || null]);
+  try { await recordReceipt(rid, { id: userId, name: userName }); }
+  catch (e) { redirect(`/finance/receipts/${rid}?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  await writeAudit({ orgId, userId, action: "update", entity: "receipt", entityId: rid, after: { amount } });
+  redirect(`/finance/receipts/${rid}?updated=1`);
+}
+
+// Finance deletes a receipt: reverses its ledger entry (keeping an audit trail) and
+// subtracts what it paid from its invoice, then removes the receipt.
+export async function deleteReceiptAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const rid = String(formData.get("receiptId"));
+  const r = await one<{ number: string; amount: number; journalEntryId: string | null; invoiceId: string | null }>(
+    `SELECT number, amount::float, journal_entry_id AS "journalEntryId", invoice_id AS "invoiceId" FROM receipt WHERE id=$1 AND org_id=$2`, [rid, orgId]);
+  if (!r) redirect("/finance/receipts");
+  await undoReceiptInvoiceEffect(rid, r.journalEntryId, r.invoiceId);
+  if (r.journalEntryId) { try { await reverseJournal(orgId, r.journalEntryId, { id: userId, name: userName }); } catch { /* best effort */ } }
+  await q(`DELETE FROM receipt WHERE id=$1 AND org_id=$2`, [rid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "receipt", entityId: r.number, before: { amount: r.amount } });
+  revalidatePath(`/finance/statements`);
+  redirect(`/finance/receipts?deleted=${r.number}`);
+}
+
 // ---- Fixed assets ----
 export async function createAssetAction(formData: FormData) {
   const { orgId, userId, userName } = await requireInstitutionFinance();
@@ -2394,7 +2500,42 @@ export async function updateEmployeeAction(formData: FormData) {
   redirect(`/hr/employees/${eid}?saved=1`);
 }
 
-// Pay components (the configurable deduction/allowance rules)
+// Terminate (dismiss) an employee from the organisation. This is stronger than pausing
+// a contract (status 'on_leave') or letting it expire (end_date passes): it removes the
+// person's access entirely and FREES THEIR EMAIL so that, if they are re-hired, they
+// register a brand-new account from scratch. We tombstone the login (the email becomes
+// available again) rather than hard-deleting it, so historical audit/document trails stay
+// intact. Their employee record is kept but marked terminated.
+export async function terminateEmployeeAction(formData: FormData) {
+  const { orgId, userId: actorId, userName } = await requireInstitutionFinance();
+  const eid = String(formData.get("employeeId"));
+  const e = await one<{ userId: string | null; email: string | null; firstName: string; lastName: string }>(
+    `SELECT user_id AS "userId", email, first_name AS "firstName", last_name AS "lastName" FROM employee WHERE id=$1 AND org_id=$2`, [eid, orgId]);
+  if (!e) redirect("/hr/employees");
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (e.userId) {
+    const uid = e.userId;
+    // 1. Revoke all access in this organisation and its projects.
+    await q(`DELETE FROM org_membership WHERE user_id=$1 AND org_id=$2`, [uid, orgId]);
+    await q(`DELETE FROM project_member WHERE user_id=$1 AND project_id IN (SELECT id FROM project WHERE org_id=$2)`, [uid, orgId]);
+    // 2. Drop any approver designation they hold on payments in the org.
+    await q(`UPDATE payment_slip SET approver_id=NULL, approver_name=NULL, approver_title=NULL WHERE approver_id=$1 AND org_id=$2`, [uid, orgId]);
+    await q(`UPDATE payment_voucher SET approver_id=NULL, approver_name=NULL WHERE approver_id=$1 AND (org_id=$2 OR project_id IN (SELECT id FROM project WHERE org_id=$2))`, [uid, orgId]);
+    // 3. Free their email + disable the login. The original address can now be used to
+    //    register a fresh account. (Email is UNIQUE, so we tombstone it.)
+    const u = await one<{ email: string }>(`SELECT email FROM app_user WHERE id=$1`, [uid]);
+    if (u) await q(`UPDATE app_user SET email=$2, status='disabled', updated_at=now() WHERE id=$1`,
+      [uid, `terminated+${uid}+${u.email}`.slice(0, 250)]);
+    await writeAudit({ orgId, userId: actorId, action: "delete", entity: "app_user", entityId: uid, before: { email: u?.email }, meta: { terminated: true, emailFreed: true } });
+  }
+  // 4. Mark the employee record terminated and unlink the (now freed) login.
+  await q(`UPDATE employee SET status='terminated', end_date=COALESCE(end_date, $2::date), user_id=NULL WHERE id=$1 AND org_id=$3`, [eid, today, orgId]);
+  await writeAudit({ orgId, userId: actorId, action: "update", entity: "employee", entityId: eid, after: { status: "terminated", by: userName } });
+  revalidatePath(`/hr/employees/${eid}`);
+  revalidatePath(`/hr/employees`);
+  redirect(`/hr/employees/${eid}?terminated=1`);
+}
 export async function addPayComponentAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
   const name = String(formData.get("name") || "").trim();

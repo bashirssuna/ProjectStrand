@@ -10,11 +10,12 @@ import { updateEmployeeAction, assignEmployeeDepartmentAction, createEmployeeLog
   updateEmployeeProfileAction, addEmployeeEducationAction, deleteEmployeeEducationAction,
   addEmployeePolicyAction, deleteEmployeePolicyAction, requestHrActionAction, decideHrActionAction,
   upsertEmployeeCompAction, upsertEmployeeProjectAction, removeEmployeeProjectAction,
-  generateResponsibilitiesFromDocAction, uploadEmployeeDocumentAction, deleteEmployeeDocumentAction } from "@/app/actions";
+  generateResponsibilitiesFromDocAction, uploadEmployeeDocumentAction, deleteEmployeeDocumentAction, terminateEmployeeAction } from "@/app/actions";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import { dateInput } from "@/lib/format";
 import { COMMON_DEPARTMENTS } from "@/lib/departments";
 
-export default async function EmployeeDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ saved?: string; login?: string; loginerr?: string; hra?: string; err?: string; docuploaded?: string; docdeleted?: string; docerr?: string; generated?: string; generr?: string }> }) {
+export default async function EmployeeDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ saved?: string; login?: string; loginerr?: string; hra?: string; err?: string; docuploaded?: string; docdeleted?: string; docerr?: string; generated?: string; generr?: string; terminated?: string }> }) {
   const { id } = await params;
   const { orgId } = await requireHrOrg();
   const sp = await searchParams;
@@ -75,6 +76,7 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
     <div className="max-w-4xl">
       <PageHeader title={`${demo.prefix ? `${demo.prefix} ` : ""}${e.firstName} ${e.lastName}`} subtitle={`${e.jobTitle ?? "—"}${e.department ? ` · ${e.department}` : ""}`} actions={<Link href="/hr/employees" className="btn btn-sm">← Employees</Link>} />
       {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved.</div>}
+      {sp.terminated && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Employment terminated. Their access has been revoked and their email freed — if re-hired, they register a new account.</div>}
       {sp.login === "sent" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Self-service login created — an invite email with a set-password link has been sent.</div>}
       {sp.login === "exists" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>This employee already has a login.</div>}
       {sp.login === "failed" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>Login created, but the invite email could not be sent. They can use “forgot password” to set one.</div>}
@@ -357,6 +359,25 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
         <Field label="End date"><input type="date" name="endDate" defaultValue={dateInput(e.endDate)} className="input" /></Field>
         <div className="sm:col-span-3 flex justify-end"><button className="btn btn-primary" type="submit">Save changes</button></div>
       </form>
+
+      {/* Termination — distinct from pausing or contract expiry */}
+      {e.status !== "terminated" && (
+        <div className="card p-4 mb-6" style={{ borderColor: "var(--danger)" }}>
+          <div className="font-medium mb-1" style={{ color: "var(--danger)" }}>Terminate employment</div>
+          <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
+            Use this only when the person is leaving the organisation (dismissed or resigned). It revokes all their access and <strong>frees their email</strong>, so if they are re-hired they register a fresh account. This is different from a <strong>paused</strong> contract (set Status to “On leave” above) or an <strong>expired</strong> contract (let the End date pass) — both of those keep the person&apos;s account and history intact.
+          </p>
+          <form action={terminateEmployeeAction}>
+            <input type="hidden" name="employeeId" value={e.id} />
+            <ConfirmSubmit
+              message={`Terminate ${e.firstName} ${e.lastName}? This revokes all their access and frees their email for a fresh registration if re-hired. The employee record is kept but marked terminated.`}
+              className="btn" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
+              Terminate &amp; free email
+            </ConfirmSubmit>
+            {!e.userId && <span className="text-xs ml-2" style={{ color: "var(--muted)" }}>(No login linked — this will just mark the record terminated.)</span>}
+          </form>
+        </div>
+      )}
 
       {/* Demographic & statutory details */}
       <SectionTitle>Personal & statutory details</SectionTitle>

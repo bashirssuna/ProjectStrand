@@ -4232,3 +4232,152 @@ export async function editSampleAction(formData: FormData) {
   }
   redirect(`/lab/samples/${sid}?edited=${changes.length > 0 ? changes.length : 0}`);
 }
+
+/* ===================== Studies (Clinical Trials & Cohorts) ===================== */
+async function requireStudyActor() {
+  const user = await requireUser();
+  const org = await getUserOrg(user.id);
+  if (!org) redirect("/dashboard");
+  return { orgId: org.id, userId: user.id, userName: user.name, isOrgAdmin: !!org.isOrgAdmin, isSuperAdmin: !!user.isSuperAdmin };
+}
+// Load a study the actor may manage (admin = any org study; otherwise project membership).
+async function loadStudyForActor(studyId: string, orgId: string, userId: string, isAdmin: boolean) {
+  const st = await one<{ id: string; projectId: string; title: string }>(`SELECT id, project_id AS "projectId", title FROM study WHERE id=$1 AND org_id=$2`, [studyId, orgId]);
+  if (!st) redirect("/studies");
+  if (!isAdmin) { const ids = await accessibleProjectIds(userId, orgId, false); if (!ids.includes(st.projectId)) redirect("/studies"); }
+  return st;
+}
+const sNull = (v: FormDataEntryValue | null) => { const x = String(v ?? "").trim(); return x || null; };
+const sNum = (v: FormDataEntryValue | null) => { const x = String(v ?? "").trim(); return x ? Number(x) : null; };
+
+export async function createStudyAction(formData: FormData) {
+  const { orgId, userId, userName, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const isAdmin = isOrgAdmin || isSuperAdmin;
+  const projectId = String(formData.get("projectId") || "");
+  const ok = isAdmin ? !!(await one(`SELECT id FROM project WHERE id=$1 AND org_id=$2`, [projectId, orgId])) : (await accessibleProjectIds(userId, orgId, false)).includes(projectId);
+  if (!projectId || !ok) redirect("/studies/new?err=project");
+  const sid = id("study");
+  const piId = String(formData.get("piId") || "") || null;
+  let piName = sNull(formData.get("piName"));
+  if (piId && !piName) piName = (await one<{ name: string }>(`SELECT name FROM app_user WHERE id=$1`, [piId]))?.name ?? null;
+  await q(`INSERT INTO study (id, org_id, project_id, code, title, study_type, phase, design, blinding, randomized, allocation_ratio, registry, registration_number, sponsor, funder, pi_id, pi_name, target_enrollment, status, start_date, end_date, objectives, summary, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+    [sid, orgId, projectId, sNull(formData.get("code")), String(formData.get("title") || "Untitled study"), String(formData.get("studyType") || "clinical_trial"),
+     sNull(formData.get("phase")), sNull(formData.get("design")), sNull(formData.get("blinding")), formData.get("randomized") === "on", sNull(formData.get("allocationRatio")),
+     sNull(formData.get("registry")), sNull(formData.get("registrationNumber")), sNull(formData.get("sponsor")), sNull(formData.get("funder")), piId, piName,
+     sNum(formData.get("targetEnrollment")), String(formData.get("status") || "planning"), sNull(formData.get("startDate")), sNull(formData.get("endDate")),
+     sNull(formData.get("objectives")), sNull(formData.get("summary")), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "study", entityId: sid, after: { title: String(formData.get("title") || ""), type: String(formData.get("studyType") || "") } });
+  redirect(`/studies/${sid}?created=1`);
+}
+
+export async function updateStudyAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  const piId = String(formData.get("piId") || "") || null;
+  let piName = sNull(formData.get("piName"));
+  if (piId && !piName) piName = (await one<{ name: string }>(`SELECT name FROM app_user WHERE id=$1`, [piId]))?.name ?? null;
+  await q(`UPDATE study SET code=$2, title=$3, study_type=$4, phase=$5, design=$6, blinding=$7, randomized=$8, allocation_ratio=$9, registry=$10, registration_number=$11, sponsor=$12, funder=$13, pi_id=$14, pi_name=$15, target_enrollment=$16, status=$17, start_date=$18, end_date=$19, objectives=$20, summary=$21, updated_at=now() WHERE id=$1 AND org_id=$22`,
+    [sid, sNull(formData.get("code")), String(formData.get("title") || "Untitled study"), String(formData.get("studyType") || "clinical_trial"), sNull(formData.get("phase")), sNull(formData.get("design")),
+     sNull(formData.get("blinding")), formData.get("randomized") === "on", sNull(formData.get("allocationRatio")), sNull(formData.get("registry")), sNull(formData.get("registrationNumber")),
+     sNull(formData.get("sponsor")), sNull(formData.get("funder")), piId, piName, sNum(formData.get("targetEnrollment")), String(formData.get("status") || "planning"),
+     sNull(formData.get("startDate")), sNull(formData.get("endDate")), sNull(formData.get("objectives")), sNull(formData.get("summary")), orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "study", entityId: sid, after: { status: String(formData.get("status") || "") } });
+  redirect(`/studies/${sid}?saved=1`);
+}
+
+export async function deleteStudyAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  if (!(isOrgAdmin || isSuperAdmin)) redirect("/studies?err=forbidden");
+  const sid = String(formData.get("studyId") || "");
+  const st = await one<{ title: string }>(`SELECT title FROM study WHERE id=$1 AND org_id=$2`, [sid, orgId]);
+  if (!st) redirect("/studies");
+  await q(`DELETE FROM study WHERE id=$1 AND org_id=$2`, [sid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "study", entityId: sid, before: { title: st.title } });
+  redirect("/studies?deleted=1");
+}
+
+export async function addStudySiteAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  await q(`INSERT INTO study_site (id, study_id, name, location, pi_name, status, activation_date, target_enrollment) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("ssite"), sid, String(formData.get("name") || "Site"), sNull(formData.get("location")), sNull(formData.get("sitePiName")), String(formData.get("siteStatus") || "pending"), sNull(formData.get("activationDate")), sNum(formData.get("siteTarget"))]);
+  redirect(`/studies/${sid}?added=site`);
+}
+
+export async function addStudyApprovalAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  const aid = id("sappr");
+  await q(`INSERT INTO study_approval (id, study_id, authority, authority_name, reference_number, approval_date, expiry_date, status, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [aid, sid, String(formData.get("authority") || "REC"), sNull(formData.get("authorityName")), sNull(formData.get("referenceNumber")), sNull(formData.get("approvalDate")), sNull(formData.get("expiryDate")), String(formData.get("apprStatus") || "approved"), sNull(formData.get("notes"))]);
+  await writeAudit({ orgId, userId, action: "create", entity: "study_approval", entityId: aid, meta: { studyId: sid, authority: String(formData.get("authority") || "") } });
+  redirect(`/studies/${sid}?added=approval`);
+}
+
+export async function updateStudyApprovalAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  const aid = String(formData.get("approvalId") || "");
+  await q(`UPDATE study_approval SET status=$2, approval_date=COALESCE($3, approval_date), expiry_date=COALESCE($4, expiry_date) WHERE id=$1 AND study_id=$5`,
+    [aid, String(formData.get("apprStatus") || "approved"), sNull(formData.get("approvalDate")), sNull(formData.get("expiryDate")), sid]);
+  await writeAudit({ orgId, userId, action: "update", entity: "study_approval", entityId: aid, after: { status: String(formData.get("apprStatus") || "") } });
+  redirect(`/studies/${sid}?saved=approval`);
+}
+
+export async function addStudyVersionAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  const vid = id("sver");
+  await q(`INSERT INTO study_version (id, study_id, doc_type, version, version_date, language, status, summary) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [vid, sid, String(formData.get("docType") || "protocol"), String(formData.get("version") || "1.0"), sNull(formData.get("versionDate")), sNull(formData.get("language")), String(formData.get("verStatus") || "approved"), sNull(formData.get("verSummary"))]);
+  await writeAudit({ orgId, userId, action: "create", entity: "study_version", entityId: vid, meta: { studyId: sid, docType: String(formData.get("docType") || ""), version: String(formData.get("version") || "") } });
+  redirect(`/studies/${sid}?added=version`);
+}
+
+export async function addStudyEnrollmentAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  await q(`INSERT INTO study_enrollment (id, study_id, site_id, as_of_date, screened, enrolled, withdrawn, completed, note) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [id("senr"), sid, sNull(formData.get("siteId")), String(formData.get("asOfDate") || new Date().toISOString().slice(0, 10)),
+     Number(formData.get("screened") || 0), Number(formData.get("enrolled") || 0), Number(formData.get("withdrawn") || 0), Number(formData.get("completed") || 0), sNull(formData.get("note"))]);
+  redirect(`/studies/${sid}?added=enrollment`);
+}
+
+export async function addStudyMilestoneAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  await q(`INSERT INTO study_milestone (id, study_id, name, planned_date, actual_date, status, note) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id("smile"), sid, String(formData.get("name") || "Milestone"), sNull(formData.get("plannedDate")), sNull(formData.get("actualDate")), String(formData.get("msStatus") || "pending"), sNull(formData.get("note"))]);
+  redirect(`/studies/${sid}?added=milestone`);
+}
+
+export async function updateStudyMilestoneAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  const mid = String(formData.get("milestoneId") || "");
+  const status = String(formData.get("msStatus") || "done");
+  await q(`UPDATE study_milestone SET status=$2, actual_date=CASE WHEN $2='done' AND actual_date IS NULL THEN CURRENT_DATE ELSE actual_date END WHERE id=$1 AND study_id=$3`, [mid, status, sid]);
+  redirect(`/studies/${sid}?saved=milestone`);
+}
+
+// Generic delete for a study sub-record (correction tool), scoped to study access.
+export async function deleteStudyItemAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  const kind = String(formData.get("kind") || "");
+  const itemId = String(formData.get("itemId") || "");
+  const table = ({ site: "study_site", approval: "study_approval", version: "study_version", enrollment: "study_enrollment", milestone: "study_milestone" } as Record<string, string>)[kind];
+  if (!table) redirect(`/studies/${sid}`);
+  await q(`DELETE FROM ${table} WHERE id=$1 AND study_id=$2`, [itemId, sid]);
+  redirect(`/studies/${sid}?removed=${kind}`);
+}

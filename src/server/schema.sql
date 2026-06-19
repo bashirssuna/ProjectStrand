@@ -1838,3 +1838,91 @@ CREATE TABLE IF NOT EXISTS lab_pii_access (
   participant_id text, sample_id text,
   accessed_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ===================== Studies (Clinical Trials & Cohorts) =====================
+-- Management/oversight layer (CTMS-style) for trials and cohorts under a project.
+-- This tracks the study, not individual participant data capture.
+CREATE TABLE IF NOT EXISTS study (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  code text,
+  title text NOT NULL,
+  study_type text NOT NULL DEFAULT 'clinical_trial', -- clinical_trial | cohort | observational | other
+  phase text,                              -- I | II | III | IV | NA
+  design text,                             -- free text (e.g. randomized double-blind, prospective cohort)
+  blinding text,                           -- open | single | double | NA
+  randomized boolean NOT NULL DEFAULT false,
+  allocation_ratio text,
+  registry text, registration_number text, -- ClinicalTrials.gov / PACTR + id
+  sponsor text, funder text,
+  pi_id text REFERENCES app_user(id), pi_name text,
+  target_enrollment int,
+  status text NOT NULL DEFAULT 'planning', -- planning | startup | recruiting | active | follow_up | closed | suspended | terminated
+  start_date date, end_date date,
+  objectives text, summary text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+-- Participating sites (multi-site studies).
+CREATE TABLE IF NOT EXISTS study_site (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  location text,
+  pi_name text,
+  status text NOT NULL DEFAULT 'pending',  -- pending | active | closed | suspended
+  activation_date date,
+  target_enrollment int,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Regulatory & ethics approvals (REC / NDA / UNCST / sponsor) with expiry tracking.
+CREATE TABLE IF NOT EXISTS study_approval (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  authority text NOT NULL,                 -- REC | NDA | UNCST | sponsor | other
+  authority_name text,
+  reference_number text,
+  approval_date date,
+  expiry_date date,
+  status text NOT NULL DEFAULT 'pending',  -- pending | approved | expired | suspended | withdrawn
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Protocol amendments and consent-form versions (one log, typed).
+CREATE TABLE IF NOT EXISTS study_version (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  doc_type text NOT NULL DEFAULT 'protocol', -- protocol | consent | sap | other
+  version text NOT NULL,
+  version_date date,
+  language text,
+  status text NOT NULL DEFAULT 'draft',    -- draft | submitted | approved | active | superseded
+  summary text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Enrollment actuals (periodic deltas, summed) — aggregate counts, not individual records.
+CREATE TABLE IF NOT EXISTS study_enrollment (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  site_id text REFERENCES study_site(id) ON DELETE SET NULL,
+  as_of_date date NOT NULL DEFAULT CURRENT_DATE,
+  screened int NOT NULL DEFAULT 0,
+  enrolled int NOT NULL DEFAULT 0,
+  withdrawn int NOT NULL DEFAULT 0,
+  completed int NOT NULL DEFAULT 0,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Study milestones (FPI, LPO, DSMB review, database lock, etc.).
+CREATE TABLE IF NOT EXISTS study_milestone (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  planned_date date,
+  actual_date date,
+  status text NOT NULL DEFAULT 'pending',  -- pending | done | missed
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

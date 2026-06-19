@@ -1733,4 +1733,25 @@ ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approver_id text REFERENCES
 ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approver_name text;
 ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS approver_signature text;
 ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS decline_reason text;
+
+-- Procurement approval chain: a purchase request is signed off step-by-step
+-- (finance review -> budget holder / PI -> authorising officer). Each signatory is
+-- assigned, emailed, and signs with their stored signature before the request is approved.
+CREATE TABLE IF NOT EXISTS purchase_approval (
+  id text PRIMARY KEY,
+  request_id text NOT NULL REFERENCES purchase_request(id) ON DELETE CASCADE,
+  step integer NOT NULL,
+  role text NOT NULL,
+  approver_id text, approver_name text,
+  decision text NOT NULL DEFAULT 'pending', -- pending | approved | rejected
+  comment text, signature_data text,
+  notified_at timestamptz, decided_at timestamptz
+);
+-- A purchase order carries the project budget line it charges and is signed
+-- (authorised) by an authorising officer before being issued to the vendor.
+ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS budget_line_id text REFERENCES budget_line(id) ON DELETE SET NULL;
+ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS authorised_by text;
+ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS authorised_by_name text;
+ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS authorised_signature text;
+ALTER TABLE purchase_order ADD COLUMN IF NOT EXISTS authorised_at timestamptz;
 `;

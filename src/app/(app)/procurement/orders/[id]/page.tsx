@@ -2,17 +2,19 @@ import Link from "next/link";
 import { requireProcOrg } from "../../_guard";
 import { q, one } from "@/server/db";
 import { PageHeader, SectionTitle, Field, StatusBadge, Badge, Empty } from "@/components/ui";
-import { money, fmtDate } from "@/lib/format";
-import { createGRNAction, createBillAction } from "@/app/actions";
+import { money, fmtDate, fmtDateTime } from "@/lib/format";
+import { SignField } from "@/components/sign-field";
+import { createGRNAction, createBillAction, authorisePOAction } from "@/app/actions";
 
-export default async function PODetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ grn?: string; err?: string }> }) {
+export default async function PODetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ grn?: string; err?: string; authorised?: string }> }) {
   const { id } = await params;
   const { orgId } = await requireProcOrg();
   const sp = await searchParams;
-  const po = await one<{ id: string; number: string; orderDate: string; currency: string; total: number; status: string; vendor: string | null; project: string | null }>(
+  const po = await one<{ id: string; number: string; orderDate: string; currency: string; total: number; status: string; vendor: string | null; project: string | null; lineCode: string | null; lineDesc: string | null; authorisedByName: string | null; authorisedSignature: string | null; authorisedAt: string | null }>(
     `SELECT po.id, po.number, po.order_date AS "orderDate", po.currency, po.total::float, po.status,
-            v.name AS vendor, p.code AS project
-     FROM purchase_order po LEFT JOIN vendor v ON v.id=po.vendor_id LEFT JOIN project p ON p.id=po.project_id
+            v.name AS vendor, p.code AS project, bl.code AS "lineCode", bl.description AS "lineDesc",
+            po.authorised_by_name AS "authorisedByName", po.authorised_signature AS "authorisedSignature", po.authorised_at AS "authorisedAt"
+     FROM purchase_order po LEFT JOIN vendor v ON v.id=po.vendor_id LEFT JOIN project p ON p.id=po.project_id LEFT JOIN budget_line bl ON bl.id=po.budget_line_id
      WHERE po.id=$1 AND po.org_id=$2`, [id, orgId]
   );
   if (!po) return <Empty title="Purchase order not found" hint="It may have been removed." />;
@@ -28,8 +30,9 @@ export default async function PODetail({ params, searchParams }: { params: Promi
 
   return (
     <div className="max-w-4xl">
-      <PageHeader title={`Purchase order ${po.number}`} subtitle={`${po.vendor ?? "—"}${po.project ? ` · ${po.project}` : ""}`} actions={<Link href="/procurement/requests" className="btn btn-sm">← Requests</Link>} />
+      <PageHeader title={`Purchase order ${po.number}`} subtitle={`${po.vendor ?? "—"}${po.project ? ` · ${po.project}` : ""}${po.lineCode ? ` · line ${po.lineCode}` : ""}`} actions={<Link href="/procurement/requests" className="btn btn-sm">← Requests</Link>} />
       {sp.grn && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Goods received note recorded.</div>}
+      {sp.authorised && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Order authorised and signed.</div>}
       {sp.err === "noqty" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Enter at least one received quantity.</div>}
       {sp.err && sp.err !== "noqty" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{decodeURIComponent(sp.err)}</div>}
 
@@ -37,6 +40,22 @@ export default async function PODetail({ params, searchParams }: { params: Promi
         <div className="flex items-center gap-2"><StatusBadge status={po.status} /><span className="text-sm" style={{ color: "var(--muted)" }}>Ordered {fmtDate(po.orderDate)}</span></div>
         <div className="text-xl font-semibold tabular-nums">{money(po.total, po.currency)}</div>
       </div>
+
+      {/* Authorising signature — sign the order before it is issued to the vendor */}
+      <SectionTitle>Authorisation</SectionTitle>
+      {po.authorisedSignature || po.authorisedByName ? (
+        <div className="card p-4 mb-6">
+          <div className="text-sm">Authorised by <strong>{po.authorisedByName ?? "—"}</strong>{po.authorisedAt ? ` · ${fmtDateTime(po.authorisedAt)}` : ""}</div>
+          {po.authorisedSignature && <img src={po.authorisedSignature} alt="authorising signature" style={{ height: 50, marginTop: 8 }} />}
+        </div>
+      ) : po.status === "cancelled" ? null : (
+        <form action={authorisePOAction} className="card p-4 mb-6">
+          <input type="hidden" name="poId" value={po.id} />
+          <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>An authorising officer signs the order before it is sent to the vendor. Draw or type your signature, then authorise.</p>
+          <SignField name="sig" />
+          <div className="flex justify-end mt-2"><button className="btn btn-sm btn-primary" type="submit">Authorise &amp; sign order</button></div>
+        </form>
+      )}
 
       <SectionTitle>Order items</SectionTitle>
       <div className="card overflow-x-auto mb-6">

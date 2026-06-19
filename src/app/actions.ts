@@ -2614,7 +2614,7 @@ export async function finalisePayrollAction(formData: FormData) {
 }
 
 /* ============================ PROCUREMENT ============================ */
-import { decidePurchaseRequest, createPOFromRequest, createGRN, createBillFromPO, upsertProcurementConfig, getProcurementConfig, type ProcurementConfig } from "@/server/services/procurement";
+import { decidePurchaseRequest, createPOFromRequest, createGRN, createBillFromPO, upsertProcurementConfig, getProcurementConfig, seedPurchaseApprovalChain, assignPurchaseApprover, signPurchaseApproval, authorisePurchaseOrder, type ProcurementConfig } from "@/server/services/procurement";
 
 // Vendors
 export async function addVendorAction(formData: FormData) {
@@ -2660,8 +2660,10 @@ export async function createPurchaseRequestAction(formData: FormData) {
   await q(`INSERT INTO purchase_request_item (id, request_id, description, quantity, unit, estimated_unit_cost, amount)
            VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [id("pri"), prId, desc, qty, String(formData.get("unit") || "") || null, unitCost, amount]);
+  // Seed the sign-off chain (finance review -> budget holder / PI -> authorising officer).
+  await seedPurchaseApprovalChain(prId, !!projectId);
   await writeAudit({ orgId, userId, action: "create", entity: "purchase_request", entityId: number, after: { title, amount, projectId, budgetLineId } });
-  redirect("/procurement/requests?created=1");
+  redirect(`/procurement/requests/${prId}?created=1`);
 }
 export async function decidePurchaseRequestAction(formData: FormData) {
   const { orgId, userId, userName } = await requireInstitutionFinance();
@@ -2683,6 +2685,48 @@ export async function createPOAction(formData: FormData) {
   try { poId = await createPOFromRequest(orgId, prId, vendorId, { id: userId, name: userName }); }
   catch (e) { redirect(`/procurement/requests?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
   redirect(`/procurement/orders/${poId}`);
+}
+
+// Assign a person to a purchase-request approval step and email them for their signature.
+export async function assignPurchaseApproverAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const requestId = String(formData.get("requestId"));
+  const step = Number(formData.get("step") || 0);
+  const approverId = String(formData.get("approverId") || "");
+  if (!approverId || !step) redirect(`/procurement/requests/${requestId}?err=assign`);
+  try { await assignPurchaseApprover(orgId, requestId, step, approverId, { id: userId, name: userName }); }
+  catch (e) { redirect(`/procurement/requests/${requestId}?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  revalidatePath(`/procurement/requests/${requestId}`);
+  redirect(`/procurement/requests/${requestId}?assigned=1`);
+}
+
+// Sign (approve/reject) the current approval step. Allowed for the assigned approver of
+// that step or an org admin — a chain signatory need not be an administrator.
+export async function signPurchaseRequestAction(formData: FormData) {
+  const user = await requireUser();
+  const requestId = String(formData.get("requestId"));
+  const step = Number(formData.get("step") || 0);
+  const decision = String(formData.get("decision")) === "rejected" ? "rejected" : "approved";
+  const org = await getUserOrg(user.id);
+  if (!org) redirect("/dashboard");
+  const pr = await one<{ id: string }>(`SELECT id FROM purchase_request WHERE id=$1 AND org_id=$2`, [requestId, org.id]);
+  if (!pr) redirect("/procurement/requests");
+  const stepRow = await one<{ approverId: string | null }>(`SELECT approver_id AS "approverId" FROM purchase_approval WHERE request_id=$1 AND step=$2`, [requestId, step]);
+  if (!org.isOrgAdmin && stepRow?.approverId !== user.id) redirect(`/procurement/requests/${requestId}?err=notyou`);
+  try { await signPurchaseApproval(org.id, requestId, step, { id: user.id, name: user.name }, decision, String(formData.get("comment") || "") || undefined, String(formData.get("sig") || "") || undefined); }
+  catch (e) { redirect(`/procurement/requests/${requestId}?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  revalidatePath(`/procurement/requests/${requestId}`);
+  redirect(`/procurement/requests/${requestId}?signed=${decision}`);
+}
+
+// Authorise (sign) a purchase order before it is issued to the vendor.
+export async function authorisePOAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const poId = String(formData.get("poId"));
+  try { await authorisePurchaseOrder(orgId, poId, { id: userId, name: userName }, String(formData.get("sig") || "") || undefined); }
+  catch (e) { redirect(`/procurement/orders/${poId}?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
+  revalidatePath(`/procurement/orders/${poId}`);
+  redirect(`/procurement/orders/${poId}?authorised=1`);
 }
 
 // Goods received notes

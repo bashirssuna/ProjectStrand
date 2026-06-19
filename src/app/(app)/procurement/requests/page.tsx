@@ -4,7 +4,7 @@ import { q } from "@/server/db";
 import { getProcurementConfig, requiredQuotations } from "@/server/services/procurement";
 import { PageHeader, SectionTitle, Field, StatusBadge, Empty, Badge } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
-import { createPurchaseRequestAction, decidePurchaseRequestAction, createPOAction } from "@/app/actions";
+import { createPurchaseRequestAction, createPOAction } from "@/app/actions";
 
 export default async function RequestsPage({ searchParams }: { searchParams: Promise<{ created?: string; decided?: string; err?: string }> }) {
   const { orgId } = await requireProcOrg();
@@ -72,10 +72,7 @@ export default async function RequestsPage({ searchParams }: { searchParams: Pro
               </div>
               <div className="flex flex-wrap gap-2 mt-3">
                 {r.status === "submitted" && (
-                  <>
-                    <form action={decidePurchaseRequestAction}><input type="hidden" name="requestId" value={r.id} /><button className="btn btn-sm btn-primary" name="decision" value="approved" type="submit">Approve</button></form>
-                    <form action={decidePurchaseRequestAction}><input type="hidden" name="requestId" value={r.id} /><button className="btn btn-sm" name="decision" value="rejected" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Reject</button></form>
-                  </>
+                  <Link href={`/procurement/requests/${r.id}`} className="btn btn-sm btn-primary">Review &amp; sign →</Link>
                 )}
                 {r.status === "approved" && vendors.length > 0 && (
                   <form action={createPOAction} className="flex items-end gap-2">

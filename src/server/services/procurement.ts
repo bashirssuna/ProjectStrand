@@ -1,6 +1,7 @@
 import "server-only";
 import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
+import { writeAudit, notify } from "@/server/services/audit";
 
 const round2 = (n: number | string) => { const x = Number(n) || 0; return Math.round((x + Number.EPSILON) * 100) / 100; };
 
@@ -105,11 +106,114 @@ export async function decidePurchaseRequest(orgId: string, prId: string, decisio
   }
 }
 
-/* --------- Purchase orders --------- */
+/* --------- Purchase request approval chain (signatures + email) --------- */
+// Standard sign-off chain. A project-charged request adds a budget-holder / PI step
+// between finance review and the authorising officer.
+export function purchaseApprovalSteps(hasProject: boolean): { step: number; role: string }[] {
+  return hasProject
+    ? [{ step: 1, role: "Finance review" }, { step: 2, role: "Budget holder / PI" }, { step: 3, role: "Authorising officer" }]
+    : [{ step: 1, role: "Finance review" }, { step: 2, role: "Authorising officer" }];
+}
+
+// Seed the approval steps for a request (idempotent — does nothing if steps exist).
+export async function seedPurchaseApprovalChain(requestId: string, hasProject: boolean): Promise<void> {
+  const existing = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM purchase_approval WHERE request_id=$1`, [requestId]))?.c ?? 0;
+  if (existing > 0) return;
+  for (const s of purchaseApprovalSteps(hasProject)) {
+    await q(`INSERT INTO purchase_approval (id, request_id, step, role, decision) VALUES ($1,$2,$3,$4,'pending')`,
+      [id("pa"), requestId, s.step, s.role]);
+  }
+}
+
+// Reserve the estimated total against the project budget line as a commitment
+// (idempotent by source_id). Called when the chain reaches full approval.
+async function reservePurchaseCommitment(pr: { id: string; projectId: string | null; budgetLineId: string | null; estimatedTotal: number; number: string; title: string }): Promise<void> {
+  if (!(pr.projectId && pr.budgetLineId && pr.estimatedTotal > 0)) return;
+  const already = await one<{ id: string }>(`SELECT id FROM commitment WHERE source=$1 AND source_id=$2`, ["purchase_request", pr.id]);
+  if (already) return;
+  await q(`INSERT INTO commitment (id, project_id, budget_line_id, amount, date, note, source, source_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("cmt"), pr.projectId, pr.budgetLineId, pr.estimatedTotal, new Date().toISOString().slice(0, 10),
+     `${pr.number}: ${pr.title}`, "purchase_request", pr.id]);
+}
+
+// Assign a specific person to an approval step and email them that their signature is needed.
+export async function assignPurchaseApprover(orgId: string, requestId: string, step: number, approverId: string, by: { id: string; name: string }): Promise<void> {
+  const pr = await one<{ number: string; title: string }>(`SELECT number, title FROM purchase_request WHERE id=$1 AND org_id=$2`, [requestId, orgId]);
+  if (!pr) throw new Error("Purchase request not found.");
+  const u = await one<{ name: string }>(`SELECT name FROM app_user WHERE id=$1`, [approverId]);
+  await q(`UPDATE purchase_approval SET approver_id=$3, approver_name=$4, notified_at=now() WHERE request_id=$1 AND step=$2 AND decision='pending'`,
+    [requestId, step, approverId, u?.name ?? null]);
+  await notify({ orgId, userId: approverId, type: "approval_request",
+    title: `Signature needed: purchase request ${pr.number}`,
+    body: `You have been asked to sign off purchase request "${pr.title}". Open it to review and sign.`,
+    link: `/procurement/requests/${requestId}`, email: true });
+  await writeAudit({ orgId, userId: by.id, action: "update", entity: "purchase_approval", entityId: `${pr.number}#${step}`, after: { assignedTo: approverId } });
+}
+
+// Sign (approve/reject) the current step. Steps must be signed in order. The final
+// approval approves the request and reserves the budget commitment; any rejection rejects
+// the whole request. The next pending approver (if already assigned) is emailed.
+export async function signPurchaseApproval(orgId: string, requestId: string, step: number, by: { id: string; name: string }, decision: "approved" | "rejected", comment?: string, signatureData?: string): Promise<void> {
+  const pr = await one<{ status: string; projectId: string | null; budgetLineId: string | null; estimatedTotal: number; number: string; title: string }>(
+    `SELECT status, project_id AS "projectId", budget_line_id AS "budgetLineId", estimated_total::float AS "estimatedTotal", number, title FROM purchase_request WHERE id=$1 AND org_id=$2`, [requestId, orgId]);
+  if (!pr) throw new Error("Purchase request not found.");
+  if (pr.status !== "submitted") throw new Error("Only a submitted request can be signed.");
+  const steps = await q<{ step: number; decision: string }>(
+    `SELECT step, decision FROM purchase_approval WHERE request_id=$1 ORDER BY step ASC`, [requestId]);
+  const current = steps.find((s) => s.decision === "pending");
+  if (!current) throw new Error("This request has no pending approval step.");
+  if (current.step !== step) throw new Error("Approval steps must be signed in order.");
+  // Competition gate (Procurement Policy §6) checked at the first sign-off.
+  if (decision === "approved" && current.step === steps[0].step) {
+    const gate = await quotationGate(orgId, requestId);
+    if (gate.enforce && !gate.ok && !gate.hasSingleSource) {
+      throw new Error(`${gate.tierLabel} needs ${gate.required} quotation(s); ${gate.have} on file. Add more quotations or record a single-source justification before approving.`);
+    }
+  }
+  const sig = await one<{ dataUrl: string }>(`SELECT data_url AS "dataUrl" FROM signature_asset WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, [by.id]);
+  const sigData = decision === "approved" ? ((signatureData && signatureData.length > 40 ? signatureData : null) ?? sig?.dataUrl ?? null) : null;
+  await q(`UPDATE purchase_approval SET decision=$3, comment=$4, approver_id=COALESCE(approver_id,$5), approver_name=COALESCE(approver_name,$6), signature_data=$7, decided_at=now() WHERE request_id=$1 AND step=$2`,
+    [requestId, step, decision, comment ?? null, by.id, by.name, sigData]);
+  if (decision === "rejected") {
+    await q(`UPDATE purchase_request SET status='rejected', decided_by=$2, decided_by_name=$3, decided_at=now(), decision_note=$4 WHERE id=$1`,
+      [requestId, by.id, by.name, comment ?? null]);
+    await writeAudit({ orgId, userId: by.id, action: "update", entity: "purchase_request", entityId: pr.number, after: { decision: "rejected", atStep: step } });
+    return;
+  }
+  const remaining = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM purchase_approval WHERE request_id=$1 AND decision<>'approved'`, [requestId]))?.c ?? 0;
+  if (remaining === 0) {
+    await q(`UPDATE purchase_request SET status='approved', decided_by=$2, decided_by_name=$3, decided_at=now() WHERE id=$1`, [requestId, by.id, by.name]);
+    await reservePurchaseCommitment({ id: requestId, projectId: pr.projectId, budgetLineId: pr.budgetLineId, estimatedTotal: pr.estimatedTotal, number: pr.number, title: pr.title });
+    await writeAudit({ orgId, userId: by.id, action: "update", entity: "purchase_request", entityId: pr.number, after: { decision: "approved", fullySigned: true } });
+  } else {
+    const next = await one<{ approverId: string | null }>(`SELECT approver_id AS "approverId" FROM purchase_approval WHERE request_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`, [requestId]);
+    if (next?.approverId) {
+      await notify({ orgId, userId: next.approverId, type: "approval_request",
+        title: `Signature needed: purchase request ${pr.number}`,
+        body: `Purchase request "${pr.title}" has advanced and now needs your sign-off.`,
+        link: `/procurement/requests/${requestId}`, email: true });
+    }
+    await writeAudit({ orgId, userId: by.id, action: "update", entity: "purchase_approval", entityId: `${pr.number}#${step}`, after: { decision: "approved" } });
+  }
+}
+
+// Authorise (sign) a purchase order before it is issued to the vendor.
+export async function authorisePurchaseOrder(orgId: string, poId: string, by: { id: string; name: string }, signatureData?: string): Promise<void> {
+  const po = await one<{ number: string }>(`SELECT number FROM purchase_order WHERE id=$1 AND org_id=$2`, [poId, orgId]);
+  if (!po) throw new Error("Purchase order not found.");
+  const sig = await one<{ dataUrl: string }>(`SELECT data_url AS "dataUrl" FROM signature_asset WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, [by.id]);
+  const sigData = (signatureData && signatureData.length > 40 ? signatureData : null) ?? sig?.dataUrl ?? null;
+  await q(`UPDATE purchase_order SET authorised_by=$2, authorised_by_name=$3, authorised_signature=$4, authorised_at=now() WHERE id=$1`,
+    [poId, by.id, by.name, sigData]);
+  await writeAudit({ orgId, userId: by.id, action: "update", entity: "purchase_order", entityId: po.number, after: { authorised: true } });
+}
+
+/* --------- Purchase order from request --------- */
 // Creates a PO from an approved purchase request, copying its items.
 export async function createPOFromRequest(orgId: string, prId: string, vendorId: string, by: { id: string; name: string }): Promise<string> {
-  const pr = await one<{ status: string; projectId: string | null; currency: string; title: string }>(
-    `SELECT status, project_id AS "projectId", currency, title FROM purchase_request WHERE id=$1 AND org_id=$2`, [prId, orgId]
+  const pr = await one<{ status: string; projectId: string | null; budgetLineId: string | null; currency: string; title: string }>(
+    `SELECT status, project_id AS "projectId", budget_line_id AS "budgetLineId", currency, title FROM purchase_request WHERE id=$1 AND org_id=$2`, [prId, orgId]
   );
   if (!pr) throw new Error("Purchase request not found.");
   if (pr.status !== "approved") throw new Error("The purchase request must be approved first.");
@@ -120,9 +224,9 @@ export async function createPOFromRequest(orgId: string, prId: string, vendorId:
   const poId = id("po");
   const number = await nextNum(orgId, "purchase_order", "PO");
   let total = 0;
-  await q(`INSERT INTO purchase_order (id, org_id, project_id, request_id, vendor_id, number, order_date, currency, status, created_by, created_by_name)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',$9,$10)`,
-    [poId, orgId, pr.projectId, prId, vendorId, number, new Date().toISOString().slice(0, 10), pr.currency, by.id, by.name]);
+  await q(`INSERT INTO purchase_order (id, org_id, project_id, budget_line_id, request_id, vendor_id, number, order_date, currency, status, created_by, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'open',$10,$11)`,
+    [poId, orgId, pr.projectId, pr.budgetLineId, prId, vendorId, number, new Date().toISOString().slice(0, 10), pr.currency, by.id, by.name]);
   for (const it of items) {
     const amount = round2(Number(it.quantity) * Number(it.estimatedUnitCost));
     total += amount;

@@ -1,15 +1,17 @@
 import Link from "next/link";
 import { getProjectAccess, canManageBudgetBulk } from "@/server/policy";
 import { one, q } from "@/server/db";
-import { budgetLineRollups, budgetSummary, STANDARD_BUDGET_CATEGORIES, type LineRollup } from "@/server/services/budget";
-import { addBudgetLineAction, convertBudgetCurrencyAction, updateBudgetLineAction, deleteBudgetLineAction, clearBudgetLinesAction, setupBudgetSectionsAction } from "@/app/actions";
+import { budgetLineRollups, budgetSummary, STANDARD_BUDGET_CATEGORIES, budgetApprovalHistory, budgetReallocations, type LineRollup } from "@/server/services/budget";
+import { addBudgetLineAction, convertBudgetCurrencyAction, updateBudgetLineAction, deleteBudgetLineAction, clearBudgetLinesAction, setupBudgetSectionsAction, submitBudgetAction, approveBudgetAction, rejectBudgetAction, reopenBudgetAction, reallocateBudgetAction } from "@/app/actions";
 import { ConfirmSubmit } from "@/components/confirm-submit";
-import { Stat, SectionTitle, Empty, ProgressBar, Field, Badge } from "@/components/ui";
-import { money, pct, num, fmtDate } from "@/lib/format";
+import { Stat, SectionTitle, Empty, ProgressBar, Field, Badge, StatusBadge } from "@/components/ui";
+import { money, pct, num, fmtDate, fmtDateTime } from "@/lib/format";
+import { label } from "@/lib/enums";
 import { blockStaff } from "../_staffblock";
 
-export default async function BudgetPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function BudgetPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ bm?: string }> }) {
   const { id } = await params;
+  const sp = await searchParams;
   await blockStaff(id);
   const access = await getProjectAccess(id);
   const canManage = access.permissions.has("budget.manage");
@@ -17,9 +19,14 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
   const proj = await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [id]);
   const c = proj?.currency ?? "USD";
 
-  const bud = await one<{ id: string; name: string; kind: string }>(
-    `SELECT id, name, kind FROM budget WHERE project_id=$1 ORDER BY version DESC LIMIT 1`, [id]
+  const bud = await one<{ id: string; name: string; kind: string; status: string }>(
+    `SELECT id, name, kind, status FROM budget WHERE project_id=$1 ORDER BY version DESC LIMIT 1`, [id]
   );
+  const status = bud?.status ?? "draft";
+  const editable = !bud || status !== "approved";
+  const approvals = bud ? await budgetApprovalHistory(bud.id) : [];
+  const reallocations = bud ? await budgetReallocations(bud.id) : [];
+  const canEdit = canManage && editable;
   const lines = bud ? await budgetLineRollups(bud.id) : [];
   const sum = bud ? await budgetSummary(bud.id) : null;
   const cats = bud ? await q<{ id: string; name: string; costType: string }>(
@@ -45,7 +52,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
     planned: ls.reduce((s, l) => s + l.planned, 0), committed: ls.reduce((s, l) => s + l.committed, 0),
     actual: ls.reduce((s, l) => s + l.actual, 0), remaining: ls.reduce((s, l) => s + l.remaining, 0),
   });
-  const colCount = canManage ? 11 : 10;
+  const colCount = canEdit ? 11 : 10;
 
   // sections to render: every defined category (even if empty), then Uncategorized.
   const sections: { id: string | null; name: string; costType: string; lines: LineRollup[] }[] = [
@@ -117,12 +124,23 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
       <td className="td text-right tabular-nums">{money(l.actual, c)}</td>
       <td className="td text-right tabular-nums" style={{ color: l.remaining < 0 ? "var(--danger)" : undefined }}>{money(l.remaining, c)}</td>
       <td className="td"><ProgressBar value={l.burn} tone={l.burn > 100 ? "danger" : l.burn > 90 ? "warn" : "ok"} /></td>
-      {canManage && <td className="td text-right whitespace-nowrap">{editForm(l)}</td>}
+      {canEdit && <td className="td text-right whitespace-nowrap">{editForm(l)}</td>}
     </tr>
   );
 
   return (
     <div className="space-y-7">
+      {sp.bm && (
+        <div className="card p-3 text-sm" style={{ color: ["insufficient", "badmove"].includes(sp.bm) ? "var(--danger)" : "var(--ok)", borderColor: ["insufficient", "badmove"].includes(sp.bm) ? "var(--danger)" : "var(--ok)" }}>
+          {sp.bm === "submitted" && "Budget submitted for approval."}
+          {sp.bm === "approved" && "Budget approved and locked. Reopen it to make further changes."}
+          {sp.bm === "rejected" && "Budget returned for revision."}
+          {sp.bm === "reopened" && "Budget reopened — lines can be edited again."}
+          {sp.bm === "reallocated" && "Funds reallocated between budget lines."}
+          {sp.bm === "insufficient" && "Reallocation exceeds the available (uncommitted, unspent) balance on the source line."}
+          {sp.bm === "badmove" && "Choose two different lines and a positive amount to reallocate."}
+        </div>
+      )}
       {sum && (
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           <Stat label="Planned" value={money(sum.planned, c)} />
@@ -133,8 +151,46 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
         </div>
       )}
 
+      {bud && (
+        <div className="card p-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-2">
+              <span className="text-sm" style={{ color: "var(--muted)" }}>Approval status</span>
+              <StatusBadge status={status} />
+            </div>
+            {canManage && (
+              <div className="flex items-center gap-2">
+                {(status === "draft" || status === "rejected") && (
+                  <form action={submitBudgetAction}><input type="hidden" name="projectId" value={id} /><input type="hidden" name="budgetId" value={bud.id} />
+                    <button className="btn btn-sm btn-primary" type="submit">Submit for approval</button>
+                  </form>
+                )}
+                {status === "submitted" && canBulk && (
+                  <>
+                    <form action={approveBudgetAction}><input type="hidden" name="projectId" value={id} /><input type="hidden" name="budgetId" value={bud.id} /><button className="btn btn-sm btn-primary" type="submit">Approve</button></form>
+                    <form action={rejectBudgetAction}><input type="hidden" name="projectId" value={id} /><input type="hidden" name="budgetId" value={bud.id} /><ConfirmSubmit message="Return this budget for revision?" className="btn btn-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Reject</ConfirmSubmit></form>
+                  </>
+                )}
+                {status === "submitted" && !canBulk && <span className="text-xs" style={{ color: "var(--muted)" }}>Awaiting approval by PI / Finance.</span>}
+                {status === "approved" && canBulk && (
+                  <form action={reopenBudgetAction}><input type="hidden" name="projectId" value={id} /><input type="hidden" name="budgetId" value={bud.id} /><button className="btn btn-sm" type="submit">Reopen for revision</button></form>
+                )}
+              </div>
+            )}
+          </div>
+          {!editable && <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>This budget is approved and locked. Use <strong>reallocations</strong> below to move funds between lines, or reopen it to edit lines directly.</p>}
+          {approvals.length > 0 && (
+            <div className="mt-3 text-xs space-y-0.5" style={{ color: "var(--muted)" }}>
+              {approvals.slice(0, 5).map((a, i) => (
+                <div key={i}>{label(a.action)} by {a.actedByName ?? "—"} · {fmtDateTime(a.actedAt)}{a.note ? ` — ${a.note}` : ""}</div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <div>
-        <SectionTitle action={canManage ? (
+        <SectionTitle action={canEdit ? (
           <div className="flex items-center gap-2">
             {cats.length === 0 && (
               <form action={setupBudgetSectionsAction}><input type="hidden" name="projectId" value={id} />{bud && <input type="hidden" name="budgetId" value={bud.id} />}
@@ -154,7 +210,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
           Budget {bud && <span className="text-sm font-normal" style={{ color: "var(--muted)" }}>· {bud.name}</span>}
         </SectionTitle>
 
-        {canManage && cats.length === 0 && lines.length > 0 && (
+        {canEdit && cats.length === 0 && lines.length > 0 && (
           <p className="text-sm mb-3 card p-3" style={{ borderColor: "var(--brand)" }}>Click <b>Set up standard sections</b> to add Personnel, Travel, Equipment, etc. Then assign each line to a section using its <b>Edit</b> button.</p>
         )}
 
@@ -174,7 +230,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                 <th className="th text-right">Spent</th>
                 <th className="th text-right">Remaining</th>
                 <th className="th text-left" style={{ width: 120 }}>Burn</th>
-                {canManage && <th className="th text-right">Edit</th>}
+                {canEdit && <th className="th text-right">Edit</th>}
               </tr></thead>
               {sections.map((sec) => {
                 const ss = sectionSum(sec.lines);
@@ -196,7 +252,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                         <td className="td text-right tabular-nums">{money(ss.actual, c)}</td>
                         <td className="td text-right tabular-nums" style={{ color: ss.remaining < 0 ? "var(--danger)" : undefined }}>{money(ss.remaining, c)}</td>
                         <td className="td" />
-                        {canManage && <td className="td" />}
+                        {canEdit && <td className="td" />}
                       </tr>
                     )}
                   </tbody>
@@ -211,7 +267,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
                     <td className="td text-right tabular-nums">{money(sum.actual, c)}</td>
                     <td className="td text-right tabular-nums" style={{ color: sum.remaining < 0 ? "var(--danger)" : undefined }}>{money(sum.remaining, c)}</td>
                     <td className="td" />
-                    {canManage && <td className="td" />}
+                    {canEdit && <td className="td" />}
                   </tr>
                 </tfoot>
               )}
@@ -220,7 +276,7 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
         )}
       </div>
 
-      {canManage && (
+      {canEdit && (
         <div>
           <SectionTitle>Add budget line</SectionTitle>
           <form action={addBudgetLineAction} className="card p-4 grid sm:grid-cols-6 gap-3 items-end">
@@ -245,7 +301,38 @@ export default async function BudgetPage({ params }: { params: Promise<{ id: str
         </div>
       )}
 
-      {canManage && lines.length > 0 && (
+      {canBulk && lines.length >= 2 && (
+        <div>
+          <SectionTitle>Reallocate funds between lines (virement)</SectionTitle>
+          <form action={reallocateBudgetAction} className="card p-4 grid sm:grid-cols-4 gap-3 items-end">
+            <input type="hidden" name="projectId" value={id} />{bud && <input type="hidden" name="budgetId" value={bud.id} />}
+            <div className="sm:col-span-2"><Field label="From line (source)"><select name="fromLineId" required className="select w-full">
+              <option value="">— source —</option>
+              {lines.map((l) => <option key={l.id} value={l.id}>{l.code} · {l.description} — avail {money(l.remaining, c)}</option>)}
+            </select></Field></div>
+            <Field label={`Amount (${c})`}><input type="number" step="0.01" min="0" name="amount" required className="input" /></Field>
+            <button className="btn btn-primary" type="submit">Reallocate</button>
+            <div className="sm:col-span-2"><Field label="To line (destination)"><select name="toLineId" required className="select w-full">
+              <option value="">— destination —</option>
+              {lines.map((l) => <option key={l.id} value={l.id}>{l.code} · {l.description}</option>)}
+            </select></Field></div>
+            <div className="sm:col-span-2"><Field label="Reason (optional)"><input name="reason" className="input" placeholder="e.g. shift savings from Travel to Equipment" /></Field></div>
+          </form>
+          <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>Moves planned funds from one line to another, keeping the total budget unchanged. You can only move the <strong>available</strong> balance (planned minus committed and spent). Each reallocation is logged below and in each line&apos;s change history.</p>
+          {reallocations.length > 0 && (
+            <div className="card overflow-x-auto mt-3">
+              <table className="w-full text-sm">
+                <thead><tr><th className="th text-left">When</th><th className="th text-left">From → To</th><th className="th text-right">Amount</th><th className="th text-left">Reason</th><th className="th text-left">By</th></tr></thead>
+                <tbody>{reallocations.map((r, i) => (
+                  <tr key={i}><td className="td whitespace-nowrap">{fmtDate(r.createdAt)}</td><td className="td">{r.fromCode ?? "—"} → {r.toCode ?? "—"}</td><td className="td text-right tabular-nums">{money(r.amount, c)}</td><td className="td">{r.reason ?? ""}</td><td className="td">{r.createdByName ?? "—"}</td></tr>
+                ))}</tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {canEdit && lines.length > 0 && (
         <div>
           <SectionTitle>Convert project currency</SectionTitle>
           <form action={convertBudgetCurrencyAction} className="card p-4 flex flex-wrap items-end gap-3">

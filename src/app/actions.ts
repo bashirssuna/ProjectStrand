@@ -207,6 +207,7 @@ export async function addBudgetLineAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "budget.manage");
+  await assertBudgetEditable(projectId);
   let budgetId = String(formData.get("budgetId") || "");
   if (!budgetId) {
     budgetId = id("bud");
@@ -247,6 +248,7 @@ export async function updateBudgetLineAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "budget.manage");
+  await assertBudgetEditable(projectId);
   const lineId = String(formData.get("lineId"));
   const unitCost = Number(formData.get("unitCost") || 0);
   const quantity = Number(formData.get("quantity") || 1);
@@ -277,6 +279,7 @@ export async function deleteBudgetLineAction(formData: FormData) {
   await requirePermission(projectId, "budget.manage");
   const lineId = String(formData.get("lineId"));
   // preserve the final state in history before removing the line
+  await assertBudgetEditable(projectId);
   const prev = await one<{ code: string; description: string; unitCost: number; quantity: number; planned: number }>(
     `SELECT code, description, unit_cost AS "unitCost", quantity, planned FROM budget_line WHERE id=$1`, [lineId]);
   if (prev) {
@@ -300,6 +303,7 @@ export async function clearBudgetLinesAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   await requireBudgetBulk(projectId);
+  await assertBudgetEditable(projectId);
   const inProject = `SELECT bl.id FROM budget_line bl JOIN budget b ON b.id=bl.budget_id WHERE b.project_id=$1`;
   await q(`UPDATE requisition SET budget_line_id=NULL WHERE budget_line_id IN (${inProject})`, [projectId]);
   await q(`UPDATE activity SET budget_line_id=NULL WHERE budget_line_id IN (${inProject})`, [projectId]);
@@ -4938,4 +4942,108 @@ export async function postReceivedItemAction(formData: FormData) {
   await q(`UPDATE purchase_order_item SET posted_qty=qty_received WHERE id=$1`, [poItemId]);
   await writeAudit({ orgId, userId, action: "create", entity: "stock_movement", entityId: stockItemId, meta: { fromPoItem: poItemId, kind: "receipt", qty: toPost } });
   redirect(`/procurement/orders/${it.poId}?posted=stores`);
+}
+
+/* ===================== Budget approval workflow + reallocations (virement) ===================== */
+// An approved budget is locked: structural line edits require reopening it first.
+async function assertBudgetEditable(projectId: string) {
+  const b = await one<{ status: string }>(`SELECT status FROM budget WHERE project_id=$1 ORDER BY version DESC LIMIT 1`, [projectId]);
+  if (b && b.status === "approved") throw new Error("This budget is approved and locked. Reopen it for revision before editing lines.");
+}
+
+async function loadProjectBudget(projectId: string, budgetId: string) {
+  const b = await one<{ id: string; status: string }>(`SELECT id, status FROM budget WHERE id=$1 AND project_id=$2`, [budgetId, projectId]);
+  if (!b) redirect(`/projects/${projectId}/budget`);
+  return b;
+}
+
+export async function submitBudgetAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "budget.manage");
+  const budgetId = String(formData.get("budgetId") || "");
+  const b = await loadProjectBudget(projectId, budgetId);
+  if (!["draft", "rejected"].includes(b.status)) redirect(`/projects/${projectId}/budget`);
+  await q(`UPDATE budget SET status='submitted' WHERE id=$1`, [budgetId]);
+  await q(`INSERT INTO budget_approval (id, budget_id, action, note, acted_by_id, acted_by_name) VALUES ($1,$2,'submitted',$3,$4,$5)`, [id("bap"), budgetId, sNull(formData.get("note")), user.id, user.name]);
+  await writeAudit({ userId: user.id, action: "submit", entity: "budget", entityId: budgetId });
+  redirect(`/projects/${projectId}/budget?bm=submitted`);
+}
+
+export async function approveBudgetAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requireBudgetBulk(projectId);
+  const budgetId = String(formData.get("budgetId") || "");
+  const b = await loadProjectBudget(projectId, budgetId);
+  if (b.status !== "submitted") redirect(`/projects/${projectId}/budget`);
+  await q(`UPDATE budget SET status='approved' WHERE id=$1`, [budgetId]);
+  await q(`INSERT INTO budget_approval (id, budget_id, action, note, acted_by_id, acted_by_name) VALUES ($1,$2,'approved',$3,$4,$5)`, [id("bap"), budgetId, sNull(formData.get("note")), user.id, user.name]);
+  await writeAudit({ userId: user.id, action: "approve", entity: "budget", entityId: budgetId });
+  redirect(`/projects/${projectId}/budget?bm=approved`);
+}
+
+export async function rejectBudgetAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requireBudgetBulk(projectId);
+  const budgetId = String(formData.get("budgetId") || "");
+  const b = await loadProjectBudget(projectId, budgetId);
+  if (b.status !== "submitted") redirect(`/projects/${projectId}/budget`);
+  await q(`UPDATE budget SET status='rejected' WHERE id=$1`, [budgetId]);
+  await q(`INSERT INTO budget_approval (id, budget_id, action, note, acted_by_id, acted_by_name) VALUES ($1,$2,'rejected',$3,$4,$5)`, [id("bap"), budgetId, sNull(formData.get("note")), user.id, user.name]);
+  await writeAudit({ userId: user.id, action: "reject", entity: "budget", entityId: budgetId });
+  redirect(`/projects/${projectId}/budget?bm=rejected`);
+}
+
+export async function reopenBudgetAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requireBudgetBulk(projectId);
+  const budgetId = String(formData.get("budgetId") || "");
+  const b = await loadProjectBudget(projectId, budgetId);
+  if (!["approved", "rejected"].includes(b.status)) redirect(`/projects/${projectId}/budget`);
+  await q(`UPDATE budget SET status='draft' WHERE id=$1`, [budgetId]);
+  await q(`INSERT INTO budget_approval (id, budget_id, action, note, acted_by_id, acted_by_name) VALUES ($1,$2,'reopened',$3,$4,$5)`, [id("bap"), budgetId, sNull(formData.get("note")), user.id, user.name]);
+  await writeAudit({ userId: user.id, action: "reopen", entity: "budget", entityId: budgetId });
+  redirect(`/projects/${projectId}/budget?bm=reopened`);
+}
+
+// Reallocate (virement) planned funds from one budget line to another. The source
+// line must have enough *available* (planned − committed − spent): you can never
+// move money that is already committed or spent. Total budget is preserved.
+export async function reallocateBudgetAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requireBudgetBulk(projectId);
+  const budgetId = String(formData.get("budgetId") || "");
+  const fromId = String(formData.get("fromLineId") || "");
+  const toId = String(formData.get("toLineId") || "");
+  const amount = Number(formData.get("amount") || 0);
+  await loadProjectBudget(projectId, budgetId);
+  if (!fromId || !toId || fromId === toId || !(amount > 0)) redirect(`/projects/${projectId}/budget?bm=badmove`);
+  const lines = await q<{ id: string; code: string; description: string; planned: number; committed: number; actual: number }>(
+    `SELECT bl.id, bl.code, bl.description, bl.planned,
+            COALESCE((SELECT SUM(amount) FROM commitment WHERE budget_line_id=bl.id),0) AS committed,
+            COALESCE((SELECT SUM(amount) FROM expenditure WHERE budget_line_id=bl.id),0) AS actual
+     FROM budget_line bl JOIN budget b ON b.id=bl.budget_id WHERE b.id=$1 AND b.project_id=$2 AND bl.id IN ($3,$4)`,
+    [budgetId, projectId, fromId, toId]);
+  const from = lines.find((l) => l.id === fromId);
+  const to = lines.find((l) => l.id === toId);
+  if (!from || !to) redirect(`/projects/${projectId}/budget?bm=badmove`);
+  const available = from.planned - from.committed - from.actual;
+  if (amount > available + 1e-9) redirect(`/projects/${projectId}/budget?bm=insufficient`);
+  // snapshot both lines' pre-change figures into the per-line revision history
+  for (const l of [from, to]) {
+    await q(`INSERT INTO budget_line_revision (id, project_id, budget_line_id, code, description, unit_cost, quantity, planned, action, changed_by, changed_by_name)
+             SELECT $1,$2,id,code,description,unit_cost,quantity,planned,'reallocated',$3,$4 FROM budget_line WHERE id=$5`,
+      [id("blr"), projectId, user.id, user.name, l.id]);
+  }
+  await q(`UPDATE budget_line SET planned = planned - $2 WHERE id=$1`, [fromId, amount]);
+  await q(`UPDATE budget_line SET planned = planned + $2 WHERE id=$1`, [toId, amount]);
+  await q(`INSERT INTO budget_reallocation (id, budget_id, from_line_id, to_line_id, amount, reason, created_by_id, created_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("brl"), budgetId, fromId, toId, amount, sNull(formData.get("reason")), user.id, user.name]);
+  await writeAudit({ userId: user.id, action: "reallocate", entity: "budget", entityId: budgetId, meta: { from: from.code, to: to.code, amount } });
+  await evaluateProject(projectId);
+  redirect(`/projects/${projectId}/budget?bm=reallocated`);
 }

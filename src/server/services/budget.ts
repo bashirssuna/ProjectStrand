@@ -81,3 +81,17 @@ export async function lineAvailable(budgetLineId: string): Promise<number> {
   if (!row) return 0;
   return row.planned - row.committed - row.actual;
 }
+
+export type BudgetApprovalEntry = { action: string; note: string | null; actedByName: string | null; actedAt: string };
+export async function budgetApprovalHistory(budgetId: string): Promise<BudgetApprovalEntry[]> {
+  return await q<BudgetApprovalEntry>(
+    `SELECT action, note, acted_by_name AS "actedByName", acted_at AS "actedAt" FROM budget_approval WHERE budget_id=$1 ORDER BY acted_at DESC`, [budgetId]);
+}
+
+export type ReallocationEntry = { amount: number; reason: string | null; fromCode: string | null; toCode: string | null; createdByName: string | null; createdAt: string };
+export async function budgetReallocations(budgetId: string): Promise<ReallocationEntry[]> {
+  return await q<ReallocationEntry>(
+    `SELECT r.amount, r.reason, f.code AS "fromCode", t.code AS "toCode", r.created_by_name AS "createdByName", r.created_at AS "createdAt"
+     FROM budget_reallocation r LEFT JOIN budget_line f ON f.id=r.from_line_id LEFT JOIN budget_line t ON t.id=r.to_line_id
+     WHERE r.budget_id=$1 ORDER BY r.created_at DESC`, [budgetId]);
+}

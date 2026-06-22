@@ -2100,4 +2100,25 @@ CREATE TABLE IF NOT EXISTS contract_appraisal (
 
 
 ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS posted_qty numeric(18,2) NOT NULL DEFAULT 0;
+
+-- ===================== Budget approval workflow + reallocations (virement) =====================
+CREATE TABLE IF NOT EXISTS budget_approval (
+  id text PRIMARY KEY,
+  budget_id text NOT NULL REFERENCES budget(id) ON DELETE CASCADE,
+  action text NOT NULL,
+  note text,
+  acted_by_id text, acted_by_name text,
+  acted_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS budget_reallocation (
+  id text PRIMARY KEY,
+  budget_id text NOT NULL REFERENCES budget(id) ON DELETE CASCADE,
+  from_line_id text NOT NULL,
+  to_line_id text NOT NULL,
+  amount double precision NOT NULL DEFAULT 0,
+  reason text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 `;

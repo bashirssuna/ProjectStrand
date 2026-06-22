@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireInventoryOrg } from "../../_guard";
+import { q } from "@/server/db";
 import { getItem, itemMovements, listStores, isLow } from "@/server/services/inventory";
 import { getUserOrg } from "@/server/services/accounts";
 import { requireUser } from "@/server/auth";
 import { PageHeader, SectionTitle, Field, Badge, StatusBadge, Empty, Stat } from "@/components/ui";
-import { money, fmtDate } from "@/lib/format";
+import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
+import { currencyOptions } from "@/lib/currencies";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { updateItemAction, recordMovementAction, deleteItemAction } from "@/app/actions";
 
@@ -24,6 +26,21 @@ export default async function ItemDetail({ params, searchParams }: { params: Pro
   if (!item) notFound();
   const [moves, stores] = await Promise.all([itemMovements(id), listStores(orgId)]);
   const low = isLow(item);
+  const itemCur = item.currency ?? cur;
+
+  // Change history (audit trail) for this item.
+  const history = await q<{ action: string; actor: string | null; createdAt: string; before: string | null; after: string | null; meta: string | null }>(
+    `SELECT a.action, a.created_at AS "createdAt", a.before, a.after, a.meta, u.name AS actor
+     FROM audit_log a LEFT JOIN app_user u ON u.id=a.user_id
+     WHERE a.entity='stock_item' AND a.entity_id=$1 ORDER BY a.created_at DESC`, [id]
+  );
+  const parse = (j: string | null): Record<string, unknown> | null => { if (!j) return null; try { const v = JSON.parse(j); return v && typeof v === "object" ? v as Record<string, unknown> : null; } catch { return null; } };
+  const histRows = history.map((h) => {
+    const before = parse(h.before), after = parse(h.after);
+    const title = h.action === "create" ? "Created" : "Edited";
+    const isEdit = title === "Edited" && !!before && !!after;
+    return { title, actor: h.actor, createdAt: h.createdAt, before, after, isEdit };
+  });
 
   return (
     <div className="max-w-4xl">
@@ -34,13 +51,14 @@ export default async function ItemDetail({ params, searchParams }: { params: Pro
         </div>} />
 
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Item created.</div>}
-      {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved.</div>}
+      {sp.saved && Number(sp.saved) > 0 && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved {sp.saved} change{sp.saved === "1" ? "" : "s"}.</div>}
       {sp.moved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Stock {sp.moved} recorded.</div>}
+      {sp.err === "insufficient" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Not enough stock on hand for that issue/disposal — the quantity can&apos;t exceed the current balance. Use an adjustment if you need to correct the balance.</div>}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         <Stat label="On hand" value={`${item.balance} ${item.unit}`} tone={low ? "warn" : undefined} sub={low ? `reorder at ${item.reorderLevel}` : undefined} />
-        <Stat label="Unit cost" value={money(item.unitCost, cur)} />
-        <Stat label="Stock value" value={money(item.balance * item.unitCost, cur)} />
+        <Stat label="Unit cost" value={money(item.unitCost, itemCur)} />
+        <Stat label="Stock value" value={money(item.balance * item.unitCost, itemCur)} />
         <Stat label="Reorder level" value={item.reorderLevel ? `${item.reorderLevel} ${item.unit}` : "—"} />
       </div>
 
@@ -93,10 +111,40 @@ export default async function ItemDetail({ params, searchParams }: { params: Pro
           <Field label="Category"><input name="category" defaultValue={item.category ?? ""} className="input" /></Field>
           <Field label="Unit"><input name="unit" defaultValue={item.unit} className="input" /></Field>
           <Field label="Unit cost"><input type="number" step="any" min={0} name="unitCost" defaultValue={item.unitCost} className="input" /></Field>
+          <Field label="Currency"><select name="currency" defaultValue={itemCur} className="select">{currencyOptions(itemCur).map((c) => <option key={c} value={c}>{c}</option>)}</select></Field>
           <Field label="Reorder level"><input type="number" step="any" min={0} name="reorderLevel" defaultValue={item.reorderLevel} className="input" /></Field>
           <Field label="Status"><select name="status" defaultValue={item.status} className="select"><option value="active">Active</option><option value="inactive">Inactive</option></select></Field>
           <div className="flex items-end"><button className="btn btn-sm btn-primary" type="submit">Save</button></div>
         </form>
+      </div>
+
+      {/* Change history (audit trail of item edits) */}
+      <div className="card p-4 mt-5">
+        <SectionTitle>Change history</SectionTitle>
+        {histRows.length === 0 ? <p className="text-sm" style={{ color: "var(--muted)" }}>No edits recorded yet.</p> : (
+          <ol className="space-y-4">
+            {histRows.map((h, i) => (
+              <li key={i} className="relative pl-5">
+                <span style={{ position: "absolute", left: 0, top: 4, width: 9, height: 9, borderRadius: "50%", background: h.title === "Created" ? "var(--brand)" : "var(--info)" }} />
+                {i < histRows.length - 1 && <span style={{ position: "absolute", left: 4, top: 13, bottom: -16, width: 1, background: "var(--border)" }} />}
+                <div className="text-sm font-medium">{h.title}</div>
+                <div className="text-xs" style={{ color: "var(--muted)" }}>{fmtDateTime(h.createdAt)}{h.actor ? ` · ${h.actor}` : ""}</div>
+                {h.isEdit && h.after ? (
+                  <ul className="mt-1 space-y-0.5">
+                    {Object.keys(h.after).map((k) => (
+                      <li key={k} className="text-xs">
+                        <span style={{ color: "var(--muted)" }}>{k}: </span>
+                        <span style={{ textDecoration: "line-through", color: "var(--muted)" }}>{String((h.before as Record<string, unknown>)?.[k] ?? "—")}</span>
+                        <span style={{ color: "var(--muted)" }}> → </span>
+                        <span>{String((h.after as Record<string, unknown>)[k] ?? "—")}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        )}
       </div>
     </div>
   );

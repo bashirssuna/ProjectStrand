@@ -5,7 +5,7 @@ function inParams(ids: string[], start: number) { return ids.map((_, i) => `$${s
 
 export type ItemRow = {
   id: string; code: string | null; name: string; category: string | null; itemType: string; unit: string;
-  unitCost: number; reorderLevel: number; status: string; balance: number;
+  unitCost: number; reorderLevel: number; status: string; balance: number; currency: string | null;
 };
 
 // All stock items with current balance (signed sum of movements). Low-stock and
@@ -19,7 +19,7 @@ export async function listItems(orgId: string, f?: { search?: string; itemType?:
   if (f?.search) { where.push(`(i.name ILIKE $${n} OR i.code ILIKE $${n} OR i.category ILIKE $${n})`); params.push(`%${f.search}%`); n++; }
   return await q<ItemRow>(
     `SELECT i.id, i.code, i.name, i.category, i.item_type AS "itemType", i.unit,
-            i.unit_cost::float8 AS "unitCost", i.reorder_level::float8 AS "reorderLevel", i.status,
+            i.unit_cost::float8 AS "unitCost", i.reorder_level::float8 AS "reorderLevel", i.status, i.currency,
             COALESCE((SELECT SUM(m.qty) FROM stock_movement m WHERE m.item_id=i.id),0)::float8 AS balance
      FROM stock_item i WHERE ${where.join(" AND ")} ORDER BY i.name LIMIT 1000`, params
   );
@@ -32,7 +32,7 @@ export function isLow(it: { balance: number; reorderLevel: number; status: strin
 export async function getItem(orgId: string, id: string): Promise<ItemRow | null> {
   return await one<ItemRow>(
     `SELECT i.id, i.code, i.name, i.category, i.item_type AS "itemType", i.unit,
-            i.unit_cost::float8 AS "unitCost", i.reorder_level::float8 AS "reorderLevel", i.status,
+            i.unit_cost::float8 AS "unitCost", i.reorder_level::float8 AS "reorderLevel", i.status, i.currency,
             COALESCE((SELECT SUM(m.qty) FROM stock_movement m WHERE m.item_id=i.id),0)::float8 AS balance
      FROM stock_item i WHERE i.id=$1 AND i.org_id=$2`, [id, orgId]
   );

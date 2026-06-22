@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { requireInventoryOrg } from "../_guard";
+import { one } from "@/server/db";
+import { currencyOptions } from "@/lib/currencies";
 import { PageHeader, SectionTitle, Field } from "@/components/ui";
 import { createItemAction } from "@/app/actions";
 import { label } from "@/lib/enums";
@@ -7,7 +9,8 @@ import { label } from "@/lib/enums";
 const TYPES = ["consumable", "asset", "other"];
 
 export default async function NewItem() {
-  await requireInventoryOrg();
+  const { orgId } = await requireInventoryOrg();
+  const baseCur = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
   return (
     <div className="max-w-2xl">
       <PageHeader title="New stock item" subtitle="Add a consumable or asset to the catalogue" actions={<Link href="/inventory" className="btn btn-sm">← Inventory</Link>} />
@@ -20,6 +23,7 @@ export default async function NewItem() {
           <Field label="Category"><input name="category" className="input" placeholder="e.g. Laboratory" /></Field>
           <Field label="Unit"><input name="unit" defaultValue="unit" className="input" placeholder="e.g. box, litre, piece" /></Field>
           <Field label="Unit cost"><input type="number" step="any" min={0} name="unitCost" defaultValue={0} className="input" /></Field>
+          <Field label="Currency"><select name="currency" defaultValue={baseCur} className="select">{currencyOptions(baseCur).map((c) => <option key={c} value={c}>{c}</option>)}</select></Field>
           <Field label="Reorder level"><input type="number" step="any" min={0} name="reorderLevel" defaultValue={0} className="input" /></Field>
         </div>
         <p className="text-xs" style={{ color: "var(--muted)" }}>Mark capital equipment as <strong>Asset</strong> and supplies as <strong>Consumable</strong>. Set a reorder level above zero to get low-stock alerts.</p>

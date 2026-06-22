@@ -4501,24 +4501,43 @@ export async function createStoreAction(formData: FormData) {
 export async function createItemAction(formData: FormData) {
   const { orgId, userId } = await requireInventoryActor();
   const iid = id("item");
-  await q(`INSERT INTO stock_item (id, org_id, code, name, category, item_type, unit, unit_cost, reorder_level, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active')`,
+  const baseCur = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+  await q(`INSERT INTO stock_item (id, org_id, code, name, category, item_type, unit, unit_cost, reorder_level, currency, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'active')`,
     [iid, orgId, String(formData.get("code") || "") || null, String(formData.get("name") || "Item"), String(formData.get("category") || "") || null,
      String(formData.get("itemType") || "consumable"), String(formData.get("unit") || "unit"),
-     Number(formData.get("unitCost") || 0), Number(formData.get("reorderLevel") || 0)]);
+     Number(formData.get("unitCost") || 0), Number(formData.get("reorderLevel") || 0), String(formData.get("currency") || "") || baseCur]);
   await writeAudit({ orgId, userId, action: "create", entity: "stock_item", entityId: iid, after: { name: String(formData.get("name") || ""), type: String(formData.get("itemType") || "") } });
   redirect(`/inventory/items/${iid}?created=1`);
 }
 
 export async function updateItemAction(formData: FormData) {
-  const { orgId, userId } = await requireInventoryActor();
+  const { orgId, userId, userName } = await requireInventoryActor();
   const iid = String(formData.get("itemId") || "");
-  const it = await one<{ id: string }>(`SELECT id FROM stock_item WHERE id=$1 AND org_id=$2`, [iid, orgId]);
-  if (!it) redirect("/inventory");
-  await q(`UPDATE stock_item SET code=$2, name=$3, category=$4, item_type=$5, unit=$6, unit_cost=$7, reorder_level=$8, status=$9 WHERE id=$1 AND org_id=$10`,
-    [iid, String(formData.get("code") || "") || null, String(formData.get("name") || "Item"), String(formData.get("category") || "") || null,
-     String(formData.get("itemType") || "consumable"), String(formData.get("unit") || "unit"), Number(formData.get("unitCost") || 0), Number(formData.get("reorderLevel") || 0), String(formData.get("status") || "active"), orgId]);
-  await writeAudit({ orgId, userId, action: "update", entity: "stock_item", entityId: iid });
-  redirect(`/inventory/items/${iid}?saved=1`);
+  const cur = await one<{ code: string | null; name: string; category: string | null; itemType: string; unit: string; unitCost: number; reorderLevel: number; status: string; currency: string | null }>(
+    `SELECT code, name, category, item_type AS "itemType", unit, unit_cost::float8 AS "unitCost", reorder_level::float8 AS "reorderLevel", status, currency FROM stock_item WHERE id=$1 AND org_id=$2`, [iid, orgId]);
+  if (!cur) redirect("/inventory");
+  const nv = {
+    code: String(formData.get("code") || "") || null, name: String(formData.get("name") || "Item"), category: String(formData.get("category") || "") || null,
+    itemType: String(formData.get("itemType") || "consumable"), unit: String(formData.get("unit") || "unit"), unitCost: Number(formData.get("unitCost") || 0),
+    reorderLevel: Number(formData.get("reorderLevel") || 0), status: String(formData.get("status") || "active"), currency: String(formData.get("currency") || "") || cur.currency,
+  };
+  // Field-level diff for the change history.
+  const changes: { k: string; from: string; to: string }[] = [];
+  const track = (label: string, oldV: unknown, newV: unknown) => {
+    const o = oldV == null || oldV === "" ? "" : String(oldV); const n = newV == null || newV === "" ? "" : String(newV);
+    if (o !== n) changes.push({ k: label, from: o || "—", to: n || "—" });
+  };
+  track("Code", cur.code, nv.code); track("Name", cur.name, nv.name); track("Category", cur.category, nv.category);
+  track("Type", cur.itemType, nv.itemType); track("Unit", cur.unit, nv.unit); track("Unit cost", cur.unitCost, nv.unitCost);
+  track("Reorder level", cur.reorderLevel, nv.reorderLevel); track("Status", cur.status, nv.status); track("Currency", cur.currency, nv.currency);
+
+  await q(`UPDATE stock_item SET code=$2, name=$3, category=$4, item_type=$5, unit=$6, unit_cost=$7, reorder_level=$8, status=$9, currency=$10 WHERE id=$1 AND org_id=$11`,
+    [iid, nv.code, nv.name, nv.category, nv.itemType, nv.unit, nv.unitCost, nv.reorderLevel, nv.status, nv.currency, orgId]);
+  if (changes.length > 0) {
+    await writeAudit({ orgId, userId, action: "update", entity: "stock_item", entityId: iid,
+      before: Object.fromEntries(changes.map((c) => [c.k, c.from])), after: Object.fromEntries(changes.map((c) => [c.k, c.to])), meta: { editedBy: userName, fields: changes.length } });
+  }
+  redirect(`/inventory/items/${iid}?saved=${changes.length}`);
 }
 
 export async function recordMovementAction(formData: FormData) {
@@ -4530,6 +4549,11 @@ export async function recordMovementAction(formData: FormData) {
   const raw = Number(formData.get("qty") || 0);
   // receipts add, issues/disposals subtract, adjustments take the signed value as entered
   const signed = kind === "adjustment" ? raw : kind === "receipt" ? Math.abs(raw) : -Math.abs(raw);
+  // Stock integrity: an issue or disposal cannot exceed what is on hand.
+  if (kind === "issue" || kind === "disposal") {
+    const bal = (await one<{ b: number }>(`SELECT COALESCE(SUM(qty),0)::float8 b FROM stock_movement WHERE item_id=$1`, [itemId]))?.b ?? 0;
+    if (Math.abs(raw) > bal) redirect(`/inventory/items/${itemId}?err=insufficient`);
+  }
   const unitCost = formData.get("unitCost") ? Number(formData.get("unitCost")) : null;
   await q(`INSERT INTO stock_movement (id, org_id, item_id, store_id, kind, qty, unit_cost, reference, source, issued_to, movement_date, note, created_by_id, created_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'manual',$9,$10,$11,$12,$13)`,
@@ -4549,4 +4573,83 @@ export async function deleteItemAction(formData: FormData) {
   await q(`DELETE FROM stock_item WHERE id=$1 AND org_id=$2`, [iid, orgId]);
   await writeAudit({ orgId, userId, action: "delete", entity: "stock_item", entityId: iid });
   redirect("/inventory?deleted=1");
+}
+
+/* ===================== Disposal management ===================== */
+async function loadDisposal(orgId: string, disposalId: string) {
+  const d = await one<{ id: string; status: string; assetId: string | null; method: string; currency: string | null }>(
+    `SELECT id, status, asset_id AS "assetId", method, currency FROM disposal WHERE id=$1 AND org_id=$2`, [disposalId, orgId]);
+  if (!d) redirect("/procurement/disposals");
+  return d;
+}
+
+export async function createDisposalAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireProcGovActor();
+  const did = id("disp");
+  const baseCur = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+  await q(`INSERT INTO disposal (id, org_id, reference, description, method, asset_id, stock_item_id, quantity, estimated_value, currency, committee_id, reason, status, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'draft',$13,$14)`,
+    [did, orgId, sNull(formData.get("reference")), String(formData.get("description") || "Disposal"), String(formData.get("method") || "sale"),
+     sNull(formData.get("assetId")), sNull(formData.get("stockItemId")), sNum(formData.get("quantity")), Number(formData.get("estimatedValue") || 0),
+     String(formData.get("currency") || "") || baseCur, sNull(formData.get("committeeId")), sNull(formData.get("reason")), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "disposal", entityId: did, after: { description: String(formData.get("description") || ""), method: String(formData.get("method") || "") } });
+  redirect(`/procurement/disposals/${did}?created=1`);
+}
+
+export async function submitDisposalAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const did = String(formData.get("disposalId") || "");
+  const d = await loadDisposal(orgId, did);
+  if (d.status !== "draft") redirect(`/procurement/disposals/${did}`);
+  await q(`UPDATE disposal SET status='submitted' WHERE id=$1 AND org_id=$2`, [did, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "disposal", entityId: did, after: { status: "submitted" } });
+  redirect(`/procurement/disposals/${did}?saved=1`);
+}
+
+export async function boardSurveyDisposalAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const did = String(formData.get("disposalId") || "");
+  const d = await loadDisposal(orgId, did);
+  if (d.status !== "submitted") redirect(`/procurement/disposals/${did}`);
+  await q(`UPDATE disposal SET status='board_survey', board_survey_date=$3, committee_id=COALESCE($4, committee_id) WHERE id=$1 AND org_id=$2`,
+    [did, orgId, String(formData.get("boardSurveyDate") || new Date().toISOString().slice(0, 10)), sNull(formData.get("committeeId"))]);
+  await writeAudit({ orgId, userId, action: "update", entity: "disposal", entityId: did, after: { status: "board_survey" } });
+  redirect(`/procurement/disposals/${did}?saved=1`);
+}
+
+export async function decideDisposalAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireProcGovActor();
+  const did = String(formData.get("disposalId") || "");
+  const d = await loadDisposal(orgId, did);
+  if (d.status !== "board_survey" && d.status !== "submitted") redirect(`/procurement/disposals/${did}`);
+  const decision = String(formData.get("decision") || "approved") === "rejected" ? "rejected" : "approved";
+  await q(`UPDATE disposal SET status=$3, decided_by=$4, decided_at=now() WHERE id=$1 AND org_id=$2`, [did, orgId, decision, userName]);
+  await writeAudit({ orgId, userId, action: "update", entity: "disposal", entityId: did, after: { status: decision } });
+  redirect(`/procurement/disposals/${did}?saved=1`);
+}
+
+export async function markDisposedAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const did = String(formData.get("disposalId") || "");
+  const d = await loadDisposal(orgId, did);
+  if (d.status !== "approved") redirect(`/procurement/disposals/${did}`);
+  const proceeds = formData.get("proceeds") ? Number(formData.get("proceeds")) : null;
+  const disposedDate = String(formData.get("disposedDate") || new Date().toISOString().slice(0, 10));
+  await q(`UPDATE disposal SET status='disposed', disposed_date=$3, proceeds=$4 WHERE id=$1 AND org_id=$2`, [did, orgId, disposedDate, proceeds]);
+  // If a fixed asset is linked, retire it in the asset register too.
+  if (d.assetId) {
+    await q(`UPDATE fixed_asset SET status='disposed', disposal_method=$3, disposal_proceeds=$4, disposed_on=$5 WHERE id=$1 AND org_id=$2`,
+      [d.assetId, orgId, d.method, proceeds, disposedDate]);
+  }
+  await writeAudit({ orgId, userId, action: "update", entity: "disposal", entityId: did, after: { status: "disposed", proceeds: proceeds ?? 0 } });
+  redirect(`/procurement/disposals/${did}?saved=1`);
+}
+
+export async function deleteDisposalAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const did = String(formData.get("disposalId") || "");
+  await loadDisposal(orgId, did);
+  await q(`DELETE FROM disposal WHERE id=$1 AND org_id=$2`, [did, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "disposal", entityId: did });
+  redirect("/procurement/disposals?deleted=1");
 }

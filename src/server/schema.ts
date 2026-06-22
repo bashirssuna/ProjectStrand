@@ -1984,4 +1984,31 @@ CREATE TABLE IF NOT EXISTS stock_movement (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+
+ALTER TABLE stock_item ADD COLUMN IF NOT EXISTS currency text;
+
+-- ===================== Disposal management (board of survey workflow) =====================
+CREATE TABLE IF NOT EXISTS disposal (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  reference text,
+  description text NOT NULL,
+  method text NOT NULL DEFAULT 'sale',
+  asset_id text REFERENCES fixed_asset(id) ON DELETE SET NULL,
+  stock_item_id text REFERENCES stock_item(id) ON DELETE SET NULL,
+  quantity numeric(18,2),
+  estimated_value numeric(18,2) NOT NULL DEFAULT 0,
+  currency text,
+  committee_id text REFERENCES proc_committee(id) ON DELETE SET NULL,
+  reason text,
+  status text NOT NULL DEFAULT 'draft',
+  board_survey_date date,
+  decided_by text, decided_at timestamptz,
+  disposed_date date,
+  proceeds numeric(18,2),
+  note text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 `;

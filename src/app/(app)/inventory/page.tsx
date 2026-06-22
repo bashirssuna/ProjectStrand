@@ -22,7 +22,10 @@ export default async function Inventory({ searchParams }: { searchParams: Promis
     listStores(orgId),
   ]);
   const low = items.filter(isLow);
-  const stockValue = items.reduce((a, i) => a + i.balance * i.unitCost, 0);
+  const valueByCcy: Record<string, number> = {};
+  for (const i of items) { const c = i.currency ?? cur; valueByCcy[c] = (valueByCcy[c] ?? 0) + i.balance * i.unitCost; }
+  const ccyKeys = Object.keys(valueByCcy).sort();
+  const valueStat = ccyKeys.length === 0 ? money(0, cur) : ccyKeys.length === 1 ? money(valueByCcy[ccyKeys[0]], ccyKeys[0]) : `${ccyKeys.length} currencies`;
 
   return (
     <div>
@@ -33,9 +36,16 @@ export default async function Inventory({ searchParams }: { searchParams: Promis
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         <Stat label="Stock items" value={String(items.length)} />
         <Stat label="Low stock" value={String(low.length)} tone={low.length ? "warn" : undefined} />
-        <Stat label="Stock value" value={money(stockValue, cur)} />
+        <Stat label="Stock value" value={valueStat} sub={ccyKeys.length > 1 ? "multiple currencies" : undefined} />
         <Stat label="Stores" value={String(stores.length)} />
       </div>
+
+      {ccyKeys.length > 1 && (
+        <div className="card p-3 mb-5 text-sm flex flex-wrap gap-x-5 gap-y-1">
+          <span style={{ color: "var(--muted)" }}>Stock value by currency:</span>
+          {ccyKeys.map((c) => <span key={c} className="tabular-nums">{money(valueByCcy[c], c)}</span>)}
+        </div>
+      )}
 
       {low.length > 0 && (
         <div className="card p-4 mb-5" style={{ borderColor: "var(--warn)" }}>
@@ -73,8 +83,8 @@ export default async function Inventory({ searchParams }: { searchParams: Promis
                   <td className="td">{label(i.itemType)}</td>
                   <td className="td text-right tabular-nums">{i.balance} {i.unit}{isLow(i) && <Badge tone="warn">low</Badge>}</td>
                   <td className="td text-right tabular-nums">{i.reorderLevel || "—"}</td>
-                  <td className="td text-right tabular-nums">{money(i.unitCost, cur)}</td>
-                  <td className="td text-right tabular-nums">{money(i.balance * i.unitCost, cur)}</td>
+                  <td className="td text-right tabular-nums">{money(i.unitCost, i.currency ?? cur)}</td>
+                  <td className="td text-right tabular-nums">{money(i.balance * i.unitCost, i.currency ?? cur)}</td>
                   <td className="td text-right"><Link href={`/inventory/items/${i.id}`} className="hover:underline" style={{ color: "var(--brand)" }}>Open →</Link></td>
                 </tr>
               ))}

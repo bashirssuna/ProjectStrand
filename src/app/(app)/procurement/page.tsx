@@ -1,10 +1,12 @@
 import Link from "next/link";
 import { requireProcOrg } from "./_guard";
+import { isModuleEnabled } from "@/server/modules";
 import { one } from "@/server/db";
 import { PageHeader, SectionTitle, Stat } from "@/components/ui";
 
 export default async function ProcurementHome() {
   const { orgId, orgName } = await requireProcOrg();
+  const showGov = await isModuleEnabled(orgId, "public_procurement");
   const prPending = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM purchase_request WHERE org_id=$1 AND status='submitted'`, [orgId]))?.c ?? 0;
   const poOpen = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM purchase_order WHERE org_id=$1 AND status IN ('open','partially_received')`, [orgId]))?.c ?? 0;
   const billsUnpaid = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM vendor_bill WHERE org_id=$1 AND status IN ('unpaid','part_paid')`, [orgId]))?.c ?? 0;
@@ -27,6 +29,7 @@ export default async function ProcurementHome() {
           ["/procurement/config", "Thresholds", "Quotation rules by purchase value."],
           ["/procurement/plan", "Procurement plan", "Planned purchases by period vs budget."],
           ["/procurement/ethics", "Ethics register", "Conflict-of-interest & gifts log."],
+          ...(showGov ? [["/procurement/committees", "Committees", "Contracts, evaluation, bid opening & disposal committees."]] : []),
         ].map(([href, t, d]) => (
           <Link key={href} href={href === "/procurement/orders/" ? "/procurement/requests" : href} className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
             <div className="font-display font-semibold">{t}</div>

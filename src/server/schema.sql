@@ -1938,3 +1938,25 @@ CREATE TABLE IF NOT EXISTS org_module (
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (org_id, module_key)
 );
+
+-- ===================== Procurement committees (formal/PPDA procurement) =====================
+CREATE TABLE IF NOT EXISTS proc_committee (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  type text NOT NULL DEFAULT 'contracts',  -- contracts | evaluation | bid_opening | disposal | other
+  name text NOT NULL,
+  mandate text,
+  status text NOT NULL DEFAULT 'active',    -- active | inactive
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS proc_committee_member (
+  id text PRIMARY KEY,
+  committee_id text NOT NULL REFERENCES proc_committee(id) ON DELETE CASCADE,
+  user_id text REFERENCES app_user(id),
+  member_name text NOT NULL,
+  title text,
+  committee_role text NOT NULL DEFAULT 'member', -- chairperson | secretary | member
+  appointed_date date,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

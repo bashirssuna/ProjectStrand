@@ -4412,3 +4412,71 @@ export async function toggleModuleAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "update", entity: "org_module", entityId: key, after: { enabled } });
   redirect("/organization/modules?saved=module");
 }
+
+/* ===================== Procurement committees ===================== */
+import { isModuleEnabled as _isModEnabled } from "@/server/modules";
+
+async function requireProcGovActor() {
+  const user = await requireUser();
+  const org = await getUserOrg(user.id);
+  if (!org) redirect("/dashboard");
+  if (!org.isOrgAdmin && !user.isSuperAdmin) redirect("/dashboard");
+  if (!(await _isModEnabled(org.id, "procurement")) || !(await _isModEnabled(org.id, "public_procurement"))) redirect("/procurement");
+  return { orgId: org.id, userId: user.id, userName: user.name };
+}
+async function loadCommittee(orgId: string, committeeId: string) {
+  const c = await one<{ id: string }>(`SELECT id FROM proc_committee WHERE id=$1 AND org_id=$2`, [committeeId, orgId]);
+  if (!c) redirect("/procurement/committees");
+  return c;
+}
+
+export async function createCommitteeAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireProcGovActor();
+  const cid = id("pcom");
+  await q(`INSERT INTO proc_committee (id, org_id, type, name, mandate, status, created_by_id, created_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [cid, orgId, String(formData.get("type") || "contracts"), String(formData.get("name") || "Committee"), String(formData.get("mandate") || "") || null, "active", userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "proc_committee", entityId: cid, after: { name: String(formData.get("name") || ""), type: String(formData.get("type") || "") } });
+  redirect(`/procurement/committees/${cid}?created=1`);
+}
+
+export async function updateCommitteeAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const cid = String(formData.get("committeeId") || "");
+  await loadCommittee(orgId, cid);
+  await q(`UPDATE proc_committee SET type=$2, name=$3, mandate=$4, status=$5 WHERE id=$1 AND org_id=$6`,
+    [cid, String(formData.get("type") || "contracts"), String(formData.get("name") || "Committee"), String(formData.get("mandate") || "") || null, String(formData.get("status") || "active"), orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "proc_committee", entityId: cid });
+  redirect(`/procurement/committees/${cid}?saved=1`);
+}
+
+export async function deleteCommitteeAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const cid = String(formData.get("committeeId") || "");
+  await loadCommittee(orgId, cid);
+  await q(`DELETE FROM proc_committee WHERE id=$1 AND org_id=$2`, [cid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "proc_committee", entityId: cid });
+  redirect("/procurement/committees?deleted=1");
+}
+
+export async function addCommitteeMemberAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const cid = String(formData.get("committeeId") || "");
+  await loadCommittee(orgId, cid);
+  const memberUserId = String(formData.get("memberUserId") || "") || null;
+  let memberName = String(formData.get("memberName") || "").trim();
+  if (memberUserId && !memberName) memberName = (await one<{ name: string }>(`SELECT name FROM app_user WHERE id=$1`, [memberUserId]))?.name ?? "Member";
+  await q(`INSERT INTO proc_committee_member (id, committee_id, user_id, member_name, title, committee_role, appointed_date) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id("pcmem"), cid, memberUserId, memberName || "Member", String(formData.get("title") || "") || null, String(formData.get("committeeRole") || "member"), String(formData.get("appointedDate") || "") || null]);
+  await writeAudit({ orgId, userId, action: "create", entity: "proc_committee_member", entityId: cid, meta: { member: memberName } });
+  redirect(`/procurement/committees/${cid}?added=1`);
+}
+
+export async function removeCommitteeMemberAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const cid = String(formData.get("committeeId") || "");
+  await loadCommittee(orgId, cid);
+  const memberId = String(formData.get("memberId") || "");
+  await q(`DELETE FROM proc_committee_member WHERE id=$1 AND committee_id=$2`, [memberId, cid]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "proc_committee_member", entityId: cid });
+  redirect(`/procurement/committees/${cid}?removed=1`);
+}

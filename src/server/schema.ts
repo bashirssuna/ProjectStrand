@@ -2121,4 +2121,25 @@ CREATE TABLE IF NOT EXISTS budget_reallocation (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+
+-- ===================== Lab: visits/timepoints, collection origin, freeze-thaw =====================
+CREATE TABLE IF NOT EXISTS lab_visit (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  participant_id text NOT NULL REFERENCES lab_participant(id) ON DELETE CASCADE,
+  label text NOT NULL,
+  visit_date date,
+  sequence int,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (participant_id, label)
+);
+ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS visit_id text REFERENCES lab_visit(id) ON DELETE SET NULL;
+ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS collection_facility text;
+ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS collection_district text;
+ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS collection_site text;
+ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS freeze_thaw_count int NOT NULL DEFAULT 0;
+ALTER TABLE lab_sample_type ADD COLUMN IF NOT EXISTS max_freeze_thaw int;
+ALTER TABLE lab_retrieval ADD COLUMN IF NOT EXISTS thawed boolean NOT NULL DEFAULT false;
+
 `;

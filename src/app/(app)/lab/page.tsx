@@ -2,9 +2,10 @@ import Link from "next/link";
 import { requireLabOrg } from "./_guard";
 import { q } from "@/server/db";
 import { ensureSampleTypes, accessibleProjectIds, labStats } from "@/server/services/lab";
-import { PageHeader, SectionTitle, Stat, Empty, Badge, StatusBadge } from "@/components/ui";
+import { PageHeader, SectionTitle, Stat, Empty, Badge, StatusBadge, Field } from "@/components/ui";
 import { label, } from "@/lib/enums";
 import { fmtDateTime } from "@/lib/format";
+import { setSampleTypeMaxAction } from "@/app/actions";
 
 const PALETTE = ["#9a6a2f", "#c79a4b", "#5b8c7b", "#7b6ca8", "#b56b6b", "#6b8cb5", "#8ca86b", "#a8856b", "#6ba8a0", "#a86b95", "#7d8a99", "#caa46a"];
 function slicePath(cx: number, cy: number, r: number, a0: number, a1: number): string {
@@ -14,7 +15,7 @@ function slicePath(cx: number, cy: number, r: number, a0: number, a1: number): s
   return `M ${cx} ${cy} L ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} Z`;
 }
 
-export default async function LabDashboard({ searchParams }: { searchParams: Promise<{ projectId?: string }> }) {
+export default async function LabDashboard({ searchParams }: { searchParams: Promise<{ projectId?: string; ftset?: string }> }) {
   const { orgId, orgName, userId, isOrgAdmin, isSuperAdmin } = await requireLabOrg();
   await ensureSampleTypes(orgId);
   const sp = await searchParams;
@@ -39,6 +40,9 @@ export default async function LabDashboard({ searchParams }: { searchParams: Pro
     return { ...sl, d: slicePath(cx, cy, r, a0, slices.length === 1 ? a1 - 0.0001 : a1), share: totalTyped > 0 ? sl.value / totalTyped : 0 };
   });
   const maxFreezer = Math.max(1, ...s.byFreezer.map((f) => f.count));
+  const ftTypes = isAdmin ? await q<{ id: string; category: string; type: string; maxFreezeThaw: number | null }>(
+    `SELECT id, category, type, max_freeze_thaw AS "maxFreezeThaw" FROM lab_sample_type WHERE org_id=$1 ORDER BY category, type`, [orgId]) : [];
+  const ftSet = sp.ftset === "1";
 
   return (
     <div>
@@ -132,6 +136,26 @@ export default async function LabDashboard({ searchParams }: { searchParams: Pro
               </tbody>
             </table>
           </div>
+
+          {isAdmin && ftTypes.length > 0 && (
+            <>
+              <SectionTitle>Sample types &amp; freeze-thaw limits</SectionTitle>
+              {ftSet && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Freeze-thaw limit updated.</div>}
+              <div className="card p-4">
+                <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>Set the acceptable number of freeze-thaw cycles for each analyte. Samples at or above their limit are flagged in the registry. Leave blank for no limit.</p>
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2">
+                  {ftTypes.map((t) => (
+                    <form key={t.id} action={setSampleTypeMaxAction} className="flex items-center gap-2">
+                      <input type="hidden" name="typeId" value={t.id} />
+                      <span className="text-sm flex-1 truncate" title={`${t.category} · ${t.type}`}><span style={{ color: "var(--muted)" }}>{t.category} · </span>{t.type}</span>
+                      <input type="number" min={0} name="maxFreezeThaw" defaultValue={t.maxFreezeThaw ?? ""} className="input" style={{ width: 70, padding: "4px 8px" }} placeholder="—" />
+                      <button className="btn btn-sm" type="submit">Save</button>
+                    </form>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
         </>
       )}
     </div>

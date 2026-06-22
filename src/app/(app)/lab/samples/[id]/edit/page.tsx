@@ -20,14 +20,17 @@ export default async function EditSample({ params }: { params: Promise<{ id: str
     collectionDate: string | null; collectionTime: string | null; dateAliquoted: string | null; numberOfAliquots: number; aliquotVolume: number | null; aliquotUnit: string;
     condition: string | null; abnormalities: string | null; comments: string | null;
     room: string | null; equipment: string | null; rack: string | null; shelf: string | null; box: string | null; position: string | null; dateStored: string | null; storageTemp: string | null;
+    facility: string | null; district: string | null; site: string | null; visitLabel: string | null;
     studyId: string | null; pName: string | null; dob: string | null; pSex: string | null;
   }>(
     `SELECT s.id, s.sample_code AS code, s.project_id AS "projectId", p.code AS "projectCode", s.status, s.sample_type_id AS "sampleTypeId", s.participant_id AS "participantId",
             s.collection_date::text AS "collectionDate", s.collection_time AS "collectionTime", s.date_aliquoted::text AS "dateAliquoted", s.number_of_aliquots AS "numberOfAliquots",
             s.aliquot_volume AS "aliquotVolume", s.aliquot_unit AS "aliquotUnit", s.condition_on_receipt AS condition, s.abnormalities, s.comments,
             s.storage_room AS room, s.storage_equipment AS equipment, s.storage_rack AS rack, s.storage_shelf AS shelf, s.storage_box AS box, s.storage_position AS position,
-            s.date_stored::text AS "dateStored", s.storage_temp AS "storageTemp", pa.study_id AS "studyId", pa.name AS "pName", pa.date_of_birth::text AS dob, pa.sex AS "pSex"
-     FROM lab_sample s LEFT JOIN lab_participant pa ON pa.id=s.participant_id LEFT JOIN project p ON p.id=s.project_id
+            s.date_stored::text AS "dateStored", s.storage_temp AS "storageTemp",
+            s.collection_facility AS facility, s.collection_district AS district, s.collection_site AS site, v.label AS "visitLabel",
+            pa.study_id AS "studyId", pa.name AS "pName", pa.date_of_birth::text AS dob, pa.sex AS "pSex"
+     FROM lab_sample s LEFT JOIN lab_participant pa ON pa.id=s.participant_id LEFT JOIN lab_visit v ON v.id=s.visit_id LEFT JOIN project p ON p.id=s.project_id
      WHERE s.id=$1 AND s.org_id=$2`, [id, orgId]
   );
   if (!s) notFound();
@@ -53,8 +56,23 @@ export default async function EditSample({ params }: { params: Promise<{ id: str
               <Field label="Date of birth"><input type="date" name="participantDob" defaultValue={s.dob ?? ""} className="input" /></Field>
               <Field label="Sex"><select name="participantSex" defaultValue={s.pSex ?? ""} className="select"><option value="">—</option><option value="F">Female</option><option value="M">Male</option><option value="other">Other</option></select></Field>
             </div>
+            <div className="grid sm:grid-cols-2 gap-3 mt-3">
+              <Field label="Visit / timepoint"><input name="visitLabel" defaultValue={s.visitLabel ?? ""} className="input" placeholder="e.g. Day 0, Visit 1" /></Field>
+              <Field label="Visit date"><input type="date" name="visitDate" className="input" /></Field>
+            </div>
+            <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>Change or clear the visit label to re-file this sample under a different timepoint.</p>
           </div>
         )}
+
+        {/* Collection origin (multisite) */}
+        <div className="card p-4">
+          <SectionTitle>Collection origin</SectionTitle>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <Field label="Facility"><input name="collectionFacility" defaultValue={s.facility ?? ""} className="input" placeholder="e.g. Kawempe HC IV" /></Field>
+            <Field label="District"><input name="collectionDistrict" defaultValue={s.district ?? ""} className="input" placeholder="e.g. Wakiso" /></Field>
+            <Field label="Site / study site"><input name="collectionSite" defaultValue={s.site ?? ""} className="input" placeholder="e.g. Site 03" /></Field>
+          </div>
+        </div>
 
         <div className="card p-4">
           <SectionTitle>Sample details</SectionTitle>

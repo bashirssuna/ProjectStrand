@@ -45,6 +45,22 @@ export default async function RegisterSample({ searchParams }: { searchParams: P
             <Field label="Date of birth"><input type="date" name="participantDob" className="input" /></Field>
             <Field label="Sex"><select name="participantSex" className="select"><option value="">—</option><option value="F">Female</option><option value="M">Male</option><option value="other">Other</option></select></Field>
           </div>
+          <div className="grid sm:grid-cols-2 gap-3 mt-3">
+            <Field label="Visit / timepoint"><input name="visitLabel" className="input" placeholder="e.g. Day 0, Visit 1 — for repeat sampling" /></Field>
+            <Field label="Visit date"><input type="date" name="visitDate" className="input" /></Field>
+          </div>
+          <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>Give a visit label to group this participant&apos;s samples by timepoint. The visit is created on first use and reused for later samples in the same visit.</p>
+        </div>
+
+        {/* Collection origin (multisite) */}
+        <div className="card p-4">
+          <SectionTitle>Collection origin</SectionTitle>
+          <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>Where the sample was collected — useful for multisite studies.</p>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <Field label="Facility"><input name="collectionFacility" className="input" placeholder="e.g. Kawempe HC IV" /></Field>
+            <Field label="District"><input name="collectionDistrict" className="input" placeholder="e.g. Wakiso" /></Field>
+            <Field label="Site / study site"><input name="collectionSite" className="input" placeholder="e.g. Site 03" /></Field>
+          </div>
         </div>
 
         {/* Sample details */}

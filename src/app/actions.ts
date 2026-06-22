@@ -4012,6 +4012,20 @@ export async function createSampleAction(formData: FormData) {
   }
   const age = calcAge(dob, collectionDate);
 
+  // Resolve / create the visit (timepoint) for repeat sampling, keyed on participant + label.
+  let visitId: string | null = null;
+  const visitLabel = String(formData.get("visitLabel") || "").trim();
+  if (participantId && visitLabel) {
+    const exV = await one<{ id: string }>(`SELECT id FROM lab_visit WHERE participant_id=$1 AND LOWER(label)=LOWER($2)`, [participantId, visitLabel]);
+    if (exV) visitId = exV.id;
+    else {
+      const vid = id("lvis");
+      await q(`INSERT INTO lab_visit (id, org_id, participant_id, label, visit_date, sequence) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [vid, orgId, participantId, visitLabel, String(formData.get("visitDate") || "") || null, formData.get("visitSequence") ? Number(formData.get("visitSequence")) : null]);
+      visitId = vid;
+    }
+  }
+
   // Resolve the sample type: a typed custom type is found (case-insensitive) or created
   // under the "Other" category, so labs can record specimens outside the standard list.
   let sampleTypeId = String(formData.get("sampleTypeId") || "") || null;
@@ -4032,8 +4046,9 @@ export async function createSampleAction(formData: FormData) {
   await q(`INSERT INTO lab_sample (id, org_id, project_id, sample_code, participant_id, sample_type_id, age_years, age_months,
              collection_date, collection_time, date_aliquoted, number_of_aliquots, aliquot_volume, aliquot_unit, quantity_remaining,
              storage_room, storage_equipment, storage_rack, storage_shelf, storage_box, storage_position, date_stored, storage_temp,
-             stored_by_id, stored_by_name, condition_on_receipt, abnormalities, comments, status, created_by_id, created_by_name)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,'active',$29,$30)`,
+             stored_by_id, stored_by_name, condition_on_receipt, abnormalities, comments, status, created_by_id, created_by_name,
+             visit_id, collection_facility, collection_district, collection_site)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,'active',$29,$30,$31,$32,$33,$34)`,
     [sampleId, orgId, projectId, code, participantId, sampleTypeId,
      age.years, age.months, collectionDate, String(formData.get("collectionTime") || "") || null,
      String(formData.get("dateAliquoted") || "") || null, numAliquots, aliquotVolume, String(formData.get("aliquotUnit") || "µL"), startQty,
@@ -4043,7 +4058,8 @@ export async function createSampleAction(formData: FormData) {
      String(formData.get("dateStored") || "") || null, String(formData.get("storageTemp") || "") || null,
      userId, userName, String(formData.get("condition") || "intact"),
      String(formData.get("abnormalities") || "") || null, String(formData.get("comments") || "") || null,
-     userId, userName]);
+     userId, userName,
+     visitId, String(formData.get("collectionFacility") || "") || null, String(formData.get("collectionDistrict") || "") || null, String(formData.get("collectionSite") || "") || null]);
   await writeAudit({ orgId, userId, action: "create", entity: "lab_sample", entityId: code, after: { projectId, studyId: studyId || null } });
   if (formData.get("another") === "1") redirect(`/lab/samples/new?created=${encodeURIComponent(code)}&projectId=${projectId}`);
   redirect(`/lab/samples/${sampleId}?created=1`);
@@ -4062,15 +4078,28 @@ export async function retrieveSampleAction(formData: FormData) {
   if (s.consent === "withdrawn") redirect(`/lab/samples/${sid}?err=consent`);
   const removed = formData.get("quantityRemoved") ? Number(formData.get("quantityRemoved")) : null;
   const remaining = s.qty != null && removed != null ? Math.max(0, s.qty - removed) : s.qty;
-  await q(`INSERT INTO lab_retrieval (id, sample_id, date_retrieved, quantity_removed, quantity_remaining, purpose, destination, retrieved_by_id, retrieved_by_name, authorized_by_id, authorized_by_name)
-           VALUES ($1,$2,now(),$3,$4,$5,$6,$7,$8,$9,$10)`,
+  const thawed = formData.get("thawed") === "1";
+  await q(`INSERT INTO lab_retrieval (id, sample_id, date_retrieved, quantity_removed, quantity_remaining, purpose, destination, retrieved_by_id, retrieved_by_name, authorized_by_id, authorized_by_name, thawed)
+           VALUES ($1,$2,now(),$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
     [id("lret"), sid, removed, remaining, String(formData.get("purpose") || "") || null, String(formData.get("destination") || "") || null,
-     userId, userName, String(formData.get("authorizedById") || "") || null, String(formData.get("authorizedByName") || "") || null]);
+     userId, userName, String(formData.get("authorizedById") || "") || null, String(formData.get("authorizedByName") || "") || null, thawed]);
   const depleted = remaining != null && remaining <= 0;
-  await q(`UPDATE lab_sample SET quantity_remaining=$2, status=CASE WHEN $3 THEN 'depleted' ELSE status END, updated_at=now() WHERE id=$1`,
-    [sid, remaining, depleted]);
-  await writeAudit({ orgId, userId, action: "update", entity: "lab_sample", entityId: s.code, after: { retrieved: removed, remaining, depleted } });
+  await q(`UPDATE lab_sample SET quantity_remaining=$2, freeze_thaw_count = freeze_thaw_count + $4, status=CASE WHEN $3 THEN 'depleted' ELSE status END, updated_at=now() WHERE id=$1`,
+    [sid, remaining, depleted, thawed ? 1 : 0]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_sample", entityId: s.code, after: { retrieved: removed, remaining, depleted, thawed } });
   redirect(`/lab/samples/${sid}?retrieved=1`);
+}
+
+// Record a freeze-thaw cycle on a sample without a full retrieval (e.g. thawed in place for QC).
+export async function recordFreezeThawAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireLabActor();
+  const sid = String(formData.get("sampleId") || "");
+  const s = await one<{ code: string; status: string }>(`SELECT sample_code AS code, status FROM lab_sample WHERE id=$1 AND org_id=$2`, [sid, orgId]);
+  if (!s) redirect("/lab/samples");
+  if (s.status === "disposed") redirect(`/lab/samples/${sid}?err=disposed`);
+  await q(`UPDATE lab_sample SET freeze_thaw_count = freeze_thaw_count + 1, updated_at=now() WHERE id=$1`, [sid]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_sample", entityId: s.code, after: { freezeThaw: "incremented", by: userName } });
+  redirect(`/lab/samples/${sid}?ft=1`);
 }
 
 // Record the return of a sample to storage (closes the latest open retrieval).
@@ -4140,14 +4169,17 @@ export async function editSampleAction(formData: FormData) {
     collectionDate: string | null; collectionTime: string | null; dateAliquoted: string | null; numberOfAliquots: number; aliquotVolume: number | null; aliquotUnit: string;
     condition: string | null; abnormalities: string | null; comments: string | null;
     room: string | null; equipment: string | null; rack: string | null; shelf: string | null; box: string | null; position: string | null; dateStored: string | null; storageTemp: string | null;
+    facility: string | null; district: string | null; site: string | null; visitId: string | null; visitLabel: string | null;
     pName: string | null; dob: string | null; pSex: string | null;
   }>(
     `SELECT s.sample_code AS code, s.project_id AS "projectId", s.status, s.sample_type_id AS "sampleTypeId", st.type AS "typeName", s.participant_id AS "participantId",
             s.collection_date::text AS "collectionDate", s.collection_time AS "collectionTime", s.date_aliquoted::text AS "dateAliquoted", s.number_of_aliquots AS "numberOfAliquots",
             s.aliquot_volume AS "aliquotVolume", s.aliquot_unit AS "aliquotUnit", s.condition_on_receipt AS condition, s.abnormalities, s.comments,
             s.storage_room AS room, s.storage_equipment AS equipment, s.storage_rack AS rack, s.storage_shelf AS shelf, s.storage_box AS box, s.storage_position AS position,
-            s.date_stored::text AS "dateStored", s.storage_temp AS "storageTemp", pa.name AS "pName", pa.date_of_birth::text AS dob, pa.sex AS "pSex"
-     FROM lab_sample s LEFT JOIN lab_sample_type st ON st.id=s.sample_type_id LEFT JOIN lab_participant pa ON pa.id=s.participant_id
+            s.date_stored::text AS "dateStored", s.storage_temp AS "storageTemp",
+            s.collection_facility AS facility, s.collection_district AS district, s.collection_site AS site, s.visit_id AS "visitId", v.label AS "visitLabel",
+            pa.name AS "pName", pa.date_of_birth::text AS dob, pa.sex AS "pSex"
+     FROM lab_sample s LEFT JOIN lab_sample_type st ON st.id=s.sample_type_id LEFT JOIN lab_participant pa ON pa.id=s.participant_id LEFT JOIN lab_visit v ON v.id=s.visit_id
      WHERE s.id=$1 AND s.org_id=$2`, [sid, orgId]
   );
   if (!s) redirect("/lab/samples");
@@ -4179,6 +4211,7 @@ export async function editSampleAction(formData: FormData) {
   const room = orNull(formData.get("storageRoom")), equipment = orNull(formData.get("storageEquipment")), rack = orNull(formData.get("storageRack"));
   const shelf = orNull(formData.get("storageShelf")), box = orNull(formData.get("storageBox")), position = orNull(formData.get("storagePosition"));
   const dateStored = orNull(formData.get("dateStored")), storageTemp = orNull(formData.get("storageTemp"));
+  const facility = orNull(formData.get("collectionFacility")), district = orNull(formData.get("collectionDistrict")), site = orNull(formData.get("collectionSite"));
   // Status edit is limited to active <-> quarantined (depleted / in_transit / disposed are action-driven).
   const formStatus = String(formData.get("status") || s.status);
   const editable = (x: string) => x === "active" || x === "quarantined";
@@ -4189,6 +4222,18 @@ export async function editSampleAction(formData: FormData) {
   const newDob = s.participantId ? orNull(formData.get("participantDob")) : s.dob;
   const pSex = s.participantId ? orNull(formData.get("participantSex")) : s.pSex;
   const age = calcAge(s.participantId ? newDob : s.dob, collectionDate);
+
+  // Resolve / create visit (timepoint) if a label is provided for this participant.
+  let visitId: string | null = s.visitId;
+  const visitLabel = s.participantId ? orNull(formData.get("visitLabel")) : null;
+  if (s.participantId) {
+    if (!visitLabel) visitId = null;
+    else if (!s.visitLabel || s.visitLabel.toLowerCase() !== visitLabel.toLowerCase()) {
+      const exV = await one<{ id: string }>(`SELECT id FROM lab_visit WHERE participant_id=$1 AND LOWER(label)=LOWER($2)`, [s.participantId, visitLabel]);
+      if (exV) visitId = exV.id;
+      else { const vid = id("lvis"); await q(`INSERT INTO lab_visit (id, org_id, participant_id, label, visit_date) VALUES ($1,$2,$3,$4,$5)`, [vid, orgId, s.participantId, visitLabel, orNull(formData.get("visitDate"))]); visitId = vid; }
+    }
+  }
 
   // Build a readable diff.
   const changes: { k: string; from: string; to: string }[] = [];
@@ -4215,14 +4260,18 @@ export async function editSampleAction(formData: FormData) {
   track("Position", s.position, position);
   track("Date stored", s.dateStored, dateStored);
   track("Storage temp", s.storageTemp, storageTemp);
+  track("Collection facility", s.facility, facility);
+  track("Collection district", s.district, district);
+  track("Collection site", s.site, site);
+  track("Visit", s.visitLabel, visitLabel);
   track("Status", s.status, newStatus);
   if (s.participantId) { track("Participant name", s.pName, pName); track("Date of birth", s.dob, newDob); track("Sex", s.pSex, pSex); }
 
   await q(`UPDATE lab_sample SET sample_type_id=$2, collection_date=$3, collection_time=$4, date_aliquoted=$5, number_of_aliquots=$6, aliquot_volume=$7, aliquot_unit=$8,
              condition_on_receipt=$9, abnormalities=$10, comments=$11, storage_room=$12, storage_equipment=$13, storage_rack=$14, storage_shelf=$15, storage_box=$16, storage_position=$17,
-             date_stored=$18, storage_temp=$19, age_years=$20, age_months=$21, status=$22, updated_at=now() WHERE id=$1`,
+             date_stored=$18, storage_temp=$19, age_years=$20, age_months=$21, status=$22, visit_id=$23, collection_facility=$24, collection_district=$25, collection_site=$26, updated_at=now() WHERE id=$1`,
     [sid, sampleTypeId, collectionDate, collectionTime, dateAliquoted, numberOfAliquots, aliquotVolume, aliquotUnit, condition, abnormalities, comments,
-     room, equipment, rack, shelf, box, position, dateStored, storageTemp, age.years, age.months, newStatus]);
+     room, equipment, rack, shelf, box, position, dateStored, storageTemp, age.years, age.months, newStatus, visitId, facility, district, site]);
   if (s.participantId && (s.pName !== pName || s.dob !== newDob || s.pSex !== pSex)) {
     await q(`UPDATE lab_participant SET name=$2, date_of_birth=$3, sex=$4 WHERE id=$1 AND org_id=$5`, [s.participantId, pName, newDob, pSex, orgId]);
   }
@@ -5046,4 +5095,16 @@ export async function reallocateBudgetAction(formData: FormData) {
   await writeAudit({ userId: user.id, action: "reallocate", entity: "budget", entityId: budgetId, meta: { from: from.code, to: to.code, amount } });
   await evaluateProject(projectId);
   redirect(`/projects/${projectId}/budget?bm=reallocated`);
+}
+
+// Configure the acceptable freeze-thaw limit for a sample type (lab managers only).
+export async function setSampleTypeMaxAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  if (!(isOrgAdmin || isSuperAdmin)) redirect("/lab?err=forbidden");
+  const typeId = String(formData.get("typeId") || "");
+  const raw = String(formData.get("maxFreezeThaw") || "").trim();
+  const max = raw === "" ? null : Number(raw);
+  await q(`UPDATE lab_sample_type SET max_freeze_thaw=$2 WHERE id=$1 AND org_id=$3`, [typeId, max, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_sample_type", entityId: typeId, after: { maxFreezeThaw: max } });
+  redirect("/lab?ftset=1");
 }

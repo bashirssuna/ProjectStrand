@@ -6,9 +6,9 @@ import { accessibleProjectIds, canSeePII, maskName, formatAge } from "@/server/s
 import { PageHeader, SectionTitle, Field, Badge, StatusBadge, Stat } from "@/components/ui";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
-import { retrieveSampleAction, returnSampleAction, disposeSampleAction, revealParticipantNameAction, updateConsentAction } from "@/app/actions";
+import { retrieveSampleAction, returnSampleAction, disposeSampleAction, revealParticipantNameAction, updateConsentAction, recordFreezeThawAction } from "@/app/actions";
 
-type SP = { reveal?: string; retrieved?: string; returned?: string; disposed?: string; consent?: string; edited?: string; err?: string };
+type SP = { reveal?: string; retrieved?: string; returned?: string; disposed?: string; consent?: string; edited?: string; err?: string; ft?: string };
 
 export default async function SampleDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<SP> }) {
   const { id } = await params;
@@ -26,6 +26,7 @@ export default async function SampleDetail({ params, searchParams }: { params: P
     room: string | null; equipment: string | null; rack: string | null; shelf: string | null; box: string | null; position: string | null;
     dateStored: string | null; storageTemp: string | null; storedByName: string | null;
     condition: string | null; abnormalities: string | null; comments: string | null;
+    facility: string | null; district: string | null; site: string | null; visitLabel: string | null; visitDate: string | null; freezeThawCount: number; maxFreezeThaw: number | null;
     disposalDate: string | null; disposalMethod: string | null; disposalReason: string | null; disposalWitness: string | null; disposedByName: string | null;
     createdByName: string | null; createdAt: string;
   }>(
@@ -37,11 +38,13 @@ export default async function SampleDetail({ params, searchParams }: { params: P
             s.storage_room AS room, s.storage_equipment AS equipment, s.storage_rack AS rack, s.storage_shelf AS shelf, s.storage_box AS box, s.storage_position AS position,
             s.date_stored AS "dateStored", s.storage_temp AS "storageTemp", s.stored_by_name AS "storedByName",
             s.condition_on_receipt AS condition, s.abnormalities, s.comments,
+            s.collection_facility AS facility, s.collection_district AS district, s.collection_site AS site, v.label AS "visitLabel", v.visit_date AS "visitDate", s.freeze_thaw_count AS "freezeThawCount", st.max_freeze_thaw AS "maxFreezeThaw",
             s.disposal_date AS "disposalDate", s.disposal_method AS "disposalMethod", s.disposal_reason AS "disposalReason", s.disposal_witness AS "disposalWitness", s.disposed_by_name AS "disposedByName",
             s.created_by_name AS "createdByName", s.created_at AS "createdAt"
      FROM lab_sample s
      LEFT JOIN lab_participant pa ON pa.id=s.participant_id
      LEFT JOIN lab_sample_type st ON st.id=s.sample_type_id
+     LEFT JOIN lab_visit v ON v.id=s.visit_id
      LEFT JOIN project p ON p.id=s.project_id
      WHERE s.id=$1 AND s.org_id=$2`, [id, orgId]
   );
@@ -95,6 +98,7 @@ export default async function SampleDetail({ params, searchParams }: { params: P
       <PageHeader title={s.code} subtitle={`${s.typeName ?? "Sample"}${s.projectCode ? ` · ${s.projectCode}` : ""}`} actions={<div className="flex gap-2">{!disposed && <Link href={`/lab/samples/${s.id}/edit`} className="btn btn-sm">Edit</Link>}<Link href="/lab/samples" className="btn btn-sm">← Registry</Link></div>} />
       {sp.edited && (sp.edited === "0" ? <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)" }}>No changes to save.</div> : <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved {sp.edited} change{sp.edited === "1" ? "" : "s"} — recorded in the history below.</div>)}
       {sp.retrieved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Retrieval logged.</div>}
+      {sp.ft && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Freeze-thaw cycle recorded.</div>}
       {sp.returned && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Return to storage recorded.</div>}
       {sp.disposed && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Sample disposed.</div>}
       {sp.consent && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Consent status updated.</div>}
@@ -117,6 +121,7 @@ export default async function SampleDetail({ params, searchParams }: { params: P
               <Stat label="Aliquots" value={String(s.numberOfAliquots)} />
               <Stat label="Age at collection" value={formatAge(s.ageYears, s.ageMonths)} />
               <Stat label="Collected" value={fmtDate(s.collectionDate)} sub={s.collectionTime ?? undefined} />
+              <Stat label="Freeze-thaw" value={s.maxFreezeThaw != null ? `${s.freezeThawCount} / ${s.maxFreezeThaw}` : String(s.freezeThawCount)} tone={s.maxFreezeThaw != null && s.freezeThawCount >= s.maxFreezeThaw ? "danger" : undefined} />
             </div>
           </div>
 
@@ -133,6 +138,7 @@ export default async function SampleDetail({ params, searchParams }: { params: P
               </div>
               <div><span style={{ color: "var(--muted)" }}>Sex: </span>{s.sex ?? "—"}</div>
               <div><span style={{ color: "var(--muted)" }}>Consent: </span>{s.consent ? label(s.consent) : "—"}</div>
+              {s.visitLabel && <div><span style={{ color: "var(--muted)" }}>Visit: </span>{s.visitLabel}{s.visitDate ? ` · ${fmtDate(s.visitDate)}` : ""}</div>}
             </div>
             {!seePII && <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>The participant&apos;s name is confidential for your role.</p>}
           </div>
@@ -145,6 +151,7 @@ export default async function SampleDetail({ params, searchParams }: { params: P
               <div><span style={{ color: "var(--muted)" }}>Aliquoted: </span>{s.dateAliquoted ? `${fmtDate(s.dateAliquoted)} · ${s.numberOfAliquots} × ${s.aliquotVolume ?? "?"} ${s.aliquotUnit}` : "—"}</div>
               <div><span style={{ color: "var(--muted)" }}>Temperature: </span>{s.storageTemp ?? "—"}</div>
               <div className="sm:col-span-2"><span style={{ color: "var(--muted)" }}>Location: </span><span className="font-mono text-xs">{storagePath}</span>{s.dateStored ? <span style={{ color: "var(--muted)" }}> · stored {fmtDate(s.dateStored)}</span> : ""}</div>
+              {(s.facility || s.district || s.site) && <div className="sm:col-span-2"><span style={{ color: "var(--muted)" }}>Collection origin: </span>{[s.facility, s.district, s.site].filter(Boolean).join(" · ")}</div>}
               {s.abnormalities && <div className="sm:col-span-2"><span style={{ color: "var(--warn)" }}>Abnormalities: </span>{s.abnormalities}</div>}
               {s.comments && <div className="sm:col-span-2"><span style={{ color: "var(--muted)" }}>Comments: </span>{s.comments}</div>}
             </div>
@@ -165,7 +172,16 @@ export default async function SampleDetail({ params, searchParams }: { params: P
                     <Field label="Destination"><input name="destination" className="input" placeholder="e.g. Bench 2" /></Field>
                     <Field label="Authorised by"><input name="authorizedByName" className="input" placeholder="Manager name" /></Field>
                   </div>
+                  <label className="flex items-center gap-2 text-xs mt-2" style={{ color: "var(--muted)" }}><input type="checkbox" name="thawed" value="1" /> Sample was thawed (counts as a freeze-thaw cycle)</label>
                   <button className="btn btn-sm btn-primary mt-2" type="submit">Log retrieval</button>
+                </form>
+
+                {/* Record a freeze-thaw cycle without removing material */}
+                <form action={recordFreezeThawAction} className="border rounded-lg p-3" style={{ borderColor: "var(--border)" }}>
+                  <input type="hidden" name="sampleId" value={s.id} />
+                  <div className="font-medium text-sm mb-2">Record freeze-thaw</div>
+                  <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Use when the sample was thawed in place (e.g. for QC) without removing material. Current cycles: {s.freezeThawCount}{s.maxFreezeThaw != null ? ` of ${s.maxFreezeThaw} max` : ""}.{s.maxFreezeThaw != null && s.freezeThawCount >= s.maxFreezeThaw ? " Limit reached." : ""}</p>
+                  <button className="btn btn-sm mt-1" type="submit">+1 freeze-thaw cycle</button>
                 </form>
 
                 {/* Return */}

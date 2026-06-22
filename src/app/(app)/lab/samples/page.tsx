@@ -52,6 +52,7 @@ export default async function SampleRegistry({ searchParams }: { searchParams: P
             <thead><tr>
               <th className="th text-left">Sample ID</th><th className="th text-left">Study ID</th>
               <th className="th text-left">Participant</th><th className="th text-left">Age</th>
+              <th className="th text-left">Visit</th><th className="th text-left">F/T</th>
               <th className="th text-left">Type</th><th className="th text-left">Project</th>
               <th className="th text-left">Collected</th><th className="th text-left">Storage</th>
               <th className="th text-left">Status</th><th className="th" />
@@ -63,6 +64,8 @@ export default async function SampleRegistry({ searchParams }: { searchParams: P
                   <td className="td">{r.studyId ?? "—"}</td>
                   <td className="td">{maskName(r.participantName, seePII)}</td>
                   <td className="td whitespace-nowrap">{formatAge(r.ageYears, r.ageMonths)}</td>
+                  <td className="td whitespace-nowrap">{r.visitLabel ?? "—"}</td>
+                  <td className="td whitespace-nowrap text-xs">{r.maxFreezeThaw != null ? <span style={{ color: r.freezeThawCount >= r.maxFreezeThaw ? "var(--danger)" : "inherit" }}>{r.freezeThawCount}/{r.maxFreezeThaw}</span> : (r.freezeThawCount > 0 ? r.freezeThawCount : "—")}</td>
                   <td className="td">{r.typeName ?? "—"}{r.abnormalities ? <Badge tone="warn">abnormal</Badge> : ""}</td>
                   <td className="td">{r.projectCode ?? "—"}</td>
                   <td className="td whitespace-nowrap">{fmtDate(r.collectionDate)}</td>

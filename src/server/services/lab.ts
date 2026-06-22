@@ -91,6 +91,7 @@ export type SampleRow = {
   ageYears: number | null; ageMonths: number | null; typeName: string | null; category: string | null;
   projectCode: string | null; collectionDate: string; storageEquipment: string | null; storageShelf: string | null;
   status: string; abnormalities: string | null;
+  visitLabel: string | null; freezeThawCount: number; maxFreezeThaw: number | null;
 };
 export async function listSamples(orgId: string, projectIds: string[], f: SampleFilters): Promise<SampleRow[]> {
   if (projectIds.length === 0) return [];
@@ -111,10 +112,12 @@ export async function listSamples(orgId: string, projectIds: string[], f: Sample
     `SELECT s.id, s.sample_code AS "sampleCode", pa.study_id AS "studyId", pa.name AS "participantName",
             s.age_years AS "ageYears", s.age_months AS "ageMonths", st.type AS "typeName", st.category,
             p.code AS "projectCode", s.collection_date AS "collectionDate", s.storage_equipment AS "storageEquipment",
-            s.storage_shelf AS "storageShelf", s.status, s.abnormalities
+            s.storage_shelf AS "storageShelf", s.status, s.abnormalities,
+            v.label AS "visitLabel", s.freeze_thaw_count AS "freezeThawCount", st.max_freeze_thaw AS "maxFreezeThaw"
      FROM lab_sample s
      LEFT JOIN lab_participant pa ON pa.id=s.participant_id
      LEFT JOIN lab_sample_type st ON st.id=s.sample_type_id
+     LEFT JOIN lab_visit v ON v.id=s.visit_id
      LEFT JOIN project p ON p.id=s.project_id
      WHERE ${where.join(" AND ")}
      ORDER BY s.created_at DESC LIMIT 500`, params

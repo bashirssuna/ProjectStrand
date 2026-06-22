@@ -3,12 +3,13 @@ import { notFound, redirect } from "next/navigation";
 import { requireLabOrg } from "../../_guard";
 import { q, one } from "@/server/db";
 import { accessibleProjectIds, canSeePII, maskName, formatAge } from "@/server/services/lab";
+import { sampleTests, listAssays } from "@/server/services/tests";
 import { PageHeader, SectionTitle, Field, Badge, StatusBadge, Stat } from "@/components/ui";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
-import { retrieveSampleAction, returnSampleAction, disposeSampleAction, revealParticipantNameAction, updateConsentAction, recordFreezeThawAction } from "@/app/actions";
+import { retrieveSampleAction, returnSampleAction, disposeSampleAction, revealParticipantNameAction, updateConsentAction, recordFreezeThawAction, orderTestAction, recordTestResultAction, updateTestStatusAction, deleteTestAction } from "@/app/actions";
 
-type SP = { reveal?: string; retrieved?: string; returned?: string; disposed?: string; consent?: string; edited?: string; err?: string; ft?: string };
+type SP = { reveal?: string; retrieved?: string; returned?: string; disposed?: string; consent?: string; edited?: string; err?: string; ft?: string; test?: string };
 
 export default async function SampleDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<SP> }) {
   const { id } = await params;
@@ -80,6 +81,9 @@ export default async function SampleDetail({ params, searchParams }: { params: P
   const storagePath = [s.room, s.equipment, s.rack, s.shelf, s.box, s.position].filter(Boolean).join(" / ") || "Not stored";
   const isOut = retrievals.some((r) => !r.returnedDate);
   const disposed = s.status === "disposed";
+  const tests = await sampleTests(id);
+  const assays = await listAssays(orgId);
+  const testNote: Record<string, string> = { ordered: "Test ordered.", result: "Result recorded.", status: "Test status updated.", removed: "Test removed." };
 
   // Chain of custody (oldest first)
   type Ev = { when: string; title: string; who: string | null; detail: string };
@@ -99,6 +103,7 @@ export default async function SampleDetail({ params, searchParams }: { params: P
       {sp.edited && (sp.edited === "0" ? <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)" }}>No changes to save.</div> : <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved {sp.edited} change{sp.edited === "1" ? "" : "s"} — recorded in the history below.</div>)}
       {sp.retrieved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Retrieval logged.</div>}
       {sp.ft && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Freeze-thaw cycle recorded.</div>}
+      {sp.test && testNote[sp.test] && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>{testNote[sp.test]}</div>}
       {sp.returned && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Return to storage recorded.</div>}
       {sp.disposed && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Sample disposed.</div>}
       {sp.consent && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Consent status updated.</div>}
@@ -226,6 +231,60 @@ export default async function SampleDetail({ params, searchParams }: { params: P
               </div>
             </div>
           )}
+
+          {/* Tests / assays */}
+          <div className="card p-4">
+            <SectionTitle>Tests &amp; assays</SectionTitle>
+            {tests.length > 0 ? (
+              <div className="space-y-2 mb-3">
+                {tests.map((t) => {
+                  const aname = t.assayCatalogueName ?? t.assayName ?? "Test";
+                  const tone = t.status === "completed" ? "ok" : t.status === "in_progress" ? "warn" : t.status === "failed" ? "danger" : t.status === "cancelled" ? "muted" : "info";
+                  return (
+                    <div key={t.id} className="border rounded-lg p-3" style={{ borderColor: "var(--border)" }}>
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="text-sm font-medium">{aname} <Badge tone={tone as "ok" | "warn" | "danger" | "muted" | "info"}>{label(t.status)}</Badge></div>
+                        <div className="flex items-center gap-2 text-xs">
+                          {t.status === "requested" && <form action={updateTestStatusAction} className="inline"><input type="hidden" name="testId" value={t.id} /><input type="hidden" name="status" value="in_progress" /><button className="hover:underline" type="submit" style={{ color: "var(--brand)" }}>start</button></form>}
+                          <form action={deleteTestAction} className="inline"><input type="hidden" name="testId" value={t.id} /><button className="hover:underline" type="submit" style={{ color: "var(--danger)" }}>remove</button></form>
+                        </div>
+                      </div>
+                      <div className="text-xs mt-1" style={{ color: "var(--muted)" }}>
+                        {t.requestedByName ? `Requested by ${t.requestedByName}` : "Requested"}{t.requestedDate ? ` · ${fmtDate(t.requestedDate)}` : ""}{t.method ? ` · ${t.method}` : ""}
+                      </div>
+                      {(t.result || t.interpretation || t.resultNumeric != null) && (
+                        <div className="text-sm mt-1">
+                          <span style={{ color: "var(--muted)" }}>Result: </span>
+                          {t.result ?? ""}{t.resultNumeric != null ? ` ${t.resultNumeric}${t.unit ? ` ${t.unit}` : ""}` : ""}{t.interpretation ? ` (${label(t.interpretation)})` : ""}
+                          {t.performedByName || t.resultDate ? <span className="text-xs" style={{ color: "var(--muted)" }}>{` — ${t.performedByName ?? ""}${t.resultDate ? ` · ${fmtDate(t.resultDate)}` : ""}`}</span> : null}
+                        </div>
+                      )}
+                      <details className="mt-1">
+                        <summary className="text-xs cursor-pointer hover:underline" style={{ color: "var(--brand)" }}>{t.status === "completed" ? "Edit result" : "Record result"}</summary>
+                        <form action={recordTestResultAction} className="grid sm:grid-cols-3 gap-2 items-end mt-2">
+                          <input type="hidden" name="testId" value={t.id} />
+                          <Field label="Result"><input name="result" defaultValue={t.result ?? ""} className="input" placeholder="e.g. Positive / Detected" /></Field>
+                          <Field label="Value"><input type="number" step="any" name="resultNumeric" defaultValue={t.resultNumeric ?? ""} className="input" placeholder="optional" /></Field>
+                          <Field label="Unit"><input name="unit" defaultValue={t.unit ?? ""} className="input" placeholder="e.g. /µL" /></Field>
+                          <Field label="Interpretation"><select name="interpretation" defaultValue={t.interpretation ?? ""} className="select"><option value="">—</option>{["positive", "negative", "normal", "abnormal", "detected", "not_detected", "reactive", "non_reactive", "inconclusive"].map((x) => <option key={x} value={x}>{label(x)}</option>)}</select></Field>
+                          <Field label="Result date"><input type="date" name="resultDate" defaultValue={t.resultDate ?? new Date().toISOString().slice(0, 10)} className="input" /></Field>
+                          <Field label="Outcome"><select name="status" defaultValue="completed" className="select"><option value="completed">Completed</option><option value="failed">Failed</option></select></Field>
+                          <div className="sm:col-span-3"><button className="btn btn-sm btn-primary" type="submit">Save result</button></div>
+                        </form>
+                      </details>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>No tests ordered on this sample yet.</p>}
+            <form action={orderTestAction} className="grid sm:grid-cols-4 gap-2 items-end border-t pt-3" style={{ borderColor: "var(--border)" }}>
+              <input type="hidden" name="sampleId" value={s.id} />
+              <Field label="Assay"><select name="assayId" className="select"><option value="">— choose —</option>{assays.map((a) => <option key={a.id} value={a.id}>{a.category ? `${a.category} · ` : ""}{a.name}</option>)}</select></Field>
+              <Field label="…or new assay"><input name="newAssay" className="input" placeholder="e.g. PCR — Plasmodium" /></Field>
+              <Field label="Method"><input name="method" className="input" placeholder="optional" /></Field>
+              <div><button className="btn btn-sm btn-primary" type="submit">Order test</button></div>
+            </form>
+          </div>
         </div>
 
         {/* Right: chain of custody */}

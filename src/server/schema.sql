@@ -2200,3 +2200,36 @@ CREATE TABLE IF NOT EXISTS lab_freezer_incident (
   reported_by_id text, reported_by_name text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ===================== Lab: test/assay catalogue + per-sample tests & results =====================
+CREATE TABLE IF NOT EXISTS lab_assay (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  category text,                              -- Molecular | Serology | Hematology | Microscopy | Chemistry | Other
+  method text,                                -- default method
+  unit text,                                  -- default result unit (quantitative)
+  turnaround_days int,
+  status text NOT NULL DEFAULT 'active',      -- active | inactive
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name)
+);
+CREATE TABLE IF NOT EXISTS lab_test (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  sample_id text NOT NULL REFERENCES lab_sample(id) ON DELETE CASCADE,
+  assay_id text REFERENCES lab_assay(id) ON DELETE SET NULL,
+  assay_name text,                            -- denormalized / ad-hoc
+  status text NOT NULL DEFAULT 'requested',   -- requested | in_progress | completed | cancelled | failed
+  requested_by_id text, requested_by_name text,
+  requested_date date,
+  method text,
+  result text,                                -- qualitative result or value summary
+  result_numeric double precision,
+  unit text,
+  interpretation text,                        -- normal | abnormal | positive | negative | inconclusive
+  performed_by_id text, performed_by_name text,
+  result_date date,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

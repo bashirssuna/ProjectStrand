@@ -7,6 +7,7 @@ import { label, } from "@/lib/enums";
 import { fmtDateTime } from "@/lib/format";
 import { setSampleTypeMaxAction } from "@/app/actions";
 import { freezerStats } from "@/server/services/freezers";
+import { testStats } from "@/server/services/tests";
 
 const PALETTE = ["#9a6a2f", "#c79a4b", "#5b8c7b", "#7b6ca8", "#b56b6b", "#6b8cb5", "#8ca86b", "#a8856b", "#6ba8a0", "#a86b95", "#7d8a99", "#caa46a"];
 function slicePath(cx: number, cy: number, r: number, a0: number, a1: number): string {
@@ -45,11 +46,20 @@ export default async function LabDashboard({ searchParams }: { searchParams: Pro
     `SELECT id, category, type, max_freeze_thaw AS "maxFreezeThaw" FROM lab_sample_type WHERE org_id=$1 ORDER BY category, type`, [orgId]) : [];
   const ftSet = sp.ftset === "1";
   const fz = await freezerStats(orgId);
+  const ts = await testStats(orgId, projectIds);
+  const pendingTests = ts.requested + ts.inProgress;
 
   return (
     <div>
       <PageHeader title="Laboratory" subtitle={`Biospecimen registry & chain of custody for ${orgName}`}
-        actions={<div className="flex gap-2"><Link href="/lab/freezers" className="btn btn-sm">Freezers</Link><Link href="/lab/samples" className="btn btn-sm">All samples</Link><Link href="/lab/samples/new" className="btn btn-sm btn-primary">+ Register sample</Link></div>} />
+        actions={<div className="flex gap-2"><Link href="/lab/tests" className="btn btn-sm">Tests</Link><Link href="/lab/freezers" className="btn btn-sm">Freezers</Link><Link href="/lab/samples" className="btn btn-sm">All samples</Link><Link href="/lab/samples/new" className="btn btn-sm btn-primary">+ Register sample</Link></div>} />
+
+      {pendingTests > 0 && (
+        <Link href="/lab/tests" className="card p-3 mb-5 flex items-center justify-between gap-3 text-sm" style={{ borderColor: "var(--border)" }}>
+          <span style={{ color: "var(--muted)" }}>Test worklist: <strong style={{ color: "var(--fg)" }}>{ts.requested}</strong> requested · <strong style={{ color: "var(--fg)" }}>{ts.inProgress}</strong> in progress.</span>
+          <span style={{ color: "var(--brand)" }}>Open worklist →</span>
+        </Link>
+      )}
 
       {(fz.outOfRange > 0 || fz.openIncidents > 0) && (
         <Link href="/lab/freezers" className="card p-3 mb-5 flex items-center justify-between gap-3 text-sm" style={{ borderColor: fz.outOfRange > 0 || fz.criticalOpen > 0 ? "var(--danger)" : "var(--warn)" }}>

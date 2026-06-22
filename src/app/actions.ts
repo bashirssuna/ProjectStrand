@@ -5198,3 +5198,88 @@ export async function deleteFreezerIncidentAction(formData: FormData) {
   await q(`DELETE FROM lab_freezer_incident WHERE id=$1 AND freezer_id=$2`, [String(formData.get("incidentId") || ""), fid]);
   redirect(`/lab/freezers/${fid}?incremoved=1`);
 }
+
+/* ===================== Lab: assay catalogue + tests/results ===================== */
+async function loadSampleOrg(orgId: string, sampleId: string) {
+  const s = await one<{ id: string }>(`SELECT id FROM lab_sample WHERE id=$1 AND org_id=$2`, [sampleId, orgId]);
+  if (!s) redirect("/lab/samples");
+  return s;
+}
+async function loadTest(orgId: string, testId: string) {
+  const t = await one<{ id: string; sampleId: string }>(`SELECT id, sample_id AS "sampleId" FROM lab_test WHERE id=$1 AND org_id=$2`, [testId, orgId]);
+  if (!t) redirect("/lab/tests");
+  return t;
+}
+
+export async function addAssayAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  if (!(isOrgAdmin || isSuperAdmin)) redirect("/lab/tests?err=forbidden");
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/lab/tests");
+  const ex = await one<{ id: string }>(`SELECT id FROM lab_assay WHERE org_id=$1 AND LOWER(name)=LOWER($2) LIMIT 1`, [orgId, name]);
+  if (ex) { await q(`UPDATE lab_assay SET category=$2, method=$3, unit=$4, turnaround_days=$5, status='active' WHERE id=$1`, [ex.id, sNull(formData.get("category")), sNull(formData.get("method")), sNull(formData.get("unit")), sNum(formData.get("turnaroundDays"))]); }
+  else { await q(`INSERT INTO lab_assay (id, org_id, name, category, method, unit, turnaround_days) VALUES ($1,$2,$3,$4,$5,$6,$7)`, [id("assay"), orgId, name, sNull(formData.get("category")), sNull(formData.get("method")), sNull(formData.get("unit")), sNum(formData.get("turnaroundDays"))]); }
+  await writeAudit({ orgId, userId, action: "create", entity: "lab_assay", entityId: name });
+  redirect("/lab/tests?assay=1");
+}
+
+export async function setAssayStatusAction(formData: FormData) {
+  const { orgId, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  if (!(isOrgAdmin || isSuperAdmin)) redirect("/lab/tests?err=forbidden");
+  const aid = String(formData.get("assayId") || "");
+  await q(`UPDATE lab_assay SET status=$2 WHERE id=$1 AND org_id=$3`, [aid, String(formData.get("status") || "active"), orgId]);
+  redirect("/lab/tests?assay=1");
+}
+
+// Order a test/assay on a sample. The assay is taken from the catalogue, or a typed name is found/created.
+export async function orderTestAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireLabActor();
+  const sid = String(formData.get("sampleId") || "");
+  await loadSampleOrg(orgId, sid);
+  let assayId = sNull(formData.get("assayId"));
+  let unit: string | null = null;
+  const newAssay = String(formData.get("newAssay") || "").trim();
+  if (newAssay) {
+    const ex = await one<{ id: string }>(`SELECT id FROM lab_assay WHERE org_id=$1 AND LOWER(name)=LOWER($2) LIMIT 1`, [orgId, newAssay]);
+    if (ex) assayId = ex.id;
+    else { assayId = id("assay"); await q(`INSERT INTO lab_assay (id, org_id, name, category) VALUES ($1,$2,$3,'Other')`, [assayId, orgId, newAssay]); }
+  }
+  if (assayId) unit = (await one<{ unit: string | null }>(`SELECT unit FROM lab_assay WHERE id=$1`, [assayId]))?.unit ?? null;
+  await q(`INSERT INTO lab_test (id, org_id, sample_id, assay_id, status, requested_by_id, requested_by_name, requested_date, method, unit, notes)
+           VALUES ($1,$2,$3,$4,'requested',$5,$6,$7,$8,$9,$10)`,
+    [id("ltest"), orgId, sid, assayId, userId, userName, String(formData.get("requestedDate") || new Date().toISOString().slice(0, 10)), sNull(formData.get("method")), unit, sNull(formData.get("notes"))]);
+  await writeAudit({ orgId, userId, action: "create", entity: "lab_test", entityId: sid });
+  redirect(`/lab/samples/${sid}?test=ordered`);
+}
+
+export async function recordTestResultAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireLabActor();
+  const testId = String(formData.get("testId") || "");
+  const t = await loadTest(orgId, testId);
+  const status = String(formData.get("status") || "completed");
+  await q(`UPDATE lab_test SET result=$2, result_numeric=$3, unit=COALESCE($4, unit), interpretation=$5, method=COALESCE($6, method), performed_by_id=$7, performed_by_name=$8, result_date=$9, status=$10 WHERE id=$1 AND org_id=$11`,
+    [testId, sNull(formData.get("result")), sNum(formData.get("resultNumeric")), sNull(formData.get("unit")), sNull(formData.get("interpretation")), sNull(formData.get("method")),
+     userId, userName, String(formData.get("resultDate") || new Date().toISOString().slice(0, 10)), status, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_test", entityId: t.sampleId, after: { status, result: sNull(formData.get("result")) } });
+  const back = String(formData.get("back") || "");
+  redirect(back === "tests" ? "/lab/tests?result=1" : `/lab/samples/${t.sampleId}?test=result`);
+}
+
+export async function updateTestStatusAction(formData: FormData) {
+  const { orgId, userId } = await requireLabActor();
+  const testId = String(formData.get("testId") || "");
+  const t = await loadTest(orgId, testId);
+  await q(`UPDATE lab_test SET status=$2 WHERE id=$1 AND org_id=$3`, [testId, String(formData.get("status") || "in_progress"), orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_test", entityId: t.sampleId, after: { status: String(formData.get("status") || "") } });
+  const back = String(formData.get("back") || "");
+  redirect(back === "tests" ? "/lab/tests?status=1" : `/lab/samples/${t.sampleId}?test=status`);
+}
+
+export async function deleteTestAction(formData: FormData) {
+  const { orgId } = await requireLabActor();
+  const testId = String(formData.get("testId") || "");
+  const t = await loadTest(orgId, testId);
+  await q(`DELETE FROM lab_test WHERE id=$1 AND org_id=$2`, [testId, orgId]);
+  const back = String(formData.get("back") || "");
+  redirect(back === "tests" ? "/lab/tests?removed=1" : `/lab/samples/${t.sampleId}?test=removed`);
+}

@@ -9,7 +9,7 @@ import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { currencyOptions } from "@/lib/currencies";
 import { ConfirmSubmit } from "@/components/confirm-submit";
-import { updateTenderAction, advanceTenderAction, deleteTenderAction, addBidAction, evaluateBidAction, removeBidAction, awardTenderAction } from "@/app/actions";
+import { updateTenderAction, advanceTenderAction, deleteTenderAction, addBidAction, evaluateBidAction, removeBidAction, awardTenderAction, createContractFromTenderAction } from "@/app/actions";
 
 const FLOW = ["draft", "advertised", "closed", "evaluation", "awarded"];
 const METHODS = ["open_domestic", "open_international", "restricted", "rfq", "direct", "other"];
@@ -78,7 +78,14 @@ export default async function TenderDetail({ params, searchParams }: { params: P
           </form>
         )}
         {inEval && <p className="text-sm" style={{ color: "var(--muted)" }}>Evaluate each bid below (mark responsive, score), then award to the successful bidder.</p>}
-        {t.status === "awarded" && <p className="text-sm" style={{ color: "var(--ok)" }}>Awarded to <strong>{bids.find((b) => b.id === t.awardBidId)?.bidderName ?? "—"}</strong>{(() => { const w = bids.find((b) => b.id === t.awardBidId); return w ? ` at ${money(w.bidAmount, w.currency ?? cur)}` : ""; })()}. A contract register to manage delivery and performance is the next step.</p>}
+        {t.status === "awarded" && (
+          <div>
+            <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Awarded to <strong>{bids.find((b) => b.id === t.awardBidId)?.bidderName ?? "—"}</strong>{(() => { const w = bids.find((b) => b.id === t.awardBidId); return w ? ` at ${money(w.bidAmount, w.currency ?? cur)}` : ""; })()}.</p>
+            <form action={createContractFromTenderAction}><input type="hidden" name="tenderId" value={t.id} />
+              <button className="btn btn-sm btn-primary" type="submit">Create contract from award →</button>
+            </form>
+          </div>
+        )}
         {!["awarded", "cancelled"].includes(t.status) && (
           <form action={advanceTenderAction} className="mt-3 inline"><input type="hidden" name="tenderId" value={t.id} /><input type="hidden" name="to" value="cancelled" />
             <ConfirmSubmit message="Cancel this tender?"><button className="text-xs hover:underline" type="submit" style={{ color: "var(--danger)" }}>Cancel tender</button></ConfirmSubmit>

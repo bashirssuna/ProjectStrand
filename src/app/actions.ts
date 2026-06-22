@@ -4758,3 +4758,128 @@ export async function awardTenderAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "update", entity: "tender", entityId: tid, after: { status: "awarded", awardedTo: bid.bidderName } });
   redirect(`/procurement/tenders/${tid}?saved=award`);
 }
+
+/* ===================== Contract register ===================== */
+async function loadContract(orgId: string, contractId: string) {
+  const c = await one<{ id: string; currency: string | null }>(`SELECT id, currency FROM contract WHERE id=$1 AND org_id=$2`, [contractId, orgId]);
+  if (!c) redirect("/procurement/contracts");
+  return c;
+}
+
+export async function createContractAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireProcGovActor();
+  const cid = id("ctr");
+  const baseCur = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+  const vendorId = sNull(formData.get("vendorId"));
+  let providerName = sNull(formData.get("providerName"));
+  if (vendorId && !providerName) providerName = (await one<{ name: string }>(`SELECT name FROM vendor WHERE id=$1`, [vendorId]))?.name ?? null;
+  await q(`INSERT INTO contract (id, org_id, reference, title, vendor_id, provider_name, tender_id, contract_value, currency, start_date, end_date, signed_date, status, scope, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+    [cid, orgId, sNull(formData.get("reference")), String(formData.get("title") || "Contract"), vendorId, providerName, sNull(formData.get("tenderId")),
+     Number(formData.get("contractValue") || 0), String(formData.get("currency") || "") || baseCur, sNull(formData.get("startDate")), sNull(formData.get("endDate")), sNull(formData.get("signedDate")),
+     String(formData.get("status") || "active"), sNull(formData.get("scope")), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "contract", entityId: cid, after: { title: String(formData.get("title") || "") } });
+  redirect(`/procurement/contracts/${cid}?created=1`);
+}
+
+// Create a contract directly from an awarded tender (prefilled from the winning bid).
+export async function createContractFromTenderAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireProcGovActor();
+  const tid = String(formData.get("tenderId") || "");
+  const t = await one<{ id: string; title: string; reference: string | null; currency: string | null; awardBidId: string | null }>(
+    `SELECT id, title, reference, currency, award_bid_id AS "awardBidId" FROM tender WHERE id=$1 AND org_id=$2`, [tid, orgId]);
+  if (!t || !t.awardBidId) redirect(`/procurement/tenders/${tid}`);
+  const bid = await one<{ vendorId: string | null; bidderName: string; bidAmount: number; currency: string | null }>(
+    `SELECT vendor_id AS "vendorId", bidder_name AS "bidderName", bid_amount::float8 AS "bidAmount", currency FROM tender_bid WHERE id=$1`, [t.awardBidId]);
+  if (!bid) redirect(`/procurement/tenders/${tid}`);
+  const cid = id("ctr");
+  await q(`INSERT INTO contract (id, org_id, reference, title, vendor_id, provider_name, tender_id, contract_value, currency, status, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',$10,$11)`,
+    [cid, orgId, t.reference, t.title, bid.vendorId, bid.bidderName, tid, bid.bidAmount, bid.currency ?? t.currency, userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "contract", entityId: cid, meta: { fromTender: tid } });
+  redirect(`/procurement/contracts/${cid}?created=1`);
+}
+
+export async function updateContractAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const cid = String(formData.get("contractId") || "");
+  await loadContract(orgId, cid);
+  const vendorId = sNull(formData.get("vendorId"));
+  let providerName = sNull(formData.get("providerName"));
+  if (vendorId && !providerName) providerName = (await one<{ name: string }>(`SELECT name FROM vendor WHERE id=$1`, [vendorId]))?.name ?? null;
+  await q(`UPDATE contract SET reference=$2, title=$3, vendor_id=$4, provider_name=$5, contract_value=$6, currency=$7, start_date=$8, end_date=$9, signed_date=$10, scope=$11 WHERE id=$1 AND org_id=$12`,
+    [cid, sNull(formData.get("reference")), String(formData.get("title") || "Contract"), vendorId, providerName, Number(formData.get("contractValue") || 0),
+     String(formData.get("currency") || "") || null, sNull(formData.get("startDate")), sNull(formData.get("endDate")), sNull(formData.get("signedDate")), sNull(formData.get("scope")), orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "contract", entityId: cid });
+  redirect(`/procurement/contracts/${cid}?saved=1`);
+}
+
+export async function setContractStatusAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const cid = String(formData.get("contractId") || "");
+  await loadContract(orgId, cid);
+  const status = String(formData.get("status") || "active");
+  await q(`UPDATE contract SET status=$2 WHERE id=$1 AND org_id=$3`, [cid, status, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "contract", entityId: cid, after: { status } });
+  redirect(`/procurement/contracts/${cid}?saved=1`);
+}
+
+export async function deleteContractAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const cid = String(formData.get("contractId") || "");
+  await loadContract(orgId, cid);
+  await q(`DELETE FROM contract WHERE id=$1 AND org_id=$2`, [cid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "contract", entityId: cid });
+  redirect("/procurement/contracts?deleted=1");
+}
+
+export async function addContractMilestoneAction(formData: FormData) {
+  const { orgId } = await requireProcGovActor();
+  const cid = String(formData.get("contractId") || "");
+  await loadContract(orgId, cid);
+  await q(`INSERT INTO contract_milestone (id, contract_id, name, due_date, amount, status, note) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id("cms"), cid, String(formData.get("name") || "Milestone"), sNull(formData.get("dueDate")), sNum(formData.get("amount")), String(formData.get("msStatus") || "pending"), sNull(formData.get("note"))]);
+  redirect(`/procurement/contracts/${cid}?added=milestone`);
+}
+
+export async function updateContractMilestoneAction(formData: FormData) {
+  const { orgId } = await requireProcGovActor();
+  const cid = String(formData.get("contractId") || "");
+  await loadContract(orgId, cid);
+  const mid = String(formData.get("milestoneId") || "");
+  const status = String(formData.get("msStatus") || "delivered");
+  await q(`UPDATE contract_milestone SET status=$2, delivered_date=CASE WHEN $2 IN ('delivered','accepted') AND delivered_date IS NULL THEN CURRENT_DATE ELSE delivered_date END WHERE id=$1 AND contract_id=$3`, [mid, status, cid]);
+  redirect(`/procurement/contracts/${cid}?saved=milestone`);
+}
+
+export async function addContractPaymentAction(formData: FormData) {
+  const { orgId } = await requireProcGovActor();
+  const cid = String(formData.get("contractId") || "");
+  const c = await loadContract(orgId, cid);
+  await q(`INSERT INTO contract_payment (id, contract_id, reference, amount, currency, payment_date, note) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id("cpay"), cid, sNull(formData.get("reference")), Number(formData.get("amount") || 0), String(formData.get("currency") || "") || c.currency, String(formData.get("paymentDate") || new Date().toISOString().slice(0, 10)), sNull(formData.get("note"))]);
+  redirect(`/procurement/contracts/${cid}?added=payment`);
+}
+
+export async function addContractAppraisalAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireProcGovActor();
+  const cid = String(formData.get("contractId") || "");
+  await loadContract(orgId, cid);
+  await q(`INSERT INTO contract_appraisal (id, contract_id, period, quality, timeliness, compliance, comments, appraised_by, appraisal_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [id("capp"), cid, sNull(formData.get("period")), sNum(formData.get("quality")), sNum(formData.get("timeliness")), sNum(formData.get("compliance")), sNull(formData.get("comments")), userName, String(formData.get("appraisalDate") || new Date().toISOString().slice(0, 10))]);
+  await writeAudit({ orgId, userId, action: "create", entity: "contract_appraisal", entityId: cid });
+  redirect(`/procurement/contracts/${cid}?added=appraisal`);
+}
+
+// Generic delete for a contract sub-record.
+export async function deleteContractItemAction(formData: FormData) {
+  const { orgId } = await requireProcGovActor();
+  const cid = String(formData.get("contractId") || "");
+  await loadContract(orgId, cid);
+  const kind = String(formData.get("kind") || "");
+  const itemId = String(formData.get("itemId") || "");
+  const table = ({ milestone: "contract_milestone", payment: "contract_payment", appraisal: "contract_appraisal" } as Record<string, string>)[kind];
+  if (!table) redirect(`/procurement/contracts/${cid}`);
+  await q(`DELETE FROM ${table} WHERE id=$1 AND contract_id=$2`, [itemId, cid]);
+  redirect(`/procurement/contracts/${cid}?removed=${kind}`);
+}

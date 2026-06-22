@@ -2046,4 +2046,56 @@ CREATE TABLE IF NOT EXISTS tender_bid (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+
+-- ===================== Contract register (contract management) =====================
+CREATE TABLE IF NOT EXISTS contract (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  reference text,
+  title text NOT NULL,
+  vendor_id text REFERENCES vendor(id) ON DELETE SET NULL,
+  provider_name text,
+  tender_id text REFERENCES tender(id) ON DELETE SET NULL,
+  contract_value numeric(18,2) NOT NULL DEFAULT 0,
+  currency text,
+  start_date date, end_date date, signed_date date,
+  status text NOT NULL DEFAULT 'active',
+  scope text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS contract_milestone (
+  id text PRIMARY KEY,
+  contract_id text NOT NULL REFERENCES contract(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  due_date date,
+  amount numeric(18,2),
+  status text NOT NULL DEFAULT 'pending',
+  delivered_date date,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS contract_payment (
+  id text PRIMARY KEY,
+  contract_id text NOT NULL REFERENCES contract(id) ON DELETE CASCADE,
+  reference text,
+  amount numeric(18,2) NOT NULL DEFAULT 0,
+  currency text,
+  payment_date date,
+  note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS contract_appraisal (
+  id text PRIMARY KEY,
+  contract_id text NOT NULL REFERENCES contract(id) ON DELETE CASCADE,
+  period text,
+  quality numeric(4,1),
+  timeliness numeric(4,1),
+  compliance numeric(4,1),
+  comments text,
+  appraised_by text,
+  appraisal_date date,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 `;

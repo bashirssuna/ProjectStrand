@@ -2011,4 +2011,39 @@ CREATE TABLE IF NOT EXISTS disposal (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+
+-- ===================== Tender & bid management =====================
+CREATE TABLE IF NOT EXISTS tender (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  reference text,
+  title text NOT NULL,
+  description text,
+  method text NOT NULL DEFAULT 'open_domestic',
+  category text NOT NULL DEFAULT 'goods',
+  estimated_value numeric(18,2) NOT NULL DEFAULT 0,
+  currency text,
+  committee_id text REFERENCES proc_committee(id) ON DELETE SET NULL,
+  advertised_date date,
+  closing_date date,
+  status text NOT NULL DEFAULT 'draft',
+  award_bid_id text,
+  note text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS tender_bid (
+  id text PRIMARY KEY,
+  tender_id text NOT NULL REFERENCES tender(id) ON DELETE CASCADE,
+  vendor_id text REFERENCES vendor(id) ON DELETE SET NULL,
+  bidder_name text NOT NULL,
+  bid_amount numeric(18,2) NOT NULL DEFAULT 0,
+  currency text,
+  received_date date,
+  status text NOT NULL DEFAULT 'received',
+  evaluation_score numeric(10,2),
+  evaluation_notes text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 `;

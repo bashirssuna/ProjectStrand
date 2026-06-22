@@ -4653,3 +4653,108 @@ export async function deleteDisposalAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "delete", entity: "disposal", entityId: did });
   redirect("/procurement/disposals?deleted=1");
 }
+
+/* ===================== Tender & bid management ===================== */
+async function loadTender(orgId: string, tenderId: string) {
+  const t = await one<{ id: string; status: string; currency: string | null }>(`SELECT id, status, currency FROM tender WHERE id=$1 AND org_id=$2`, [tenderId, orgId]);
+  if (!t) redirect("/procurement/tenders");
+  return t;
+}
+
+export async function createTenderAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireProcGovActor();
+  const tid = id("tndr");
+  const baseCur = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+  await q(`INSERT INTO tender (id, org_id, reference, title, description, method, category, estimated_value, currency, committee_id, note, status, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'draft',$12,$13)`,
+    [tid, orgId, sNull(formData.get("reference")), String(formData.get("title") || "Tender"), sNull(formData.get("description")), String(formData.get("method") || "open_domestic"),
+     String(formData.get("category") || "goods"), Number(formData.get("estimatedValue") || 0), String(formData.get("currency") || "") || baseCur, sNull(formData.get("committeeId")), sNull(formData.get("note")), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "tender", entityId: tid, after: { title: String(formData.get("title") || ""), method: String(formData.get("method") || "") } });
+  redirect(`/procurement/tenders/${tid}?created=1`);
+}
+
+export async function updateTenderAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const tid = String(formData.get("tenderId") || "");
+  await loadTender(orgId, tid);
+  await q(`UPDATE tender SET reference=$2, title=$3, description=$4, method=$5, category=$6, estimated_value=$7, currency=$8, committee_id=$9, note=$10 WHERE id=$1 AND org_id=$11`,
+    [tid, sNull(formData.get("reference")), String(formData.get("title") || "Tender"), sNull(formData.get("description")), String(formData.get("method") || "open_domestic"),
+     String(formData.get("category") || "goods"), Number(formData.get("estimatedValue") || 0), String(formData.get("currency") || "") || null, sNull(formData.get("committeeId")), sNull(formData.get("note")), orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "tender", entityId: tid });
+  redirect(`/procurement/tenders/${tid}?saved=1`);
+}
+
+export async function advanceTenderAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const tid = String(formData.get("tenderId") || "");
+  const t = await loadTender(orgId, tid);
+  const to = String(formData.get("to") || "");
+  // allowed forward transitions
+  const ok: Record<string, string[]> = { draft: ["advertised", "cancelled"], advertised: ["closed", "cancelled"], closed: ["evaluation", "cancelled"], evaluation: ["cancelled"] };
+  if (!(ok[t.status] || []).includes(to)) redirect(`/procurement/tenders/${tid}`);
+  if (to === "advertised") {
+    await q(`UPDATE tender SET status='advertised', advertised_date=$3, closing_date=$4 WHERE id=$1 AND org_id=$2`,
+      [tid, orgId, String(formData.get("advertisedDate") || new Date().toISOString().slice(0, 10)), sNull(formData.get("closingDate"))]);
+  } else {
+    await q(`UPDATE tender SET status=$3 WHERE id=$1 AND org_id=$2`, [tid, orgId, to]);
+  }
+  await writeAudit({ orgId, userId, action: "update", entity: "tender", entityId: tid, after: { status: to } });
+  redirect(`/procurement/tenders/${tid}?saved=1`);
+}
+
+export async function deleteTenderAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const tid = String(formData.get("tenderId") || "");
+  await loadTender(orgId, tid);
+  await q(`DELETE FROM tender WHERE id=$1 AND org_id=$2`, [tid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "tender", entityId: tid });
+  redirect("/procurement/tenders?deleted=1");
+}
+
+export async function addBidAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const tid = String(formData.get("tenderId") || "");
+  const t = await loadTender(orgId, tid);
+  const vendorId = sNull(formData.get("vendorId"));
+  let bidderName = String(formData.get("bidderName") || "").trim();
+  if (vendorId && !bidderName) bidderName = (await one<{ name: string }>(`SELECT name FROM vendor WHERE id=$1`, [vendorId]))?.name ?? "Bidder";
+  await q(`INSERT INTO tender_bid (id, tender_id, vendor_id, bidder_name, bid_amount, currency, received_date, status) VALUES ($1,$2,$3,$4,$5,$6,$7,'received')`,
+    [id("bid"), tid, vendorId, bidderName || "Bidder", Number(formData.get("bidAmount") || 0), String(formData.get("currency") || "") || t.currency, String(formData.get("receivedDate") || new Date().toISOString().slice(0, 10))]);
+  await writeAudit({ orgId, userId, action: "create", entity: "tender_bid", entityId: tid, meta: { bidder: bidderName } });
+  redirect(`/procurement/tenders/${tid}?added=bid`);
+}
+
+export async function evaluateBidAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const tid = String(formData.get("tenderId") || "");
+  await loadTender(orgId, tid);
+  const bidId = String(formData.get("bidId") || "");
+  await q(`UPDATE tender_bid SET status=$2, evaluation_score=$3, evaluation_notes=$4 WHERE id=$1 AND tender_id=$5`,
+    [bidId, String(formData.get("bidStatus") || "responsive"), sNum(formData.get("score")), sNull(formData.get("notes")), tid]);
+  redirect(`/procurement/tenders/${tid}?saved=bid`);
+}
+
+export async function removeBidAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const tid = String(formData.get("tenderId") || "");
+  await loadTender(orgId, tid);
+  const bidId = String(formData.get("bidId") || "");
+  await q(`DELETE FROM tender_bid WHERE id=$1 AND tender_id=$2`, [bidId, tid]);
+  // if this was the awarded bid, clear the award link
+  await q(`UPDATE tender SET award_bid_id=NULL WHERE id=$1 AND award_bid_id=$2`, [tid, bidId]);
+  redirect(`/procurement/tenders/${tid}?removed=bid`);
+}
+
+export async function awardTenderAction(formData: FormData) {
+  const { orgId, userId } = await requireProcGovActor();
+  const tid = String(formData.get("tenderId") || "");
+  const t = await loadTender(orgId, tid);
+  if (t.status !== "evaluation") redirect(`/procurement/tenders/${tid}`);
+  const bidId = String(formData.get("bidId") || "");
+  const bid = await one<{ id: string; bidderName: string }>(`SELECT id, bidder_name AS "bidderName" FROM tender_bid WHERE id=$1 AND tender_id=$2`, [bidId, tid]);
+  if (!bid) redirect(`/procurement/tenders/${tid}`);
+  await q(`UPDATE tender_bid SET status='awarded' WHERE id=$1`, [bidId]);
+  await q(`UPDATE tender SET status='awarded', award_bid_id=$3 WHERE id=$1 AND org_id=$2`, [tid, orgId, bidId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "tender", entityId: tid, after: { status: "awarded", awardedTo: bid.bidderName } });
+  redirect(`/procurement/tenders/${tid}?saved=award`);
+}

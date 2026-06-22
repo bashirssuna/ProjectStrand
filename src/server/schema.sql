@@ -1926,3 +1926,15 @@ CREATE TABLE IF NOT EXISTS study_milestone (
   note text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ===================== Per-tenant modules (multi-sector SaaS) =====================
+ALTER TABLE organization ADD COLUMN IF NOT EXISTS org_type text;
+-- Explicit per-org module on/off overrides (absence = org-type default).
+CREATE TABLE IF NOT EXISTS org_module (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  module_key text NOT NULL,
+  enabled boolean NOT NULL DEFAULT true,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, module_key)
+);

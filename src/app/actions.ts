@@ -4381,3 +4381,34 @@ export async function deleteStudyItemAction(formData: FormData) {
   await q(`DELETE FROM ${table} WHERE id=$1 AND study_id=$2`, [itemId, sid]);
   redirect(`/studies/${sid}?removed=${kind}`);
 }
+
+/* ===================== Per-tenant modules & sector ===================== */
+import { ORG_TYPES, TOGGLEABLE_MODULES } from "@/lib/modules";
+
+async function requireOrgAdminActor() {
+  const user = await requireUser();
+  const org = await getUserOrg(user.id);
+  if (!org) redirect("/dashboard");
+  if (!org.isOrgAdmin && !user.isSuperAdmin) redirect("/dashboard");
+  return { orgId: org.id, userId: user.id, userName: user.name };
+}
+
+export async function setOrgTypeAction(formData: FormData) {
+  const { orgId, userId } = await requireOrgAdminActor();
+  const type = String(formData.get("orgType") || "");
+  if (!ORG_TYPES.find((t) => t.key === type)) redirect("/organization/modules");
+  await q(`UPDATE organization SET org_type=$2, updated_at=now() WHERE id=$1`, [orgId, type]);
+  await writeAudit({ orgId, userId, action: "update", entity: "organization", entityId: orgId, after: { orgType: type } });
+  redirect("/organization/modules?saved=type");
+}
+
+export async function toggleModuleAction(formData: FormData) {
+  const { orgId, userId } = await requireOrgAdminActor();
+  const key = String(formData.get("moduleKey") || "");
+  if (!TOGGLEABLE_MODULES.find((m) => m.key === key)) redirect("/organization/modules");
+  const enabled = String(formData.get("enabled")) === "true";
+  await q(`DELETE FROM org_module WHERE org_id=$1 AND module_key=$2`, [orgId, key]);
+  await q(`INSERT INTO org_module (id, org_id, module_key, enabled) VALUES ($1,$2,$3,$4)`, [id("omod"), orgId, key, enabled]);
+  await writeAudit({ orgId, userId, action: "update", entity: "org_module", entityId: key, after: { enabled } });
+  redirect("/organization/modules?saved=module");
+}

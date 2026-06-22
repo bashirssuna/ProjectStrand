@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/server/auth";
 import { listProjectsForUser } from "@/server/services/projects";
 import { canCreateProjects } from "@/server/policy";
 import { getUserOrg } from "@/server/services/accounts";
+import { enabledModules } from "@/server/modules";
 import { q } from "@/server/db";
 import { NavLink } from "@/components/nav";
 import { ThemePicker } from "@/components/theme-picker";
@@ -16,6 +17,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const projects = await listProjectsForUser(user.id, user.isSuperAdmin);
   const mayCreate = await canCreateProjects(user.id, user.isSuperAdmin);
   const org = await getUserOrg(user.id);
+  const modules = org ? await enabledModules(org.id) : new Set<string>();
   const trialEnded = !!(org?.plan === "trial" && org.trialEndsAt && new Date(org.trialEndsAt) < new Date());
   const locked = !user.isSuperAdmin && !!org && (trialEnded || org.status === "suspended");
   if (locked) redirect("/upgrade");
@@ -54,23 +56,24 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <nav className="p-3 space-y-1 overflow-y-auto">
             <NavLink href="/dashboard">▣ Dashboard</NavLink>
             <NavLink href="/projects">❏ Projects</NavLink>
-            <NavLink href="/lab">⚗ Laboratory</NavLink>
-            <NavLink href="/studies">⚕ Clinical trials</NavLink>
-            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/subawards">⤳ Sub-awards</NavLink>}
-            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/collaborations">⚘ Collaborations</NavLink>}
+            {modules.has("research") && <NavLink href="/lab">⚗ Laboratory</NavLink>}
+            {modules.has("research") && <NavLink href="/studies">⚕ Clinical trials</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && modules.has("subawards") && <NavLink href="/subawards">⤳ Sub-awards</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && modules.has("collaborations") && <NavLink href="/collaborations">⚘ Collaborations</NavLink>}
 
             {(org?.isOrgAdmin || user.isSuperAdmin) && (
               <>
                 <div className="text-[10px] font-semibold uppercase tracking-wider px-3 pt-4 pb-1" style={{ color: "var(--muted)" }}>Institution</div>
                 <NavLink href="/finance">₿ Finance &amp; Accounting</NavLink>
-                <NavLink href="/hr">⚇ Human Resources</NavLink>
-                <NavLink href="/procurement">⛁ Procurement</NavLink>
+                {modules.has("hr") && <NavLink href="/hr">⚇ Human Resources</NavLink>}
+                {modules.has("procurement") && <NavLink href="/procurement">⛁ Procurement</NavLink>}
               </>
             )}
 
             <div className="text-[10px] font-semibold uppercase tracking-wider px-3 pt-4 pb-1" style={{ color: "var(--muted)" }}>Account</div>
             {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization">⌂ Organisation</NavLink>}
             {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization/access">⚷ Access &amp; permissions</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization/modules">❒ Modules &amp; sector</NavLink>}
             {user.isSuperAdmin && <NavLink href="/admin">⚙ Admin Center</NavLink>}
             <NavLink href="/profile">◔ My Profile</NavLink>
           </nav>

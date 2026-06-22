@@ -2142,4 +2142,48 @@ ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS freeze_thaw_count int NOT NULL D
 ALTER TABLE lab_sample_type ADD COLUMN IF NOT EXISTS max_freeze_thaw int;
 ALTER TABLE lab_retrieval ADD COLUMN IF NOT EXISTS thawed boolean NOT NULL DEFAULT false;
 
+
+-- ===================== Lab: freezer register + temperature logs + incidents (cold chain) =====================
+CREATE TABLE IF NOT EXISTS lab_freezer (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  location text,
+  kind text NOT NULL DEFAULT 'freezer_-80',
+  set_point double precision,
+  min_temp double precision,
+  max_temp double precision,
+  asset_id text,
+  status text NOT NULL DEFAULT 'active',
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name)
+);
+CREATE TABLE IF NOT EXISTS lab_temp_log (
+  id text PRIMARY KEY,
+  freezer_id text NOT NULL REFERENCES lab_freezer(id) ON DELETE CASCADE,
+  reading_at timestamptz NOT NULL DEFAULT now(),
+  temperature double precision NOT NULL,
+  min_reading double precision,
+  max_reading double precision,
+  in_range boolean NOT NULL DEFAULT true,
+  note text,
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS lab_freezer_incident (
+  id text PRIMARY KEY,
+  freezer_id text NOT NULL REFERENCES lab_freezer(id) ON DELETE CASCADE,
+  incident_at timestamptz NOT NULL DEFAULT now(),
+  kind text NOT NULL DEFAULT 'other',
+  severity text NOT NULL DEFAULT 'warning',
+  description text,
+  action_taken text,
+  resolved boolean NOT NULL DEFAULT false,
+  resolved_at timestamptz,
+  reported_by_id text, reported_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 `;

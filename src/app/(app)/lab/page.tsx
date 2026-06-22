@@ -6,6 +6,7 @@ import { PageHeader, SectionTitle, Stat, Empty, Badge, StatusBadge, Field } from
 import { label, } from "@/lib/enums";
 import { fmtDateTime } from "@/lib/format";
 import { setSampleTypeMaxAction } from "@/app/actions";
+import { freezerStats } from "@/server/services/freezers";
 
 const PALETTE = ["#9a6a2f", "#c79a4b", "#5b8c7b", "#7b6ca8", "#b56b6b", "#6b8cb5", "#8ca86b", "#a8856b", "#6ba8a0", "#a86b95", "#7d8a99", "#caa46a"];
 function slicePath(cx: number, cy: number, r: number, a0: number, a1: number): string {
@@ -43,11 +44,21 @@ export default async function LabDashboard({ searchParams }: { searchParams: Pro
   const ftTypes = isAdmin ? await q<{ id: string; category: string; type: string; maxFreezeThaw: number | null }>(
     `SELECT id, category, type, max_freeze_thaw AS "maxFreezeThaw" FROM lab_sample_type WHERE org_id=$1 ORDER BY category, type`, [orgId]) : [];
   const ftSet = sp.ftset === "1";
+  const fz = await freezerStats(orgId);
 
   return (
     <div>
       <PageHeader title="Laboratory" subtitle={`Biospecimen registry & chain of custody for ${orgName}`}
-        actions={<div className="flex gap-2"><Link href="/lab/samples" className="btn btn-sm">All samples</Link><Link href="/lab/samples/new" className="btn btn-sm btn-primary">+ Register sample</Link></div>} />
+        actions={<div className="flex gap-2"><Link href="/lab/freezers" className="btn btn-sm">Freezers</Link><Link href="/lab/samples" className="btn btn-sm">All samples</Link><Link href="/lab/samples/new" className="btn btn-sm btn-primary">+ Register sample</Link></div>} />
+
+      {(fz.outOfRange > 0 || fz.openIncidents > 0) && (
+        <Link href="/lab/freezers" className="card p-3 mb-5 flex items-center justify-between gap-3 text-sm" style={{ borderColor: fz.outOfRange > 0 || fz.criticalOpen > 0 ? "var(--danger)" : "var(--warn)" }}>
+          <span style={{ color: fz.outOfRange > 0 || fz.criticalOpen > 0 ? "var(--danger)" : "var(--warn)" }}>
+            Cold chain: {fz.outOfRange > 0 ? `${fz.outOfRange} freezer${fz.outOfRange === 1 ? "" : "s"} out of range` : "all in range"}{fz.openIncidents > 0 ? ` · ${fz.openIncidents} open incident${fz.openIncidents === 1 ? "" : "s"}${fz.criticalOpen > 0 ? ` (${fz.criticalOpen} critical)` : ""}` : ""}.
+          </span>
+          <span style={{ color: "var(--brand)" }}>Review →</span>
+        </Link>
+      )}
 
       {projects.length > 1 && (
         <form className="mb-5 flex items-end gap-2">

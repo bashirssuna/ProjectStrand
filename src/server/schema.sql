@@ -2157,3 +2157,46 @@ ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS collection_site text;
 ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS freeze_thaw_count int NOT NULL DEFAULT 0;
 ALTER TABLE lab_sample_type ADD COLUMN IF NOT EXISTS max_freeze_thaw int;   -- acceptable freeze-thaw cycles for this analyte
 ALTER TABLE lab_retrieval ADD COLUMN IF NOT EXISTS thawed boolean NOT NULL DEFAULT false;
+
+-- ===================== Lab: freezer register + temperature logs + incidents (cold chain) =====================
+CREATE TABLE IF NOT EXISTS lab_freezer (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,                        -- 'FZR-01'
+  location text,                              -- room / lab
+  kind text NOT NULL DEFAULT 'freezer_-80',  -- freezer_-80 | freezer_-20 | fridge_4 | ln2 | cold_room | other
+  set_point double precision,                -- target temperature (°C)
+  min_temp double precision,                 -- acceptable range low
+  max_temp double precision,                 -- acceptable range high
+  asset_id text,                             -- optional link to fixed_asset
+  status text NOT NULL DEFAULT 'active',     -- active | maintenance | decommissioned
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (org_id, name)
+);
+CREATE TABLE IF NOT EXISTS lab_temp_log (
+  id text PRIMARY KEY,
+  freezer_id text NOT NULL REFERENCES lab_freezer(id) ON DELETE CASCADE,
+  reading_at timestamptz NOT NULL DEFAULT now(),
+  temperature double precision NOT NULL,
+  min_reading double precision,              -- optional daily min/max thermometer values
+  max_reading double precision,
+  in_range boolean NOT NULL DEFAULT true,
+  note text,
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS lab_freezer_incident (
+  id text PRIMARY KEY,
+  freezer_id text NOT NULL REFERENCES lab_freezer(id) ON DELETE CASCADE,
+  incident_at timestamptz NOT NULL DEFAULT now(),
+  kind text NOT NULL DEFAULT 'other',        -- power_outage | alarm | excursion | mechanical | door_open | defrost | other
+  severity text NOT NULL DEFAULT 'warning',  -- info | warning | critical
+  description text,
+  action_taken text,
+  resolved boolean NOT NULL DEFAULT false,
+  resolved_at timestamptz,
+  reported_by_id text, reported_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

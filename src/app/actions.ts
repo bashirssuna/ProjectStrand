@@ -5108,3 +5108,93 @@ export async function setSampleTypeMaxAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "update", entity: "lab_sample_type", entityId: typeId, after: { maxFreezeThaw: max } });
   redirect("/lab?ftset=1");
 }
+
+/* ===================== Lab: freezer register + temperature logs + incidents ===================== */
+async function loadFreezer(orgId: string, freezerId: string) {
+  const f = await one<{ id: string; minTemp: number | null; maxTemp: number | null }>(
+    `SELECT id, min_temp AS "minTemp", max_temp AS "maxTemp" FROM lab_freezer WHERE id=$1 AND org_id=$2`, [freezerId, orgId]);
+  if (!f) redirect("/lab/freezers");
+  return f;
+}
+
+export async function createFreezerAction(formData: FormData) {
+  const { orgId, userId, userName, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  if (!(isOrgAdmin || isSuperAdmin)) redirect("/lab/freezers?err=forbidden");
+  const fid = id("frz");
+  await q(`INSERT INTO lab_freezer (id, org_id, name, location, kind, set_point, min_temp, max_temp, status, notes, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [fid, orgId, String(formData.get("name") || "Freezer"), sNull(formData.get("location")), String(formData.get("kind") || "freezer_-80"),
+     sNum(formData.get("setPoint")), sNum(formData.get("minTemp")), sNum(formData.get("maxTemp")), String(formData.get("status") || "active"), sNull(formData.get("notes")), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "lab_freezer", entityId: fid, after: { name: String(formData.get("name") || "") } });
+  redirect(`/lab/freezers/${fid}?created=1`);
+}
+
+export async function updateFreezerAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  const fid = String(formData.get("freezerId") || "");
+  await loadFreezer(orgId, fid);
+  if (!(isOrgAdmin || isSuperAdmin)) redirect(`/lab/freezers/${fid}?err=forbidden`);
+  await q(`UPDATE lab_freezer SET name=$2, location=$3, kind=$4, set_point=$5, min_temp=$6, max_temp=$7, status=$8, notes=$9 WHERE id=$1 AND org_id=$10`,
+    [fid, String(formData.get("name") || "Freezer"), sNull(formData.get("location")), String(formData.get("kind") || "freezer_-80"),
+     sNum(formData.get("setPoint")), sNum(formData.get("minTemp")), sNum(formData.get("maxTemp")), String(formData.get("status") || "active"), sNull(formData.get("notes")), orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_freezer", entityId: fid });
+  redirect(`/lab/freezers/${fid}?saved=1`);
+}
+
+export async function deleteFreezerAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  const fid = String(formData.get("freezerId") || "");
+  await loadFreezer(orgId, fid);
+  if (!(isOrgAdmin || isSuperAdmin)) redirect(`/lab/freezers/${fid}?err=forbidden`);
+  await q(`DELETE FROM lab_freezer WHERE id=$1 AND org_id=$2`, [fid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "lab_freezer", entityId: fid });
+  redirect("/lab/freezers?deleted=1");
+}
+
+// Record a temperature reading; the in-range flag is computed against the freezer's acceptable range.
+export async function recordTempAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireLabActor();
+  const fid = String(formData.get("freezerId") || "");
+  const f = await loadFreezer(orgId, fid);
+  const temp = Number(formData.get("temperature") || 0);
+  const ok = !((f.minTemp != null && temp < f.minTemp) || (f.maxTemp != null && temp > f.maxTemp));
+  const at = String(formData.get("readingAt") || "").trim();
+  await q(`INSERT INTO lab_temp_log (id, freezer_id, reading_at, temperature, min_reading, max_reading, in_range, note, recorded_by_id, recorded_by_name)
+           VALUES ($1,$2,COALESCE($3::timestamptz, now()),$4,$5,$6,$7,$8,$9,$10)`,
+    [id("tmp"), fid, at || null, temp, sNum(formData.get("minReading")), sNum(formData.get("maxReading")), ok, sNull(formData.get("note")), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "lab_temp_log", entityId: fid, after: { temperature: temp, inRange: ok } });
+  redirect(`/lab/freezers/${fid}?temp=${ok ? "ok" : "out"}`);
+}
+
+export async function addFreezerIncidentAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireLabActor();
+  const fid = String(formData.get("freezerId") || "");
+  await loadFreezer(orgId, fid);
+  const at = String(formData.get("incidentAt") || "").trim();
+  await q(`INSERT INTO lab_freezer_incident (id, freezer_id, incident_at, kind, severity, description, action_taken, reported_by_id, reported_by_name)
+           VALUES ($1,$2,COALESCE($3::timestamptz, now()),$4,$5,$6,$7,$8,$9)`,
+    [id("finc"), fid, at || null, String(formData.get("kind") || "other"), String(formData.get("severity") || "warning"),
+     sNull(formData.get("description")), sNull(formData.get("actionTaken")), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "lab_freezer_incident", entityId: fid, after: { kind: String(formData.get("kind") || ""), severity: String(formData.get("severity") || "") } });
+  redirect(`/lab/freezers/${fid}?incident=1`);
+}
+
+export async function resolveFreezerIncidentAction(formData: FormData) {
+  const { orgId, userId } = await requireLabActor();
+  const fid = String(formData.get("freezerId") || "");
+  await loadFreezer(orgId, fid);
+  const incId = String(formData.get("incidentId") || "");
+  const reopen = formData.get("reopen") === "1";
+  await q(`UPDATE lab_freezer_incident SET resolved=$2, resolved_at=CASE WHEN $2 THEN now() ELSE NULL END, action_taken=COALESCE($3, action_taken) WHERE id=$1 AND freezer_id=$4`,
+    [incId, !reopen, sNull(formData.get("actionTaken")), fid]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_freezer_incident", entityId: fid, after: { resolved: !reopen } });
+  redirect(`/lab/freezers/${fid}?incresolved=${reopen ? "0" : "1"}`);
+}
+
+export async function deleteFreezerIncidentAction(formData: FormData) {
+  const { orgId } = await requireLabActor();
+  const fid = String(formData.get("freezerId") || "");
+  await loadFreezer(orgId, fid);
+  await q(`DELETE FROM lab_freezer_incident WHERE id=$1 AND freezer_id=$2`, [String(formData.get("incidentId") || ""), fid]);
+  redirect(`/lab/freezers/${fid}?incremoved=1`);
+}

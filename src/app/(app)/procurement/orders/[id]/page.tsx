@@ -4,9 +4,10 @@ import { q, one } from "@/server/db";
 import { PageHeader, SectionTitle, Field, StatusBadge, Badge, Empty } from "@/components/ui";
 import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { SignField } from "@/components/sign-field";
-import { createGRNAction, createBillAction, authorisePOAction } from "@/app/actions";
+import { isModuleEnabled } from "@/server/modules";
+import { createGRNAction, createBillAction, authorisePOAction, postReceivedItemAction } from "@/app/actions";
 
-export default async function PODetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ grn?: string; err?: string; authorised?: string }> }) {
+export default async function PODetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ grn?: string; err?: string; authorised?: string; posted?: string }> }) {
   const { id } = await params;
   const { orgId } = await requireProcOrg();
   const sp = await searchParams;
@@ -18,9 +19,12 @@ export default async function PODetail({ params, searchParams }: { params: Promi
      WHERE po.id=$1 AND po.org_id=$2`, [id, orgId]
   );
   if (!po) return <Empty title="Purchase order not found" hint="It may have been removed." />;
-  const items = await q<{ id: string; description: string; quantity: number; unit: string | null; unitCost: number; amount: number; qtyReceived: number }>(
-    `SELECT id, description, quantity::float, unit, unit_cost::float AS "unitCost", amount::float, qty_received::float AS "qtyReceived" FROM purchase_order_item WHERE po_id=$1`, [id]
+  const items = await q<{ id: string; description: string; quantity: number; unit: string | null; unitCost: number; amount: number; qtyReceived: number; postedQty: number }>(
+    `SELECT id, description, quantity::float, unit, unit_cost::float AS "unitCost", amount::float, qty_received::float AS "qtyReceived", posted_qty::float AS "postedQty" FROM purchase_order_item WHERE po_id=$1`, [id]
   );
+  const storesOn = await isModuleEnabled(orgId, "stores");
+  const stockItems = storesOn ? await q<{ id: string; name: string }>(`SELECT id, name FROM stock_item WHERE org_id=$1 AND status='active' ORDER BY name`, [orgId]) : [];
+  const stores = storesOn ? await q<{ id: string; name: string }>(`SELECT id, name FROM store WHERE org_id=$1 AND status='active' ORDER BY name`, [orgId]) : [];
   const grns = await q<{ id: string; number: string; receivedDate: string; receivedByName: string | null }>(
     `SELECT id, number, received_date AS "receivedDate", received_by_name AS "receivedByName" FROM goods_received_note WHERE po_id=$1 ORDER BY received_date`, [id]
   );
@@ -33,6 +37,9 @@ export default async function PODetail({ params, searchParams }: { params: Promi
       <PageHeader title={`Purchase order ${po.number}`} subtitle={`${po.vendor ?? "—"}${po.project ? ` · ${po.project}` : ""}${po.lineCode ? ` · line ${po.lineCode}` : ""}`} actions={<Link href="/procurement/requests" className="btn btn-sm">← Requests</Link>} />
       {sp.grn && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Goods received note recorded.</div>}
       {sp.authorised && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Order authorised and signed.</div>}
+      {sp.posted === "stores" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Received goods posted to stores.</div>}
+      {sp.posted === "asset" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Received goods registered in the asset register.</div>}
+      {sp.err === "stores_off" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>The Inventory &amp; stores module is turned off for this organisation.</div>}
       {sp.err === "noqty" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Enter at least one received quantity.</div>}
       {sp.err && sp.err !== "noqty" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{decodeURIComponent(sp.err)}</div>}
 
@@ -107,6 +114,50 @@ export default async function PODetail({ params, searchParams }: { params: Promi
               <thead><tr><th className="th text-left">GRN</th><th className="th text-left">Date</th><th className="th text-left">Received by</th></tr></thead>
               <tbody>{grns.map((g) => (<tr key={g.id}><td className="td font-mono text-xs">{g.number}</td><td className="td">{fmtDate(g.receivedDate)}</td><td className="td">{g.receivedByName ?? "—"}</td></tr>))}</tbody>
             </table>
+          </div>
+        </>
+      )}
+
+      {/* Post received items to stores / assets */}
+      {items.some((i) => i.qtyReceived - i.postedQty > 0) && (
+        <>
+          <SectionTitle>Post received items to stores / assets</SectionTitle>
+          <div className="card p-4 mb-6">
+            <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>Push received goods into the inventory ledger or the asset register. Posted quantities won&apos;t be posted again.{!storesOn && " (Enable the Inventory & stores module to post to stores.)"}</p>
+            <div className="space-y-1">
+              {items.filter((i) => i.qtyReceived - i.postedQty > 0).map((i) => {
+                const toPost = i.qtyReceived - i.postedQty;
+                return (
+                  <div key={i.id} className="border-t pt-3" style={{ borderColor: "var(--border)" }}>
+                    <div className="text-sm font-medium">{i.description} <span style={{ color: "var(--muted)" }}>· {toPost} {i.unit ?? "unit"} to post · {money(i.unitCost, po.currency)}/unit</span></div>
+                    <div className="flex flex-wrap gap-5 mt-1">
+                      {storesOn && (
+                        <details>
+                          <summary className="text-xs cursor-pointer hover:underline" style={{ color: "var(--brand)" }}>→ Post to stores</summary>
+                          <form action={postReceivedItemAction} className="grid sm:grid-cols-4 gap-2 items-end mt-2" style={{ minWidth: 340 }}>
+                            <input type="hidden" name="poItemId" value={i.id} /><input type="hidden" name="destination" value="stores" />
+                            <Field label="Existing item"><select name="stockItemId" className="select"><option value="">— new —</option>{stockItems.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
+                            <Field label="…or new item"><input name="newItemName" defaultValue={i.description} className="input" /></Field>
+                            <Field label="Type"><select name="itemType" defaultValue="consumable" className="select"><option value="consumable">Consumable</option><option value="asset">Asset</option><option value="other">Other</option></select></Field>
+                            <Field label="Store"><select name="storeId" className="select"><option value="">—</option>{stores.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}</select></Field>
+                            <div className="sm:col-span-4"><button className="btn btn-sm btn-primary" type="submit">Post to stores</button></div>
+                          </form>
+                        </details>
+                      )}
+                      <details>
+                        <summary className="text-xs cursor-pointer hover:underline" style={{ color: "var(--brand)" }}>→ Register as asset</summary>
+                        <form action={postReceivedItemAction} className="grid sm:grid-cols-3 gap-2 items-end mt-2" style={{ minWidth: 340 }}>
+                          <input type="hidden" name="poItemId" value={i.id} /><input type="hidden" name="destination" value="asset" />
+                          <Field label="Asset name"><input name="assetName" defaultValue={i.description} className="input" /></Field>
+                          <Field label="Category"><input name="category" className="input" placeholder="e.g. IT equipment" /></Field>
+                          <div><button className="btn btn-sm btn-primary" type="submit">Register asset</button></div>
+                        </form>
+                      </details>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </>
       )}

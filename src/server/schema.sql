@@ -2113,3 +2113,6 @@ CREATE TABLE IF NOT EXISTS contract_appraisal (
   appraisal_date date,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Track how much of each PO line has been posted to stores/asset register (avoids double-posting).
+ALTER TABLE purchase_order_item ADD COLUMN IF NOT EXISTS posted_qty numeric(18,2) NOT NULL DEFAULT 0;

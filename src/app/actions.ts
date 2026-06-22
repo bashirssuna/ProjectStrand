@@ -4883,3 +4883,59 @@ export async function deleteContractItemAction(formData: FormData) {
   await q(`DELETE FROM ${table} WHERE id=$1 AND contract_id=$2`, [itemId, cid]);
   redirect(`/procurement/contracts/${cid}?removed=${kind}`);
 }
+
+/* ===================== GRN -> inventory / asset posting ===================== */
+async function requireProcActor() {
+  const user = await requireUser();
+  const org = await getUserOrg(user.id);
+  if (!org) redirect("/dashboard");
+  if (!org.isOrgAdmin && !user.isSuperAdmin) redirect("/dashboard");
+  if (!(await _isModEnabled(org.id, "procurement"))) redirect("/dashboard");
+  return { orgId: org.id, userId: user.id, userName: user.name };
+}
+
+// Post a received purchase-order line into stores (as a stock receipt) or the asset register.
+export async function postReceivedItemAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireProcActor();
+  const poItemId = String(formData.get("poItemId") || "");
+  const it = await one<{ poId: string; description: string; unit: string | null; unitCost: number; qtyReceived: number; postedQty: number; poNumber: string | null; currency: string | null }>(
+    `SELECT i.po_id AS "poId", i.description, i.unit, i.unit_cost::float8 AS "unitCost", i.qty_received::float8 AS "qtyReceived", i.posted_qty::float8 AS "postedQty",
+            po.number AS "poNumber", po.currency
+     FROM purchase_order_item i JOIN purchase_order po ON po.id=i.po_id WHERE i.id=$1 AND po.org_id=$2`, [poItemId, orgId]);
+  if (!it) redirect("/procurement");
+  const toPost = it.qtyReceived - it.postedQty;
+  if (toPost <= 0) redirect(`/procurement/orders/${it.poId}?err=posted`);
+  const destination = String(formData.get("destination") || "stores");
+  const cur = it.currency ?? "USD";
+  const today = new Date().toISOString().slice(0, 10);
+
+  if (destination === "asset") {
+    const aid = id("asset");
+    await q(`INSERT INTO fixed_asset (id, org_id, name, category, acquired_on, cost, currency, status, note) VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8)`,
+      [aid, orgId, String(formData.get("assetName") || it.description), sNull(formData.get("category")), today, it.unitCost * toPost, cur, `From PO ${it.poNumber ?? ""} (qty ${toPost})`]);
+    await q(`UPDATE purchase_order_item SET posted_qty=qty_received WHERE id=$1`, [poItemId]);
+    await writeAudit({ orgId, userId, action: "create", entity: "fixed_asset", entityId: aid, meta: { fromPoItem: poItemId, qty: toPost } });
+    redirect(`/procurement/orders/${it.poId}?posted=asset`);
+  }
+
+  // destination === "stores" -> needs the inventory module
+  if (!(await _isModEnabled(orgId, "stores"))) redirect(`/procurement/orders/${it.poId}?err=stores_off`);
+  let stockItemId = sNull(formData.get("stockItemId"));
+  if (!stockItemId) {
+    const name = String(formData.get("newItemName") || it.description).trim() || it.description;
+    const ex = await one<{ id: string }>(`SELECT id FROM stock_item WHERE org_id=$1 AND LOWER(name)=LOWER($2) LIMIT 1`, [orgId, name]);
+    if (ex) stockItemId = ex.id;
+    else {
+      stockItemId = id("item");
+      await q(`INSERT INTO stock_item (id, org_id, name, category, item_type, unit, unit_cost, reorder_level, currency, status) VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,'active')`,
+        [stockItemId, orgId, name, sNull(formData.get("category")), String(formData.get("itemType") || "consumable"), it.unit || "unit", it.unitCost, cur]);
+    }
+  }
+  await q(`INSERT INTO stock_movement (id, org_id, item_id, store_id, kind, qty, unit_cost, reference, source, movement_date, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,'receipt',$5,$6,$7,'grn',$8,$9,$10)`,
+    [id("smov"), orgId, stockItemId, sNull(formData.get("storeId")), toPost, it.unitCost, `PO ${it.poNumber ?? ""}`, today, userId, userName]);
+  await q(`UPDATE stock_item SET unit_cost=$2 WHERE id=$1`, [stockItemId, it.unitCost]);
+  await q(`UPDATE purchase_order_item SET posted_qty=qty_received WHERE id=$1`, [poItemId]);
+  await writeAudit({ orgId, userId, action: "create", entity: "stock_movement", entityId: stockItemId, meta: { fromPoItem: poItemId, kind: "receipt", qty: toPost } });
+  redirect(`/procurement/orders/${it.poId}?posted=stores`);
+}

@@ -67,6 +67,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
                 <NavLink href="/finance">₿ Finance &amp; Accounting</NavLink>
                 {modules.has("hr") && <NavLink href="/hr">⚇ Human Resources</NavLink>}
                 {modules.has("procurement") && <NavLink href="/procurement">⛁ Procurement</NavLink>}
+                {modules.has("stores") && <NavLink href="/inventory">▦ Inventory &amp; stores</NavLink>}
               </>
             )}
 

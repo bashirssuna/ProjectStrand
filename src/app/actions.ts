@@ -4480,3 +4480,73 @@ export async function removeCommitteeMemberAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "delete", entity: "proc_committee_member", entityId: cid });
   redirect(`/procurement/committees/${cid}?removed=1`);
 }
+
+/* ===================== Inventory & stores ===================== */
+async function requireInventoryActor() {
+  const user = await requireUser();
+  const org = await getUserOrg(user.id);
+  if (!org) redirect("/dashboard");
+  if (!org.isOrgAdmin && !user.isSuperAdmin) redirect("/dashboard");
+  if (!(await _isModEnabled(org.id, "stores"))) redirect("/dashboard");
+  return { orgId: org.id, userId: user.id, userName: user.name };
+}
+
+export async function createStoreAction(formData: FormData) {
+  const { orgId } = await requireInventoryActor();
+  await q(`INSERT INTO store (id, org_id, name, location, status) VALUES ($1,$2,$3,$4,'active')`,
+    [id("store"), orgId, String(formData.get("name") || "Store"), String(formData.get("location") || "") || null]);
+  redirect("/inventory?added=store");
+}
+
+export async function createItemAction(formData: FormData) {
+  const { orgId, userId } = await requireInventoryActor();
+  const iid = id("item");
+  await q(`INSERT INTO stock_item (id, org_id, code, name, category, item_type, unit, unit_cost, reorder_level, status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active')`,
+    [iid, orgId, String(formData.get("code") || "") || null, String(formData.get("name") || "Item"), String(formData.get("category") || "") || null,
+     String(formData.get("itemType") || "consumable"), String(formData.get("unit") || "unit"),
+     Number(formData.get("unitCost") || 0), Number(formData.get("reorderLevel") || 0)]);
+  await writeAudit({ orgId, userId, action: "create", entity: "stock_item", entityId: iid, after: { name: String(formData.get("name") || ""), type: String(formData.get("itemType") || "") } });
+  redirect(`/inventory/items/${iid}?created=1`);
+}
+
+export async function updateItemAction(formData: FormData) {
+  const { orgId, userId } = await requireInventoryActor();
+  const iid = String(formData.get("itemId") || "");
+  const it = await one<{ id: string }>(`SELECT id FROM stock_item WHERE id=$1 AND org_id=$2`, [iid, orgId]);
+  if (!it) redirect("/inventory");
+  await q(`UPDATE stock_item SET code=$2, name=$3, category=$4, item_type=$5, unit=$6, unit_cost=$7, reorder_level=$8, status=$9 WHERE id=$1 AND org_id=$10`,
+    [iid, String(formData.get("code") || "") || null, String(formData.get("name") || "Item"), String(formData.get("category") || "") || null,
+     String(formData.get("itemType") || "consumable"), String(formData.get("unit") || "unit"), Number(formData.get("unitCost") || 0), Number(formData.get("reorderLevel") || 0), String(formData.get("status") || "active"), orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "stock_item", entityId: iid });
+  redirect(`/inventory/items/${iid}?saved=1`);
+}
+
+export async function recordMovementAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInventoryActor();
+  const itemId = String(formData.get("itemId") || "");
+  const it = await one<{ id: string }>(`SELECT id FROM stock_item WHERE id=$1 AND org_id=$2`, [itemId, orgId]);
+  if (!it) redirect("/inventory");
+  const kind = String(formData.get("kind") || "receipt");
+  const raw = Number(formData.get("qty") || 0);
+  // receipts add, issues/disposals subtract, adjustments take the signed value as entered
+  const signed = kind === "adjustment" ? raw : kind === "receipt" ? Math.abs(raw) : -Math.abs(raw);
+  const unitCost = formData.get("unitCost") ? Number(formData.get("unitCost")) : null;
+  await q(`INSERT INTO stock_movement (id, org_id, item_id, store_id, kind, qty, unit_cost, reference, source, issued_to, movement_date, note, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'manual',$9,$10,$11,$12,$13)`,
+    [id("smov"), orgId, itemId, String(formData.get("storeId") || "") || null, kind, signed, unitCost, String(formData.get("reference") || "") || null,
+     String(formData.get("issuedTo") || "") || null, String(formData.get("movementDate") || new Date().toISOString().slice(0, 10)), String(formData.get("note") || "") || null, userId, userName]);
+  // a receipt with a unit cost refreshes the item's standard cost
+  if (kind === "receipt" && unitCost != null) await q(`UPDATE stock_item SET unit_cost=$2 WHERE id=$1`, [itemId, unitCost]);
+  await writeAudit({ orgId, userId, action: "create", entity: "stock_movement", entityId: itemId, meta: { kind, qty: signed } });
+  redirect(`/inventory/items/${itemId}?moved=${kind}`);
+}
+
+export async function deleteItemAction(formData: FormData) {
+  const { orgId, userId } = await requireInventoryActor();
+  const iid = String(formData.get("itemId") || "");
+  const it = await one<{ id: string }>(`SELECT id FROM stock_item WHERE id=$1 AND org_id=$2`, [iid, orgId]);
+  if (!it) redirect("/inventory");
+  await q(`DELETE FROM stock_item WHERE id=$1 AND org_id=$2`, [iid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "stock_item", entityId: iid });
+  redirect("/inventory?deleted=1");
+}

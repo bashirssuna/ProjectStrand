@@ -1960,3 +1960,44 @@ CREATE TABLE IF NOT EXISTS proc_committee_member (
   appointed_date date,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- ===================== Inventory & stores =====================
+CREATE TABLE IF NOT EXISTS store (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  location text,
+  status text NOT NULL DEFAULT 'active',   -- active | inactive
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS stock_item (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  code text,
+  name text NOT NULL,
+  category text,
+  item_type text NOT NULL DEFAULT 'consumable', -- consumable | asset | other
+  unit text NOT NULL DEFAULT 'unit',
+  unit_cost numeric(18,2) NOT NULL DEFAULT 0,
+  reorder_level numeric(18,2) NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'active',   -- active | inactive
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+-- Signed-quantity ledger: receipts positive, issues/disposals negative, adjustments signed.
+CREATE TABLE IF NOT EXISTS stock_movement (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  item_id text NOT NULL REFERENCES stock_item(id) ON DELETE CASCADE,
+  store_id text REFERENCES store(id) ON DELETE SET NULL,
+  kind text NOT NULL,                      -- receipt | issue | adjustment | disposal
+  qty numeric(18,2) NOT NULL DEFAULT 0,
+  unit_cost numeric(18,2),
+  reference text,
+  source text NOT NULL DEFAULT 'manual',   -- manual | grn | disposal
+  issued_to text,
+  project_id text,
+  movement_date date NOT NULL DEFAULT CURRENT_DATE,
+  note text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

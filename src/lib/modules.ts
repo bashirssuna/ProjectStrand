@@ -2,12 +2,13 @@
 // Finance) are always on. Everything below is toggleable per organisation, seeded
 // from the organisation's sector/type and overridable by an admin.
 
-export type ModuleKey = "hr" | "procurement" | "public_procurement" | "research" | "subawards" | "collaborations";
+export type ModuleKey = "hr" | "procurement" | "public_procurement" | "stores" | "research" | "subawards" | "collaborations";
 
 export const TOGGLEABLE_MODULES: { key: ModuleKey; label: string; group: string; desc: string }[] = [
   { key: "hr", label: "Human Resources", group: "Operations", desc: "Employees, payroll, leave, timesheets and the staff self-service portal." },
   { key: "procurement", label: "Procurement", group: "Operations", desc: "Vendors, requisitions, approval workflow, purchase orders, GRNs and bills." },
   { key: "public_procurement", label: "Procurement committees & tenders", group: "Operations", desc: "Formal procurement: committees (contracts, evaluation, bid opening, disposal), tenders, bid evaluation and disposal management." },
+  { key: "stores", label: "Inventory & stores", group: "Operations", desc: "Stores, stock items (consumables & assets), receipts, issues, balances and reorder alerts." },
   { key: "research", label: "Research — Laboratory & Clinical trials", group: "Research", desc: "Biospecimen registry (LIMS) and clinical-trial / cohort management." },
   { key: "subawards", label: "Sub-awards", group: "Grants & partnerships", desc: "Sub-grant agreements, disbursements and reporting." },
   { key: "collaborations", label: "Collaborations", group: "Grants & partnerships", desc: "Partner and collaboration directory." },
@@ -38,18 +39,18 @@ export const ORG_TYPES: { key: string; label: string; group: string }[] = [
 export const TYPE_DEFAULTS: Record<string, ModuleKey[]> = {
   sole_proprietorship: [],
   partnership: ["procurement"],
-  private_company: ["hr", "procurement"],
-  public_company: ["hr", "procurement"],
-  foreign_branch: ["hr", "procurement"],
-  ngo: ["hr", "procurement", "public_procurement", "subawards", "collaborations"],
+  private_company: ["hr", "procurement", "stores"],
+  public_company: ["hr", "procurement", "stores"],
+  foreign_branch: ["hr", "procurement", "stores"],
+  ngo: ["hr", "procurement", "public_procurement", "stores", "subawards", "collaborations"],
   cbo: ["subawards"],
-  cooperative: ["hr"],
+  cooperative: ["hr", "stores"],
   trust_foundation: ["subawards", "collaborations"],
-  government_agency: ["hr", "procurement", "public_procurement", "subawards"],
-  statutory_corporation: ["hr", "procurement", "public_procurement"],
-  research_institute: ["hr", "procurement", "public_procurement", "research", "subawards", "collaborations"],
-  health_facility: ["hr", "procurement", "research"],
-  university_academic: ["hr", "procurement", "public_procurement", "research", "subawards", "collaborations"],
+  government_agency: ["hr", "procurement", "public_procurement", "stores", "subawards"],
+  statutory_corporation: ["hr", "procurement", "public_procurement", "stores"],
+  research_institute: ["hr", "procurement", "public_procurement", "stores", "research", "subawards", "collaborations"],
+  health_facility: ["hr", "procurement", "stores", "research"],
+  university_academic: ["hr", "procurement", "public_procurement", "stores", "research", "subawards", "collaborations"],
   other: [],
 };
 

@@ -4,18 +4,7 @@ import { getCurrentUser } from "@/server/auth";
 import { signIn } from "@/app/actions";
 import { OPERATOR_NAME, CONTACT_EMAIL } from "@/lib/config";
 
-// Institutional Management System login. Each demo card is its own form that
-// signs in directly (all demo accounts share password "password123"), so a click
-// lands you straight in that role — no typing.
-const DEMO = [
-  { email: "admin@strand.dev", role: "Platform Admin", initials: "PA", tint: "#a87d2e" },
-  { email: "pi@strand.dev", role: "Research Management Head", initials: "RM", tint: "#8a5a78" },
-  { email: "pm@strand.dev", role: "Project Management Lead", initials: "PM", tint: "#4f6b8f" },
-  { email: "finance@strand.dev", role: "Finance Director", initials: "FD", tint: "#3f7a55" },
-  { email: "coord@strand.dev", role: "Procurement Coordinator", initials: "PC", tint: "#b06a3c" },
-  { email: "assistant@strand.dev", role: "HR Specialist", initials: "HS", tint: "#5a6b7a" },
-];
-
+// Institutional Management System login.
 const MODULES: { title: string; desc: string; icon: React.ReactNode }[] = [
   {
     title: "Accounts & Finance", desc: "Ledgers, budgeting, general journal, and reports.",
@@ -120,72 +109,53 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         </div>
 
         {/* ───────────── Right: sign in ───────────── */}
-        <div className="lg:w-1/2 p-8 sm:p-12 bg-stone-50 text-slate-900">
-          <div className="lg:hidden mb-6">
-            <div className="text-sm font-bold tracking-tight" style={{ color: "var(--brand)" }}>Project Strand</div>
-            <div className="text-sm text-slate-500">Institutional Management System</div>
-          </div>
-
-          <h2 className="font-serif text-3xl font-medium">Sign in</h2>
-          <p className="text-sm text-slate-500 mt-1">Use a pre-configured demo account below:</p>
-
-          {error && (
-            <div className="mt-4 rounded-lg px-3 py-2 text-sm bg-red-50 text-red-700 border border-red-200">
-              Incorrect email or password.
+        <div className="lg:w-1/2 p-8 sm:p-12 bg-stone-50 text-slate-900 flex flex-col justify-center">
+          <div className="w-full max-w-sm mx-auto">
+            <div className="lg:hidden mb-6">
+              <div className="text-sm font-bold tracking-tight" style={{ color: "var(--brand)" }}>Project Strand</div>
+              <div className="text-sm text-slate-500">Institutional Management System</div>
             </div>
-          )}
 
-          <form action={signIn} className="mt-6 space-y-4">
-            <label className="block">
-              <span className="text-xs font-medium text-slate-600">Email</span>
-              <input name="email" type="email" required defaultValue="pm@strand.dev"
-                className="mt-1.5 w-full rounded-full bg-slate-800 text-white placeholder-slate-400 px-5 py-3 text-sm border border-slate-700 outline-none focus:ring-2 focus:ring-yellow-500/40" />
-            </label>
-            <label className="block">
-              <span className="text-xs font-medium text-slate-600">Password</span>
-              <input name="password" type="password" required defaultValue="password123"
-                className="mt-1.5 w-full rounded-full bg-slate-800 text-white placeholder-slate-400 px-5 py-3 text-sm border border-slate-700 outline-none focus:ring-2 focus:ring-yellow-500/40" />
-            </label>
-            <button type="submit"
-              className="w-full rounded-full py-3 text-sm font-bold text-slate-900 transition hover:brightness-105"
-              style={{ background: "linear-gradient(180deg, #e6c66a 0%, #c79a36 55%, #b0892f 100%)" }}>
-              Sign in
-            </button>
-            <div className="text-center">
-              <Link href="/forgot" className="text-xs text-yellow-700 hover:underline">Forgot your password?</Link>
+            <h2 className="font-serif text-3xl font-medium">Sign in</h2>
+            <p className="text-sm text-slate-500 mt-1">Sign in to your institutional workspace.</p>
+
+            {error && (
+              <div className="mt-4 rounded-lg px-3 py-2 text-sm bg-red-50 text-red-700 border border-red-200">
+                Incorrect email or password.
+              </div>
+            )}
+
+            <form action={signIn} className="mt-6 space-y-4">
+              <label className="block">
+                <span className="text-xs font-medium text-slate-600">Email</span>
+                <input name="email" type="email" required autoComplete="email" placeholder="you@organisation.org"
+                  className="mt-1.5 w-full rounded-full bg-slate-800 text-white placeholder-slate-400 px-5 py-3 text-sm border border-slate-700 outline-none focus:ring-2 focus:ring-yellow-500/40" />
+              </label>
+              <label className="block">
+                <span className="text-xs font-medium text-slate-600">Password</span>
+                <input name="password" type="password" required autoComplete="current-password" placeholder="Your password"
+                  className="mt-1.5 w-full rounded-full bg-slate-800 text-white placeholder-slate-400 px-5 py-3 text-sm border border-slate-700 outline-none focus:ring-2 focus:ring-yellow-500/40" />
+              </label>
+              <button type="submit"
+                className="w-full rounded-full py-3 text-sm font-bold text-slate-900 transition hover:brightness-105"
+                style={{ background: "linear-gradient(180deg, #e6c66a 0%, #c79a36 55%, #b0892f 100%)" }}>
+                Sign in
+              </button>
+              <div className="text-center">
+                <Link href="/forgot" className="text-xs text-yellow-700 hover:underline">Forgot your password?</Link>
+              </div>
+            </form>
+
+            <div className="mt-7 pt-5 border-t border-stone-200 text-center">
+              <p className="text-sm text-slate-600">
+                New organisation? <Link href="/signup" className="text-yellow-700 font-medium hover:underline">Start a free trial</Link>
+              </p>
+              <p className="mt-3 text-[11px] text-slate-400 leading-relaxed">
+                © {new Date().getFullYear()} {OPERATOR_NAME}
+                <br />
+                Contact: <a href={`mailto:${CONTACT_EMAIL}`} className="hover:underline">{CONTACT_EMAIL}</a>
+              </p>
             </div>
-          </form>
-
-          <div className="mt-7">
-            <div className="text-[11px] font-medium uppercase tracking-wider text-slate-400 mb-2.5">Quick demo access</div>
-            <div className="grid grid-cols-2 gap-2.5">
-              {DEMO.map((d) => (
-                <form key={d.email} action={signIn}>
-                  <input type="hidden" name="email" value={d.email} />
-                  <input type="hidden" name="password" value="password123" />
-                  <button type="submit"
-                    className="w-full text-left flex items-center gap-2.5 rounded-lg bg-white border border-stone-200 px-2.5 py-2 shadow-sm hover:border-yellow-400 hover:shadow transition">
-                    <span className="h-8 w-8 shrink-0 rounded-full grid place-items-center text-[11px] font-semibold"
-                      style={{ background: `${d.tint}1f`, color: d.tint }}>{d.initials}</span>
-                    <span className="min-w-0">
-                      <span className="block text-[12px] font-medium text-slate-700 leading-tight truncate">{d.role}</span>
-                      <span className="block font-mono text-[10px] text-slate-400 truncate">{d.email}</span>
-                    </span>
-                  </button>
-                </form>
-              ))}
-            </div>
-          </div>
-
-          <div className="mt-7 pt-5 border-t border-stone-200 text-center">
-            <p className="text-sm text-slate-600">
-              New organisation? <Link href="/signup" className="text-yellow-700 font-medium hover:underline">Start a free trial</Link>
-            </p>
-            <p className="mt-3 text-[11px] text-slate-400 leading-relaxed">
-              © {new Date().getFullYear()} {OPERATOR_NAME}
-              <br />
-              Contact: <a href={`mailto:${CONTACT_EMAIL}`} className="hover:underline">{CONTACT_EMAIL}</a>
-            </p>
           </div>
         </div>
       </div>

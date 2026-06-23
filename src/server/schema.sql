@@ -2239,3 +2239,55 @@ ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS disposal_batch_id text;
 
 -- Link a sample to a registered freezer so cold-chain excursions/incidents can flag affected samples.
 ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS freezer_id text REFERENCES lab_freezer(id) ON DELETE SET NULL;
+
+-- ===================== Clinical trials: safety (AE/SAE), deviations, monitoring =====================
+CREATE TABLE IF NOT EXISTS study_ae (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  participant_ref text,                      -- de-identified subject / screening id
+  term text NOT NULL,                        -- event term
+  onset_date date,
+  severity text NOT NULL DEFAULT 'mild',     -- mild | moderate | severe
+  serious boolean NOT NULL DEFAULT false,    -- SAE?
+  sae_criteria text,                         -- death | life_threatening | hospitalization | disability | congenital_anomaly | other
+  causality text,                            -- unrelated | unlikely | possible | probable | definite
+  expectedness text,                         -- expected | unexpected
+  outcome text,                              -- recovered | recovering | ongoing | recovered_sequelae | fatal | unknown
+  action_taken text,
+  reported_date date,                        -- date reported to authority
+  reported_to text,                          -- REC | NDA | sponsor | other
+  status text NOT NULL DEFAULT 'open',       -- open | followed_up | reported | resolved
+  description text,
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS study_deviation (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  participant_ref text,
+  deviation_date date,
+  kind text NOT NULL DEFAULT 'other',        -- eligibility | consent | visit_window | procedure | ip_handling | sae_reporting | other
+  severity text NOT NULL DEFAULT 'minor',    -- minor | major
+  description text NOT NULL,
+  root_cause text,
+  corrective_action text,
+  reported boolean NOT NULL DEFAULT false,
+  reported_date date,
+  status text NOT NULL DEFAULT 'open',        -- open | capa | resolved
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS study_monitoring (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  visit_date date,
+  kind text NOT NULL DEFAULT 'imv',          -- siv | imv | cov | for_cause | remote
+  monitor_name text,
+  site text,
+  findings text,
+  action_items text,
+  report_received boolean NOT NULL DEFAULT false,
+  status text NOT NULL DEFAULT 'open',        -- scheduled | open | actions_pending | closed
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);

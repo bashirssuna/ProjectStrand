@@ -3,12 +3,12 @@ import { notFound, redirect } from "next/navigation";
 import { requireStudiesOrg } from "../_guard";
 import { q, one } from "@/server/db";
 import { accessibleProjectIds } from "@/server/services/lab";
-import { studyEnrollmentTotals } from "@/server/services/studies";
+import { studyEnrollmentTotals, studyAdverseEvents, studyDeviations, studyMonitoringVisits, studyComplianceCounts } from "@/server/services/studies";
 import { PageHeader, SectionTitle, Field, Badge, StatusBadge, Stat, Empty } from "@/components/ui";
 import { fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { ConfirmSubmit } from "@/components/confirm-submit";
-import { deleteStudyAction, addStudySiteAction, addStudyApprovalAction, updateStudyApprovalAction, addStudyVersionAction, addStudyEnrollmentAction, addStudyMilestoneAction, updateStudyMilestoneAction, deleteStudyItemAction } from "@/app/actions";
+import { deleteStudyAction, addStudySiteAction, addStudyApprovalAction, updateStudyApprovalAction, addStudyVersionAction, addStudyEnrollmentAction, addStudyMilestoneAction, updateStudyMilestoneAction, deleteStudyItemAction, addStudyAEAction, updateStudyAEAction, addStudyDeviationAction, updateStudyDeviationAction, addStudyMonitoringAction, updateStudyMonitoringAction } from "@/app/actions";
 
 function DelBtn({ studyId, kind, id }: { studyId: string; kind: string; id: string }) {
   return (
@@ -47,7 +47,9 @@ export default async function StudyDetail({ params, searchParams }: { params: Pr
   ]);
 
   const pct = s.targetEnrollment && s.targetEnrollment > 0 ? Math.min(100, Math.round((totals.enrolled / s.targetEnrollment) * 100)) : 0;
-  const notes: Record<string, string> = { site: "Site added.", approval: "Approval added.", version: "Version added.", enrollment: "Enrollment updated.", milestone: "Milestone added." };
+  const [aes, deviations, monitoring, comp] = await Promise.all([studyAdverseEvents(id), studyDeviations(id), studyMonitoringVisits(id), studyComplianceCounts(id)]);
+  const notes: Record<string, string> = { site: "Site added.", approval: "Approval added.", version: "Version added.", enrollment: "Enrollment updated.", milestone: "Milestone added.", ae: "Adverse event recorded.", deviation: "Deviation logged.", monitoring: "Monitoring visit recorded." };
+  const savedNotes: Record<string, string> = { ae: "Adverse event updated.", deviation: "Deviation updated.", monitoring: "Monitoring visit updated." };
 
   return (
     <div className="max-w-5xl">
@@ -59,7 +61,13 @@ export default async function StudyDetail({ params, searchParams }: { params: Pr
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Study created.</div>}
       {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved.</div>}
       {sp.added && notes[sp.added] && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>{notes[sp.added]}</div>}
+      {sp.saved && savedNotes[sp.saved] && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>{savedNotes[sp.saved]}</div>}
       {sp.removed && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)" }}>Entry removed.</div>}
+      {(comp.openSAEs > 0 || comp.majorDeviations > 0 || comp.openMonitoring > 0) && (
+        <div className="card p-3 mb-4 text-sm" style={{ color: comp.openSAEs > 0 || comp.majorDeviations > 0 ? "var(--danger)" : "var(--warn)", borderColor: comp.openSAEs > 0 || comp.majorDeviations > 0 ? "var(--danger)" : "var(--warn)" }}>
+          Safety &amp; compliance: {[comp.openSAEs > 0 ? `${comp.openSAEs} open SAE${comp.openSAEs === 1 ? "" : "s"}` : null, comp.majorDeviations > 0 ? `${comp.majorDeviations} unresolved major deviation${comp.majorDeviations === 1 ? "" : "s"}` : null, comp.openMonitoring > 0 ? `${comp.openMonitoring} open monitoring visit${comp.openMonitoring === 1 ? "" : "s"}` : null].filter(Boolean).join(" · ")}.
+        </div>
+      )}
 
       {/* Overview */}
       <div className="card p-4 mb-5">
@@ -213,6 +221,126 @@ export default async function StudyDetail({ params, searchParams }: { params: Pr
           <Field label="Actual"><input type="date" name="actualDate" className="input" /></Field>
           <Field label="Status"><select name="msStatus" defaultValue="pending" className="select"><option value="pending">Pending</option><option value="done">Done</option><option value="missed">Missed</option></select></Field>
           <div className="flex gap-2"><Field label="Note"><input name="note" className="input" /></Field><button className="btn btn-sm btn-primary" type="submit" style={{ alignSelf: "flex-end" }}>Add</button></div>
+        </form>
+      </div>
+
+      {/* Safety — adverse events / SAE register */}
+      <div className="card p-4 mb-5">
+        <SectionTitle>Safety — adverse events</SectionTitle>
+        <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>Adverse event and serious adverse event (SAE) register. SAEs and unresolved events surface in the alert above.</p>
+        {aes.length > 0 && (
+          <div className="overflow-x-auto mb-3"><table className="w-full text-sm">
+            <thead><tr><th className="th text-left">Event</th><th className="th text-left">Subject</th><th className="th text-left">Onset</th><th className="th text-left">Severity</th><th className="th text-left">Causality</th><th className="th text-left">Outcome</th><th className="th text-left">Status</th><th className="th" /></tr></thead>
+            <tbody>{aes.map((a) => (
+              <tr key={a.id}>
+                <td className="td">{a.term}{a.serious && <Badge tone="danger">SAE</Badge>}{a.serious && a.saeCriteria ? <div className="text-xs" style={{ color: "var(--muted)" }}>{label(a.saeCriteria)}</div> : null}</td>
+                <td className="td">{a.participantRef ?? "—"}</td>
+                <td className="td whitespace-nowrap">{a.onsetDate ? fmtDate(a.onsetDate) : "—"}</td>
+                <td className="td"><Badge tone={a.severity === "severe" ? "danger" : a.severity === "moderate" ? "warn" : "muted"}>{label(a.severity)}</Badge></td>
+                <td className="td">{a.causality ? label(a.causality) : "—"}{a.expectedness ? <div className="text-xs" style={{ color: "var(--muted)" }}>{label(a.expectedness)}</div> : null}</td>
+                <td className="td">{a.outcome ? label(a.outcome) : "—"}</td>
+                <td className="td"><StatusBadge status={a.status} /></td>
+                <td className="td text-right">
+                  <form action={updateStudyAEAction} className="inline-flex items-center gap-1 mr-2"><input type="hidden" name="studyId" value={s.id} /><input type="hidden" name="aeId" value={a.id} />
+                    <select name="status" defaultValue={a.status} className="select" style={{ padding: "2px 6px", fontSize: 12 }}><option value="open">Open</option><option value="followed_up">Followed up</option><option value="reported">Reported</option><option value="resolved">Resolved</option></select>
+                    <button className="text-xs hover:underline" type="submit" style={{ color: "var(--brand)" }}>set</button>
+                  </form>
+                  <DelBtn studyId={s.id} kind="ae" id={a.id} />
+                </td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+        )}
+        <form action={addStudyAEAction} className="grid sm:grid-cols-4 gap-2 items-end border-t pt-3" style={{ borderColor: "var(--border)" }}>
+          <input type="hidden" name="studyId" value={s.id} />
+          <Field label="Event term"><input name="term" required className="input" placeholder="e.g. Fever" /></Field>
+          <Field label="Subject ref"><input name="participantRef" className="input" placeholder="screening ID" /></Field>
+          <Field label="Onset"><input type="date" name="onsetDate" className="input" /></Field>
+          <Field label="Severity"><select name="severity" defaultValue="mild" className="select"><option value="mild">Mild</option><option value="moderate">Moderate</option><option value="severe">Severe</option></select></Field>
+          <Field label="Serious (SAE)?"><select name="serious" defaultValue="0" className="select"><option value="0">No</option><option value="1">Yes</option></select></Field>
+          <Field label="SAE criterion"><select name="saeCriteria" className="select"><option value="">—</option>{["death", "life_threatening", "hospitalization", "disability", "congenital_anomaly", "other"].map((x) => <option key={x} value={x}>{label(x)}</option>)}</select></Field>
+          <Field label="Causality"><select name="causality" className="select"><option value="">—</option>{["unrelated", "unlikely", "possible", "probable", "definite"].map((x) => <option key={x} value={x}>{label(x)}</option>)}</select></Field>
+          <Field label="Expectedness"><select name="expectedness" className="select"><option value="">—</option><option value="expected">Expected</option><option value="unexpected">Unexpected</option></select></Field>
+          <Field label="Outcome"><select name="outcome" className="select"><option value="">—</option>{["recovered", "recovering", "ongoing", "recovered_sequelae", "fatal", "unknown"].map((x) => <option key={x} value={x}>{label(x)}</option>)}</select></Field>
+          <Field label="Reported to"><select name="reportedTo" className="select"><option value="">—</option>{["REC", "NDA", "sponsor", "other"].map((x) => <option key={x} value={x}>{x}</option>)}</select></Field>
+          <Field label="Reported date"><input type="date" name="reportedDate" className="input" /></Field>
+          <div><button className="btn btn-sm btn-primary" type="submit">Record event</button></div>
+        </form>
+      </div>
+
+      {/* Protocol deviations */}
+      <div className="card p-4 mb-5">
+        <SectionTitle>Protocol deviations</SectionTitle>
+        {deviations.length > 0 && (
+          <div className="overflow-x-auto mb-3"><table className="w-full text-sm">
+            <thead><tr><th className="th text-left">Date</th><th className="th text-left">Type</th><th className="th text-left">Severity</th><th className="th text-left">Description</th><th className="th text-left">Reported</th><th className="th text-left">Status</th><th className="th" /></tr></thead>
+            <tbody>{deviations.map((d) => (
+              <tr key={d.id}>
+                <td className="td whitespace-nowrap">{d.deviationDate ? fmtDate(d.deviationDate) : "—"}</td>
+                <td className="td">{label(d.kind)}{d.participantRef ? <div className="text-xs" style={{ color: "var(--muted)" }}>{d.participantRef}</div> : null}</td>
+                <td className="td"><Badge tone={d.severity === "major" ? "danger" : "muted"}>{label(d.severity)}</Badge></td>
+                <td className="td">{d.description}{d.correctiveAction ? <div className="text-xs" style={{ color: "var(--muted)" }}>CAPA: {d.correctiveAction}</div> : null}</td>
+                <td className="td">{d.reported ? <Badge tone="ok">yes</Badge> : <Badge tone="warn">no</Badge>}</td>
+                <td className="td"><StatusBadge status={d.status} /></td>
+                <td className="td text-right">
+                  <form action={updateStudyDeviationAction} className="inline-flex items-center gap-1 mr-2"><input type="hidden" name="studyId" value={s.id} /><input type="hidden" name="deviationId" value={d.id} /><input type="hidden" name="reported" value={d.reported ? "1" : "0"} />
+                    <select name="status" defaultValue={d.status} className="select" style={{ padding: "2px 6px", fontSize: 12 }}><option value="open">Open</option><option value="capa">CAPA</option><option value="resolved">Resolved</option></select>
+                    <button className="text-xs hover:underline" type="submit" style={{ color: "var(--brand)" }}>set</button>
+                  </form>
+                  <DelBtn studyId={s.id} kind="deviation" id={d.id} />
+                </td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+        )}
+        <form action={addStudyDeviationAction} className="grid sm:grid-cols-4 gap-2 items-end border-t pt-3" style={{ borderColor: "var(--border)" }}>
+          <input type="hidden" name="studyId" value={s.id} />
+          <Field label="Date"><input type="date" name="deviationDate" className="input" /></Field>
+          <Field label="Type"><select name="kind" defaultValue="other" className="select">{["eligibility", "consent", "visit_window", "procedure", "ip_handling", "sae_reporting", "other"].map((x) => <option key={x} value={x}>{label(x)}</option>)}</select></Field>
+          <Field label="Severity"><select name="severity" defaultValue="minor" className="select"><option value="minor">Minor</option><option value="major">Major</option></select></Field>
+          <Field label="Subject ref"><input name="participantRef" className="input" placeholder="optional" /></Field>
+          <div className="sm:col-span-3"><Field label="Description"><input name="description" required className="input" placeholder="What happened" /></Field></div>
+          <div><button className="btn btn-sm btn-primary" type="submit">Log deviation</button></div>
+          <div className="sm:col-span-2"><Field label="Corrective action (CAPA)"><input name="correctiveAction" className="input" placeholder="optional" /></Field></div>
+          <Field label="Reported to REC/sponsor?"><select name="reported" defaultValue="0" className="select"><option value="0">No</option><option value="1">Yes</option></select></Field>
+        </form>
+      </div>
+
+      {/* Monitoring visits */}
+      <div className="card p-4 mb-5">
+        <SectionTitle>Monitoring visits</SectionTitle>
+        {monitoring.length > 0 && (
+          <div className="overflow-x-auto mb-3"><table className="w-full text-sm">
+            <thead><tr><th className="th text-left">Date</th><th className="th text-left">Type</th><th className="th text-left">Monitor</th><th className="th text-left">Findings</th><th className="th text-left">Report</th><th className="th text-left">Status</th><th className="th" /></tr></thead>
+            <tbody>{monitoring.map((m) => (
+              <tr key={m.id}>
+                <td className="td whitespace-nowrap">{m.visitDate ? fmtDate(m.visitDate) : "—"}</td>
+                <td className="td">{label(m.kind)}{m.site ? <div className="text-xs" style={{ color: "var(--muted)" }}>{m.site}</div> : null}</td>
+                <td className="td">{m.monitorName ?? "—"}</td>
+                <td className="td">{m.findings ?? ""}{m.actionItems ? <div className="text-xs" style={{ color: "var(--muted)" }}>Actions: {m.actionItems}</div> : null}</td>
+                <td className="td">{m.reportReceived ? <Badge tone="ok">received</Badge> : <Badge tone="muted">pending</Badge>}</td>
+                <td className="td"><StatusBadge status={m.status} /></td>
+                <td className="td text-right">
+                  <form action={updateStudyMonitoringAction} className="inline-flex items-center gap-1 mr-2"><input type="hidden" name="studyId" value={s.id} /><input type="hidden" name="monitoringId" value={m.id} /><input type="hidden" name="reportReceived" value={m.reportReceived ? "1" : "0"} />
+                    <select name="status" defaultValue={m.status} className="select" style={{ padding: "2px 6px", fontSize: 12 }}><option value="scheduled">Scheduled</option><option value="open">Open</option><option value="actions_pending">Actions pending</option><option value="closed">Closed</option></select>
+                    <button className="text-xs hover:underline" type="submit" style={{ color: "var(--brand)" }}>set</button>
+                  </form>
+                  <DelBtn studyId={s.id} kind="monitoring" id={m.id} />
+                </td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+        )}
+        <form action={addStudyMonitoringAction} className="grid sm:grid-cols-4 gap-2 items-end border-t pt-3" style={{ borderColor: "var(--border)" }}>
+          <input type="hidden" name="studyId" value={s.id} />
+          <Field label="Visit date"><input type="date" name="visitDate" className="input" /></Field>
+          <Field label="Type"><select name="kind" defaultValue="imv" className="select"><option value="siv">Site initiation</option><option value="imv">Interim monitoring</option><option value="cov">Close-out</option><option value="for_cause">For cause</option><option value="remote">Remote</option></select></Field>
+          <Field label="Monitor"><input name="monitorName" className="input" placeholder="name" /></Field>
+          <Field label="Site"><input name="site" className="input" placeholder="optional" /></Field>
+          <div className="sm:col-span-2"><Field label="Findings"><input name="findings" className="input" placeholder="summary" /></Field></div>
+          <div className="sm:col-span-2"><Field label="Action items"><input name="actionItems" className="input" placeholder="optional" /></Field></div>
+          <Field label="Report received?"><select name="reportReceived" defaultValue="0" className="select"><option value="0">No</option><option value="1">Yes</option></select></Field>
+          <div><button className="btn btn-sm btn-primary" type="submit">Add visit</button></div>
         </form>
       </div>
     </div>

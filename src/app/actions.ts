@@ -4432,7 +4432,7 @@ export async function deleteStudyItemAction(formData: FormData) {
   await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
   const kind = String(formData.get("kind") || "");
   const itemId = String(formData.get("itemId") || "");
-  const table = ({ site: "study_site", approval: "study_approval", version: "study_version", enrollment: "study_enrollment", milestone: "study_milestone" } as Record<string, string>)[kind];
+  const table = ({ site: "study_site", approval: "study_approval", version: "study_version", enrollment: "study_enrollment", milestone: "study_milestone", ae: "study_ae", deviation: "study_deviation", monitoring: "study_monitoring" } as Record<string, string>)[kind];
   if (!table) redirect(`/studies/${sid}`);
   await q(`DELETE FROM ${table} WHERE id=$1 AND study_id=$2`, [itemId, sid]);
   redirect(`/studies/${sid}?removed=${kind}`);
@@ -5316,4 +5316,70 @@ export async function bulkDisposeAction(formData: FormData) {
      WHERE org_id=$7 AND status<>'disposed' AND id IN (${ph}) RETURNING id`, [...base, ...ids]);
   await writeAudit({ orgId, userId, action: "bulk_dispose", entity: "lab_sample", entityId: batch, after: { count: disposed.length, reason, method, batch } });
   redirect(`/lab/disposal?disposed=${disposed.length}`);
+}
+
+/* ===================== Clinical trials: AE/SAE, deviations, monitoring ===================== */
+export async function addStudyAEAction(formData: FormData) {
+  const { orgId, userId, userName, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  const serious = formData.get("serious") === "1";
+  await q(`INSERT INTO study_ae (id, study_id, participant_ref, term, onset_date, severity, serious, sae_criteria, causality, expectedness, outcome, action_taken, reported_date, reported_to, status, description, recorded_by_id, recorded_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+    [id("sae"), sid, sNull(formData.get("participantRef")), String(formData.get("term") || "Event"), sNull(formData.get("onsetDate")), String(formData.get("severity") || "mild"), serious,
+     serious ? sNull(formData.get("saeCriteria")) : null, sNull(formData.get("causality")), sNull(formData.get("expectedness")), sNull(formData.get("outcome")), sNull(formData.get("actionTaken")),
+     sNull(formData.get("reportedDate")), sNull(formData.get("reportedTo")), String(formData.get("status") || "open"), sNull(formData.get("description")), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "study_ae", entityId: sid, after: { term: String(formData.get("term") || ""), serious } });
+  redirect(`/studies/${sid}?added=ae`);
+}
+export async function updateStudyAEAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  await q(`UPDATE study_ae SET status=$2, outcome=COALESCE($3, outcome), reported_date=COALESCE($4, reported_date), reported_to=COALESCE($5, reported_to) WHERE id=$1 AND study_id=$6`,
+    [String(formData.get("aeId") || ""), String(formData.get("status") || "open"), sNull(formData.get("outcome")), sNull(formData.get("reportedDate")), sNull(formData.get("reportedTo")), sid]);
+  await writeAudit({ orgId, userId, action: "update", entity: "study_ae", entityId: sid });
+  redirect(`/studies/${sid}?saved=ae`);
+}
+
+export async function addStudyDeviationAction(formData: FormData) {
+  const { orgId, userId, userName, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  await q(`INSERT INTO study_deviation (id, study_id, participant_ref, deviation_date, kind, severity, description, root_cause, corrective_action, reported, reported_date, status, recorded_by_id, recorded_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    [id("dev"), sid, sNull(formData.get("participantRef")), sNull(formData.get("deviationDate")), String(formData.get("kind") || "other"), String(formData.get("severity") || "minor"),
+     String(formData.get("description") || "Deviation"), sNull(formData.get("rootCause")), sNull(formData.get("correctiveAction")), formData.get("reported") === "1", sNull(formData.get("reportedDate")), String(formData.get("status") || "open"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "study_deviation", entityId: sid, after: { severity: String(formData.get("severity") || "") } });
+  redirect(`/studies/${sid}?added=deviation`);
+}
+export async function updateStudyDeviationAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  await q(`UPDATE study_deviation SET status=$2, corrective_action=COALESCE($3, corrective_action), reported=$4 WHERE id=$1 AND study_id=$5`,
+    [String(formData.get("deviationId") || ""), String(formData.get("status") || "open"), sNull(formData.get("correctiveAction")), formData.get("reported") === "1", sid]);
+  await writeAudit({ orgId, userId, action: "update", entity: "study_deviation", entityId: sid });
+  redirect(`/studies/${sid}?saved=deviation`);
+}
+
+export async function addStudyMonitoringAction(formData: FormData) {
+  const { orgId, userId, userName, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  await q(`INSERT INTO study_monitoring (id, study_id, visit_date, kind, monitor_name, site, findings, action_items, report_received, status, recorded_by_id, recorded_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [id("smon"), sid, sNull(formData.get("visitDate")), String(formData.get("kind") || "imv"), sNull(formData.get("monitorName")), sNull(formData.get("site")),
+     sNull(formData.get("findings")), sNull(formData.get("actionItems")), formData.get("reportReceived") === "1", String(formData.get("status") || "open"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "study_monitoring", entityId: sid });
+  redirect(`/studies/${sid}?added=monitoring`);
+}
+export async function updateStudyMonitoringAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireStudyActor();
+  const sid = String(formData.get("studyId") || "");
+  await loadStudyForActor(sid, orgId, userId, isOrgAdmin || isSuperAdmin);
+  await q(`UPDATE study_monitoring SET status=$2, report_received=$3 WHERE id=$1 AND study_id=$4`,
+    [String(formData.get("monitoringId") || ""), String(formData.get("status") || "open"), formData.get("reportReceived") === "1", sid]);
+  await writeAudit({ orgId, userId, action: "update", entity: "study_monitoring", entityId: sid });
+  redirect(`/studies/${sid}?saved=monitoring`);
 }

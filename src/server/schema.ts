@@ -2224,4 +2224,57 @@ CREATE TABLE IF NOT EXISTS lab_test (
 ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS disposal_batch_id text;
 
 ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS freezer_id text REFERENCES lab_freezer(id) ON DELETE SET NULL;
+
+-- ===================== Clinical trials: safety (AE/SAE), deviations, monitoring =====================
+CREATE TABLE IF NOT EXISTS study_ae (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  participant_ref text,
+  term text NOT NULL,
+  onset_date date,
+  severity text NOT NULL DEFAULT 'mild',
+  serious boolean NOT NULL DEFAULT false,
+  sae_criteria text,
+  causality text,
+  expectedness text,
+  outcome text,
+  action_taken text,
+  reported_date date,
+  reported_to text,
+  status text NOT NULL DEFAULT 'open',
+  description text,
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS study_deviation (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  participant_ref text,
+  deviation_date date,
+  kind text NOT NULL DEFAULT 'other',
+  severity text NOT NULL DEFAULT 'minor',
+  description text NOT NULL,
+  root_cause text,
+  corrective_action text,
+  reported boolean NOT NULL DEFAULT false,
+  reported_date date,
+  status text NOT NULL DEFAULT 'open',
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS study_monitoring (
+  id text PRIMARY KEY,
+  study_id text NOT NULL REFERENCES study(id) ON DELETE CASCADE,
+  visit_date date,
+  kind text NOT NULL DEFAULT 'imv',
+  monitor_name text,
+  site text,
+  findings text,
+  action_items text,
+  report_received boolean NOT NULL DEFAULT false,
+  status text NOT NULL DEFAULT 'open',
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 `;

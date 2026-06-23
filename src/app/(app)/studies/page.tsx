@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireStudiesOrg } from "./_guard";
 import { q } from "@/server/db";
 import { accessibleProjectIds } from "@/server/services/lab";
-import { listStudies, studyStats, expiringApprovals } from "@/server/services/studies";
+import { listStudies, studyStats, expiringApprovals, complianceStats } from "@/server/services/studies";
 import { PageHeader, Field, Badge, StatusBadge, Empty, Stat } from "@/components/ui";
 import { label } from "@/lib/enums";
 import { fmtDate } from "@/lib/format";
@@ -23,6 +23,7 @@ export default async function StudiesRegistry({ searchParams }: { searchParams: 
     studyStats(orgId, projectIds),
     expiringApprovals(orgId, projectIds, 60),
   ]);
+  const comp = await complianceStats(orgId, projectIds);
 
   return (
     <div>
@@ -30,6 +31,12 @@ export default async function StudiesRegistry({ searchParams }: { searchParams: 
         actions={<Link href="/studies/new" className="btn btn-sm btn-primary">+ New study</Link>} />
 
       {sp.deleted && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)" }}>Study deleted.</div>}
+
+      {(comp.openSAEs > 0 || comp.majorDeviations > 0 || comp.openMonitoring > 0) && (
+        <div className="card p-3 mb-5 text-sm" style={{ borderColor: comp.openSAEs > 0 || comp.majorDeviations > 0 ? "var(--danger)" : "var(--warn)", color: comp.openSAEs > 0 || comp.majorDeviations > 0 ? "var(--danger)" : "var(--warn)" }}>
+          Safety &amp; compliance across studies: {[comp.openSAEs > 0 ? `${comp.openSAEs} open SAE${comp.openSAEs === 1 ? "" : "s"}` : null, comp.majorDeviations > 0 ? `${comp.majorDeviations} unresolved major deviation${comp.majorDeviations === 1 ? "" : "s"}` : null, comp.openMonitoring > 0 ? `${comp.openMonitoring} open monitoring visit${comp.openMonitoring === 1 ? "" : "s"}` : null].filter(Boolean).join(" · ")}.
+        </div>
+      )}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         <Stat label="Studies" value={String(stats.total)} />

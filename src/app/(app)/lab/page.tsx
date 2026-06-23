@@ -52,7 +52,7 @@ export default async function LabDashboard({ searchParams }: { searchParams: Pro
   return (
     <div>
       <PageHeader title="Laboratory" subtitle={`Biospecimen registry & chain of custody for ${orgName}`}
-        actions={<div className="flex gap-2"><Link href="/lab/tests" className="btn btn-sm">Tests</Link><Link href="/lab/freezers" className="btn btn-sm">Freezers</Link><Link href="/lab/samples" className="btn btn-sm">All samples</Link><Link href="/lab/samples/new" className="btn btn-sm btn-primary">+ Register sample</Link></div>} />
+        actions={<div className="flex gap-2"><Link href="/lab/participants" className="btn btn-sm">Participants</Link><Link href="/lab/tests" className="btn btn-sm">Tests</Link><Link href="/lab/freezers" className="btn btn-sm">Freezers</Link><Link href="/lab/samples" className="btn btn-sm">All samples</Link><Link href="/lab/samples/new" className="btn btn-sm btn-primary">+ Register sample</Link></div>} />
 
       {pendingTests > 0 && (
         <Link href="/lab/tests" className="card p-3 mb-5 flex items-center justify-between gap-3 text-sm" style={{ borderColor: "var(--border)" }}>

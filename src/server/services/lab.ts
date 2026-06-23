@@ -194,3 +194,50 @@ export async function disposableIds(orgId: string, projectIds: string[], f: Disp
   const rows = await q<{ id: string }>(`SELECT s.id FROM lab_sample s LEFT JOIN lab_participant pa ON pa.id=s.participant_id WHERE ${sql}`, params);
   return rows.map((r) => r.id);
 }
+
+export type ParticipantRow = { id: string; studyId: string; name: string | null; consentStatus: string; enrollmentDate: string; sampleCount: number; visitCount: number; lastCollection: string | null };
+export async function listParticipants(orgId: string, projectIds: string[], f: { search?: string; consent?: string }): Promise<ParticipantRow[]> {
+  if (projectIds.length === 0) return [];
+  const where: string[] = [`pa.org_id=$1`, `s.project_id IN (${projectIds.map((_, i) => `$${i + 2}`).join(",")})`];
+  const params: unknown[] = [orgId, ...projectIds];
+  let n = projectIds.length + 2;
+  if (f.consent) { where.push(`pa.consent_status=$${n}`); params.push(f.consent); n++; }
+  if (f.search) { where.push(`(pa.study_id ILIKE $${n} OR pa.name ILIKE $${n})`); params.push(`%${f.search}%`); n++; }
+  return await q<ParticipantRow>(
+    `SELECT pa.id, pa.study_id AS "studyId", pa.name, pa.consent_status AS "consentStatus", pa.enrollment_date::text AS "enrollmentDate",
+            COUNT(DISTINCT s.id)::int AS "sampleCount", COUNT(DISTINCT s.visit_id)::int AS "visitCount", MAX(s.collection_date)::text AS "lastCollection"
+     FROM lab_participant pa JOIN lab_sample s ON s.participant_id=pa.id
+     WHERE ${where.join(" AND ")}
+     GROUP BY pa.id, pa.study_id, pa.name, pa.consent_status, pa.enrollment_date
+     ORDER BY pa.study_id LIMIT 500`, params);
+}
+
+export type ParticipantInfo = { id: string; studyId: string; name: string | null; dob: string | null; sex: string | null; enrollmentDate: string; consentStatus: string; withdrawalDate: string | null };
+export async function getParticipantForView(orgId: string, participantId: string, projectIds: string[], isAdmin: boolean): Promise<ParticipantInfo | null> {
+  const pa = await one<ParticipantInfo>(
+    `SELECT id, study_id AS "studyId", name, date_of_birth::text AS dob, sex, enrollment_date::text AS "enrollmentDate", consent_status AS "consentStatus", withdrawal_date::text AS "withdrawalDate"
+     FROM lab_participant WHERE id=$1 AND org_id=$2`, [participantId, orgId]);
+  if (!pa) return null;
+  if (!isAdmin) {
+    if (projectIds.length === 0) return null;
+    const has = await one<{ x: number }>(`SELECT 1 x FROM lab_sample WHERE participant_id=$1 AND project_id IN (${projectIds.map((_, i) => `$${i + 2}`).join(",")}) LIMIT 1`, [participantId, ...projectIds]);
+    if (!has) return null;
+  }
+  return pa;
+}
+
+export type ParticipantVisit = { id: string; label: string; visitDate: string | null; sequence: number | null; notes: string | null };
+export async function participantVisits(participantId: string): Promise<ParticipantVisit[]> {
+  return await q<ParticipantVisit>(`SELECT id, label, visit_date::text AS "visitDate", sequence, notes FROM lab_visit WHERE participant_id=$1 ORDER BY sequence NULLS LAST, visit_date NULLS LAST, created_at`, [participantId]);
+}
+
+export type ParticipantSample = { id: string; sampleCode: string; visitId: string | null; typeName: string | null; status: string; collectionDate: string; freezerName: string | null; testCount: number };
+export async function participantSamples(participantId: string, projectIds: string[]): Promise<ParticipantSample[]> {
+  if (projectIds.length === 0) return [];
+  return await q<ParticipantSample>(
+    `SELECT s.id, s.sample_code AS "sampleCode", s.visit_id AS "visitId", st.type AS "typeName", s.status, s.collection_date AS "collectionDate", fz.name AS "freezerName",
+            COALESCE((SELECT COUNT(*) FROM lab_test t WHERE t.sample_id=s.id),0)::int AS "testCount"
+     FROM lab_sample s LEFT JOIN lab_sample_type st ON st.id=s.sample_type_id LEFT JOIN lab_freezer fz ON fz.id=s.freezer_id
+     WHERE s.participant_id=$1 AND s.project_id IN (${projectIds.map((_, i) => `$${i + 2}`).join(",")})
+     ORDER BY s.collection_date DESC, s.sample_code`, [participantId, ...projectIds]);
+}

@@ -5383,3 +5383,66 @@ export async function updateStudyMonitoringAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "update", entity: "study_monitoring", entityId: sid });
   redirect(`/studies/${sid}?saved=monitoring`);
 }
+
+/* ===================== Lab: participant & visit management ===================== */
+async function loadParticipantOrg(orgId: string, participantId: string) {
+  const p = await one<{ id: string }>(`SELECT id FROM lab_participant WHERE id=$1 AND org_id=$2`, [participantId, orgId]);
+  if (!p) redirect("/lab/participants");
+  return p;
+}
+
+export async function addParticipantVisitAction(formData: FormData) {
+  const { orgId, userId } = await requireLabActor();
+  const pid = String(formData.get("participantId") || "");
+  await loadParticipantOrg(orgId, pid);
+  const labelV = String(formData.get("label") || "").trim();
+  if (!labelV) redirect(`/lab/participants/${pid}?err=label`);
+  const ex = await one<{ id: string }>(`SELECT id FROM lab_visit WHERE participant_id=$1 AND LOWER(label)=LOWER($2)`, [pid, labelV]);
+  if (ex) redirect(`/lab/participants/${pid}?err=dupvisit`);
+  await q(`INSERT INTO lab_visit (id, org_id, participant_id, label, visit_date, sequence, notes) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [id("lvis"), orgId, pid, labelV, sNull(formData.get("visitDate")), sNum(formData.get("sequence")), sNull(formData.get("notes"))]);
+  await writeAudit({ orgId, userId, action: "create", entity: "lab_visit", entityId: pid, after: { label: labelV } });
+  redirect(`/lab/participants/${pid}?added=visit`);
+}
+
+export async function updateParticipantVisitAction(formData: FormData) {
+  const { orgId, userId } = await requireLabActor();
+  const pid = String(formData.get("participantId") || "");
+  await loadParticipantOrg(orgId, pid);
+  await q(`UPDATE lab_visit SET visit_date=$2, sequence=$3, notes=$4 WHERE id=$1 AND participant_id=$5`,
+    [String(formData.get("visitId") || ""), sNull(formData.get("visitDate")), sNum(formData.get("sequence")), sNull(formData.get("notes")), pid]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_visit", entityId: pid });
+  redirect(`/lab/participants/${pid}?saved=visit`);
+}
+
+export async function deleteParticipantVisitAction(formData: FormData) {
+  const { orgId, userId } = await requireLabActor();
+  const pid = String(formData.get("participantId") || "");
+  await loadParticipantOrg(orgId, pid);
+  // samples keep their record; their visit link is cleared by the FK (ON DELETE SET NULL)
+  await q(`DELETE FROM lab_visit WHERE id=$1 AND participant_id=$2`, [String(formData.get("visitId") || ""), pid]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "lab_visit", entityId: pid });
+  redirect(`/lab/participants/${pid}?removed=visit`);
+}
+
+export async function updateParticipantAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  const pid = String(formData.get("participantId") || "");
+  await loadParticipantOrg(orgId, pid);
+  if (!(isOrgAdmin || isSuperAdmin)) redirect(`/lab/participants/${pid}?err=forbidden`);
+  await q(`UPDATE lab_participant SET name=$2, date_of_birth=$3, sex=$4, enrollment_date=COALESCE($5, enrollment_date) WHERE id=$1 AND org_id=$6`,
+    [pid, sNull(formData.get("name")), sNull(formData.get("dob")), sNull(formData.get("sex")), sNull(formData.get("enrollmentDate")), orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_participant", entityId: pid });
+  redirect(`/lab/participants/${pid}?saved=info`);
+}
+
+export async function updateParticipantConsentAction(formData: FormData) {
+  const { orgId, userId, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  const pid = String(formData.get("participantId") || "");
+  await loadParticipantOrg(orgId, pid);
+  if (!(isOrgAdmin || isSuperAdmin)) redirect(`/lab/participants/${pid}?err=forbidden`);
+  const status = String(formData.get("consentStatus") || "valid");
+  await q(`UPDATE lab_participant SET consent_status=$2, withdrawal_date=CASE WHEN $2='withdrawn' THEN CURRENT_DATE ELSE withdrawal_date END WHERE id=$1 AND org_id=$3`, [pid, status, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "lab_participant", entityId: pid, after: { consentStatus: status } });
+  redirect(`/lab/participants/${pid}?saved=consent`);
+}

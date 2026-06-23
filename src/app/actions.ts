@@ -3963,7 +3963,7 @@ export async function addDepartmentFromAccessAction(formData: FormData) {
 }
 
 /* ============================ Laboratory (LIMS) ============================ */
-import { nextSampleCode, calcAge, canSeePII, accessibleProjectIds } from "@/server/services/lab";
+import { nextSampleCode, calcAge, canSeePII, accessibleProjectIds, disposableIds } from "@/server/services/lab";
 
 // Resolve the org for the current user (any member), returning admin status too.
 async function requireLabActor() {
@@ -5282,4 +5282,35 @@ export async function deleteTestAction(formData: FormData) {
   await q(`DELETE FROM lab_test WHERE id=$1 AND org_id=$2`, [testId, orgId]);
   const back = String(formData.get("back") || "");
   redirect(back === "tests" ? "/lab/tests?removed=1" : `/lab/samples/${t.sampleId}?test=removed`);
+}
+
+/* ===================== Lab: bulk sample disposal (by type / aliquot) ===================== */
+// Dispose a filtered set or an explicit selection of samples in one event (managers only).
+export async function bulkDisposeAction(formData: FormData) {
+  const { orgId, userId, userName, isOrgAdmin, isSuperAdmin } = await requireLabActor();
+  if (!(isOrgAdmin || isSuperAdmin)) redirect("/lab/disposal?err=forbidden");
+  const reason = String(formData.get("reason") || "").trim();
+  if (!reason) redirect("/lab/disposal?err=reason");
+  const method = sNull(formData.get("method"));
+  const witness = sNull(formData.get("witness"));
+  const mode = String(formData.get("mode") || "selected");
+  const projectIds = await accessibleProjectIds(userId, orgId, true);
+  if (projectIds.length === 0) redirect("/lab/disposal?err=none");
+
+  let ids: string[];
+  if (mode === "all") {
+    ids = await disposableIds(orgId, projectIds, { projectId: sNull(formData.get("projectId")) ?? undefined, studyId: sNull(formData.get("studyId")) ?? undefined, sampleTypeId: sNull(formData.get("sampleTypeId")) ?? undefined, search: sNull(formData.get("search")) ?? undefined });
+  } else {
+    ids = formData.getAll("sampleIds").map(String).filter(Boolean);
+  }
+  if (ids.length === 0) redirect("/lab/disposal?err=none");
+
+  const batch = id("ddb");
+  const base: unknown[] = [method, reason, witness, userId, userName, batch, orgId];
+  const ph = ids.map((_, i) => `$${i + 8}`).join(",");
+  const disposed = await q<{ id: string }>(
+    `UPDATE lab_sample SET status='disposed', disposal_date=CURRENT_DATE, disposal_method=$1, disposal_reason=$2, disposal_witness=$3, disposed_by_id=$4, disposed_by_name=$5, disposal_batch_id=$6, updated_at=now()
+     WHERE org_id=$7 AND status<>'disposed' AND id IN (${ph}) RETURNING id`, [...base, ...ids]);
+  await writeAudit({ orgId, userId, action: "bulk_dispose", entity: "lab_sample", entityId: batch, after: { count: disposed.length, reason, method, batch } });
+  redirect(`/lab/disposal?disposed=${disposed.length}`);
 }

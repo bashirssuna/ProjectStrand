@@ -155,3 +155,42 @@ export async function labStats(orgId: string, projectIds: string[]): Promise<Lab
     `SELECT s.id, s.sample_code AS "sampleCode", st.type AS "typeName", s.status, s.created_at AS "createdAt" FROM lab_sample s LEFT JOIN lab_sample_type st ON st.id=s.sample_type_id WHERE s.project_id IN (${pin}) ORDER BY s.created_at DESC LIMIT 10`, scope);
   return { totalActive, collectedThisMonth, collectedLastMonth, pendingAliquots, recentRetrievals, quarantined, expiringSoon: 0, byType, byStatus, byFreezer, recent };
 }
+
+export type DisposableRow = {
+  id: string; sampleCode: string; typeName: string | null; studyId: string | null; visitLabel: string | null;
+  collectionDate: string; status: string; quantityRemaining: number | null; aliquotUnit: string | null; isAliquot: boolean;
+};
+export type DisposableFilters = { projectId?: string; studyId?: string; sampleTypeId?: string; search?: string };
+function _dispWhere(orgId: string, projectIds: string[], f: DisposableFilters): { sql: string; params: unknown[] } {
+  const where: string[] = [`s.org_id=$1`, `s.status<>'disposed'`, `s.project_id IN (${projectIds.map((_, i) => `$${i + 2}`).join(",")})`];
+  const params: unknown[] = [orgId, ...projectIds];
+  let n = projectIds.length + 2;
+  if (f.projectId) { where.push(`s.project_id=$${n}`); params.push(f.projectId); n++; }
+  if (f.sampleTypeId) { where.push(`s.sample_type_id=$${n}`); params.push(f.sampleTypeId); n++; }
+  if (f.studyId) { where.push(`pa.study_id ILIKE $${n}`); params.push(`%${f.studyId}%`); n++; }
+  if (f.search) { where.push(`s.sample_code ILIKE $${n}`); params.push(`%${f.search}%`); n++; }
+  return { sql: where.join(" AND "), params };
+}
+
+export async function listDisposable(orgId: string, projectIds: string[], f: DisposableFilters): Promise<DisposableRow[]> {
+  if (projectIds.length === 0) return [];
+  const { sql, params } = _dispWhere(orgId, projectIds, f);
+  return await q<DisposableRow>(
+    `SELECT s.id, s.sample_code AS "sampleCode", st.type AS "typeName", pa.study_id AS "studyId", v.label AS "visitLabel",
+            s.collection_date AS "collectionDate", s.status, s.quantity_remaining AS "quantityRemaining", s.aliquot_unit AS "aliquotUnit",
+            (s.parent_sample_id IS NOT NULL) AS "isAliquot"
+     FROM lab_sample s
+     LEFT JOIN lab_sample_type st ON st.id=s.sample_type_id
+     LEFT JOIN lab_participant pa ON pa.id=s.participant_id
+     LEFT JOIN lab_visit v ON v.id=s.visit_id
+     WHERE ${sql} ORDER BY pa.study_id NULLS LAST, st.type, s.sample_code LIMIT 500`, params
+  );
+}
+
+// Returns the ids matching the disposal filter (used by "dispose all matching").
+export async function disposableIds(orgId: string, projectIds: string[], f: DisposableFilters): Promise<string[]> {
+  if (projectIds.length === 0) return [];
+  const { sql, params } = _dispWhere(orgId, projectIds, f);
+  const rows = await q<{ id: string }>(`SELECT s.id FROM lab_sample s LEFT JOIN lab_participant pa ON pa.id=s.participant_id WHERE ${sql}`, params);
+  return rows.map((r) => r.id);
+}

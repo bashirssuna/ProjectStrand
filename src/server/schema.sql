@@ -2233,3 +2233,6 @@ CREATE TABLE IF NOT EXISTS lab_test (
   notes text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Groups samples disposed together in one bulk disposal event (board-of-survey traceability).
+ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS disposal_batch_id text;

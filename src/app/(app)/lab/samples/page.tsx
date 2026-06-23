@@ -28,7 +28,7 @@ export default async function SampleRegistry({ searchParams }: { searchParams: P
   return (
     <div>
       <PageHeader title="Sample registry" subtitle={`${rows.length} sample${rows.length === 1 ? "" : "s"}`}
-        actions={<div className="flex gap-2"><Link href="/lab" className="btn btn-sm">← Laboratory</Link><Link href="/lab/samples/new" className="btn btn-sm btn-primary">+ Register sample</Link></div>} />
+        actions={<div className="flex gap-2"><Link href="/lab" className="btn btn-sm">← Laboratory</Link>{isAdmin && <Link href="/lab/disposal" className="btn btn-sm">Disposal</Link>}<Link href="/lab/samples/new" className="btn btn-sm btn-primary">+ Register sample</Link></div>} />
 
       <form className="card p-4 mb-5 grid sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
         <div className="lg:col-span-2"><Field label="Search (sample ID, study ID…)"><input name="search" defaultValue={sp.search ?? ""} className="input" placeholder="Type to search" /></Field></div>

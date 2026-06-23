@@ -2220,4 +2220,6 @@ CREATE TABLE IF NOT EXISTS lab_test (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+
+ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS disposal_batch_id text;
 `;

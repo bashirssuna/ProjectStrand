@@ -23,7 +23,7 @@ export default async function ProcurementHome() {
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           ["/procurement/requests", "Purchase requests", "Raise & approve requests to buy."],
-          ["/procurement/orders/", "Purchase orders", "Approved orders placed with vendors."],
+          ["/procurement/orders", "Purchase orders", "Approved orders placed with vendors."],
           ["/procurement/bills", "Vendor bills", "Payables raised from orders."],
           ["/procurement/vendors", "Vendors", "Supplier directory & details."],
           ["/procurement/config", "Thresholds", "Quotation rules by purchase value."],
@@ -31,7 +31,7 @@ export default async function ProcurementHome() {
           ["/procurement/ethics", "Ethics register", "Conflict-of-interest & gifts log."],
           ...(showGov ? [["/procurement/tenders", "Tenders & bids", "Advertise, open, evaluate & award tenders."], ["/procurement/contracts", "Contracts", "Delivery, payments & provider performance."], ["/procurement/committees", "Committees", "Contracts, evaluation, bid opening & disposal committees."], ["/procurement/disposals", "Disposal management", "Board of survey, committee review & disposal."]] : []),
         ].map(([href, t, d]) => (
-          <Link key={href} href={href === "/procurement/orders/" ? "/procurement/requests" : href} className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <Link key={href} href={href} className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
             <div className="font-display font-semibold">{t}</div>
             <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>{d}</div>
           </Link>

@@ -24,6 +24,18 @@ async function load(register: string, orgId: string, baseCur: string): Promise<R
         rows: rows.map((c) => [c.reference ?? "—", c.title, c.vendorName ?? c.providerName ?? "—", label(c.status), money(c.contractValue, c.currency ?? baseCur), money(c.paid, c.currency ?? baseCur), d(c.endDate)]),
       };
     }
+    case "orders": {
+      const o = await q<{ number: string; vendor: string | null; projectCode: string | null; orderDate: unknown; status: string; currency: string; total: number }>(
+        `SELECT po.number, v.name AS vendor, p.code AS "projectCode", po.order_date AS "orderDate", po.status, po.currency, po.total::float8 AS total
+         FROM purchase_order po LEFT JOIN vendor v ON v.id=po.vendor_id LEFT JOIN project p ON p.id=po.project_id
+         WHERE po.org_id=$1 ORDER BY po.created_at DESC`, [orgId]);
+      return {
+        subtitle: "Purchase Orders Register",
+        header: ["Number", "Vendor", "Project", "Order date", "Status", "Total"],
+        aligns: ["left", "left", "left", "left", "left", "right"],
+        rows: o.map((x) => [x.number, x.vendor ?? "—", x.projectCode ?? "—", d(x.orderDate), label(x.status), money(x.total, x.currency)]),
+      };
+    }
     case "vendors": {
       const v = await q<{ name: string; contactPerson: string | null; email: string | null; phone: string | null; taxId: string | null }>(
         `SELECT name, contact_person AS "contactPerson", email, phone, tax_id AS "taxId" FROM vendor WHERE org_id=$1 ORDER BY name`, [orgId]);

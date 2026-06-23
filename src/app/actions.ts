@@ -24,6 +24,7 @@ import { evaluateProject } from "@/server/services/anomaly";
 import { ensureStandardCategories } from "@/server/services/budget";
 import { reDenominateProject } from "@/server/services/currency";
 import { createInventoryImport, applyInventoryImport, cancelInventoryImport, INVENTORY_IMPORT_FIELDS, type ImportFieldKey } from "@/server/services/inventory";
+import { createImport, applyImport, cancelImport, importEntity } from "@/server/services/imports";
 import { newSignToken, linkExpired } from "@/server/services/payment-slips";
 import { writeAudit, notify } from "@/server/services/audit";
 
@@ -5536,4 +5537,54 @@ export async function cancelInventoryImportAction(formData: FormData) {
   const { orgId } = await requireInventoryActor();
   await cancelInventoryImport(orgId, String(formData.get("importId") || ""));
   redirect("/inventory/import?cancelled=1");
+}
+
+/* ===================== Generic register import (vendors, contracts) ===================== */
+// Vendors are gated to org-admin finance; contracts additionally require the public
+// procurement module (same guards as manually creating each).
+async function requireImportActor(entity: string) {
+  if (entity === "contract") return requireProcGovActor();
+  return requireInstitutionFinance();
+}
+
+export async function importRegisterUploadAction(formData: FormData) {
+  const entity = String(formData.get("entity") || "");
+  if (!importEntity(entity)) redirect("/procurement");
+  const { orgId, userId, userName } = await requireImportActor(entity);
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) redirect(`/procurement/import/${entity}?err=nofile`);
+  const buf = Buffer.from(await file.arrayBuffer());
+  const { rows } = await extractFile(file.name, buf);
+  if (!rows || rows.length === 0) redirect(`/procurement/import/${entity}?err=parse`);
+  const nonEmpty = rows.filter((r) => r.some((c) => String(c ?? "").trim() !== ""));
+  if (nonEmpty.length < 2) redirect(`/procurement/import/${entity}?err=empty`);
+  const jobId = await createImport(orgId, { id: userId, name: userName }, entity, file.name, nonEmpty[0], nonEmpty.slice(1));
+  await writeAudit({ orgId, userId, action: "upload", entity: "import_job", entityId: jobId, after: { entity, fileName: file.name, rows: nonEmpty.length - 1 } });
+  redirect(`/procurement/import/${entity}?job=${jobId}`);
+}
+
+export async function confirmRegisterImportAction(formData: FormData) {
+  const entity = String(formData.get("entity") || "");
+  const spec = importEntity(entity);
+  if (!spec) redirect("/procurement");
+  const { orgId, userId, userName } = await requireImportActor(entity);
+  const jobId = String(formData.get("importId") || "");
+  const mapping: Record<string, number> = {};
+  for (const f of spec!.fields) {
+    const n = parseInt(String(formData.get(`map_${f.key}`) ?? "-1"), 10);
+    mapping[f.key] = Number.isFinite(n) ? n : -1;
+  }
+  const requiredKey = spec!.fields.find((f) => f.required)?.key;
+  if (requiredKey && (mapping[requiredKey] == null || mapping[requiredKey] < 0)) redirect(`/procurement/import/${entity}?job=${jobId}&err=required`);
+  const res = await applyImport(orgId, { id: userId, name: userName }, jobId, mapping);
+  await writeAudit({ orgId, userId, action: "import", entity: "import_job", entityId: jobId, after: { entity, created: res.created, skipped: res.skipped } });
+  redirect(`${spec!.redirectTo}?imported=${res.created}${res.skipped ? `&skipped=${res.skipped}` : ""}`);
+}
+
+export async function cancelRegisterImportAction(formData: FormData) {
+  const entity = String(formData.get("entity") || "");
+  if (!importEntity(entity)) redirect("/procurement");
+  const { orgId } = await requireImportActor(entity);
+  await cancelImport(orgId, String(formData.get("importId") || ""));
+  redirect(`/procurement/import/${entity}?cancelled=1`);
 }

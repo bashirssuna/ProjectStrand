@@ -2002,6 +2002,22 @@ CREATE TABLE IF NOT EXISTS inventory_import (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Generic staging for bulk import of register entities (vendors, contracts, …) from a
+-- spreadsheet. Parsed rows are held for review (column mapping + preview) before insert.
+CREATE TABLE IF NOT EXISTS import_job (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  entity text NOT NULL,
+  file_name text NOT NULL,
+  status text NOT NULL DEFAULT 'preview',
+  header_json text,
+  mapping_json text,
+  rows_json text,
+  created_count integer NOT NULL DEFAULT 0,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- ===================== Disposal management (board of survey workflow) =====================
 CREATE TABLE IF NOT EXISTS disposal (
   id text PRIMARY KEY,

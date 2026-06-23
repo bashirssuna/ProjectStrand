@@ -3,6 +3,7 @@ import { getUserOrg } from "@/server/services/accounts";
 import { q } from "@/server/db";
 import { listItems } from "@/server/services/inventory";
 import { listContracts } from "@/server/services/contracts";
+import { importEntity } from "@/server/services/imports";
 import { sheetResponse, type Cell } from "@/server/services/sheets";
 
 // Normalises a date value (Date from node-postgres, string from PGlite) to YYYY-MM-DD.
@@ -83,6 +84,31 @@ export async function GET(req: Request, { params }: { params: Promise<{ scope: s
       title = "vendor-bills";
       header = ["Number", "Vendor", "PO", "Bill date", "Due date", "Status", "Currency", "Total", "Paid", "Outstanding"];
       rows = b.map((x) => [x.number, x.vendor ?? "", x.poNumber ?? "", d(x.billDate), d(x.dueDate), x.status, x.currency, x.total, x.amountPaid, Math.round((x.total - x.amountPaid) * 100) / 100]);
+      break;
+    }
+    case "orders": {
+      const o = await q<{ number: string; vendor: string | null; projectCode: string | null; orderDate: unknown; status: string; currency: string; total: number }>(
+        `SELECT po.number, v.name AS vendor, p.code AS "projectCode", po.order_date AS "orderDate", po.status, po.currency, po.total::float8 AS total
+         FROM purchase_order po LEFT JOIN vendor v ON v.id=po.vendor_id LEFT JOIN project p ON p.id=po.project_id
+         WHERE po.org_id=$1 ORDER BY po.created_at DESC`, [orgId]
+      );
+      title = "purchase-orders";
+      header = ["Number", "Vendor", "Project", "Order date", "Status", "Currency", "Total"];
+      rows = o.map((x) => [x.number, x.vendor ?? "", x.projectCode ?? "", d(x.orderDate), x.status, x.currency, x.total]);
+      break;
+    }
+    case "vendor-template":
+    case "contract-template": {
+      const ent = scope.replace("-template", "");
+      const spec = importEntity(ent);
+      if (!spec) return new Response("Unknown template", { status: 404 });
+      title = `${ent}-template`;
+      header = spec.fields.map((f) => f.label);
+      const EXAMPLE: Record<string, Cell[]> = {
+        vendor: ["Acme Scientific Ltd", "Jane Doe", "sales@acme.example", "+256700000000", "1001234567", "0123456789", "Plot 5, Kampala Road"],
+        contract: ["CTR/2026/001", "Supply of laboratory reagents", "Acme Scientific Ltd", 25000000, "UGX", "2026-01-01", "2026-12-31", "active", "Quarterly supply of consumables"],
+      };
+      rows = [EXAMPLE[ent] ?? spec.fields.map(() => "")];
       break;
     }
     default:

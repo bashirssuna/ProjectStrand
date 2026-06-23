@@ -34,7 +34,7 @@ export default async function PODetail({ params, searchParams }: { params: Promi
 
   return (
     <div className="max-w-4xl">
-      <PageHeader title={`Purchase order ${po.number}`} subtitle={`${po.vendor ?? "—"}${po.project ? ` · ${po.project}` : ""}${po.lineCode ? ` · line ${po.lineCode}` : ""}`} actions={<Link href="/procurement/requests" className="btn btn-sm">← Requests</Link>} />
+      <PageHeader title={`Purchase order ${po.number}`} subtitle={`${po.vendor ?? "—"}${po.project ? ` · ${po.project}` : ""}${po.lineCode ? ` · line ${po.lineCode}` : ""}`} actions={<Link href="/procurement/orders" className="btn btn-sm">← Orders</Link>} />
       {sp.grn && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Goods received note recorded.</div>}
       {sp.authorised && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Order authorised and signed.</div>}
       {sp.posted === "stores" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Received goods posted to stores.</div>}

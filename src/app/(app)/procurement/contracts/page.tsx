@@ -13,7 +13,7 @@ import { ExportMenu } from "@/components/export-menu";
 
 const STATUSES = ["draft", "active", "suspended", "completed", "terminated"];
 
-export default async function Contracts({ searchParams }: { searchParams: Promise<{ status?: string; search?: string; deleted?: string }> }) {
+export default async function Contracts({ searchParams }: { searchParams: Promise<{ status?: string; search?: string; deleted?: string; imported?: string; skipped?: string }> }) {
   const { orgId, orgName } = await requireProcOrg();
   if (!(await isModuleEnabled(orgId, "public_procurement"))) redirect("/procurement");
   const sp = await searchParams;
@@ -27,7 +27,8 @@ export default async function Contracts({ searchParams }: { searchParams: Promis
 
   return (
     <div className="max-w-5xl">
-      <PageHeader title="Contracts" subtitle={`Contract management for ${orgName}`} actions={<div className="flex flex-wrap gap-2 no-print"><Link href="/print/procurement/contracts" target="_blank" className="btn btn-sm">Print</Link><ExportMenu scope="contracts" /><Link href="/procurement" className="btn btn-sm">← Procurement</Link></div>} />
+      <PageHeader title="Contracts" subtitle={`Contract management for ${orgName}`} actions={<div className="flex flex-wrap gap-2 no-print"><Link href="/procurement/import/contract" className="btn btn-sm">Import Excel</Link><Link href="/print/procurement/contracts" target="_blank" className="btn btn-sm">Print</Link><ExportMenu scope="contracts" /><Link href="/procurement" className="btn btn-sm">← Procurement</Link></div>} />
+      {sp.imported && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Imported {sp.imported} contract{sp.imported === "1" ? "" : "s"}{sp.skipped ? ` · ${sp.skipped} row${sp.skipped === "1" ? "" : "s"} skipped (no title)` : ""}.</div>}
       {sp.deleted && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)" }}>Contract deleted.</div>}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">

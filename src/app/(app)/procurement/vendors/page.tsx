@@ -5,7 +5,7 @@ import { PageHeader, SectionTitle, Field, Empty } from "@/components/ui";
 import { addVendorAction } from "@/app/actions";
 import { ExportMenu } from "@/components/export-menu";
 
-export default async function VendorsPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string }> }) {
+export default async function VendorsPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string; imported?: string; skipped?: string }> }) {
   const { orgId } = await requireProcOrg();
   const sp = await searchParams;
   const vendors = await q<{ id: string; name: string; contactPerson: string | null; email: string | null; phone: string | null; taxId: string | null }>(
@@ -13,7 +13,8 @@ export default async function VendorsPage({ searchParams }: { searchParams: Prom
   );
   return (
     <div className="max-w-4xl">
-      <PageHeader title="Vendors" subtitle="Supplier directory" actions={<div className="flex flex-wrap gap-2 no-print"><Link href="/print/procurement/vendors" target="_blank" className="btn btn-sm">Print</Link><ExportMenu scope="vendors" /><Link href="/procurement" className="btn btn-sm">← Procurement</Link></div>} />
+      <PageHeader title="Vendors" subtitle="Supplier directory" actions={<div className="flex flex-wrap gap-2 no-print"><Link href="/procurement/import/vendor" className="btn btn-sm">Import Excel</Link><Link href="/print/procurement/vendors" target="_blank" className="btn btn-sm">Print</Link><ExportMenu scope="vendors" /><Link href="/procurement" className="btn btn-sm">← Procurement</Link></div>} />
+      {sp.imported && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Imported {sp.imported} vendor{sp.imported === "1" ? "" : "s"}{sp.skipped ? ` · ${sp.skipped} row${sp.skipped === "1" ? "" : "s"} skipped (no name)` : ""}.</div>}
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Vendor added.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Vendor name is required.</div>}
       <SectionTitle>Vendors</SectionTitle>

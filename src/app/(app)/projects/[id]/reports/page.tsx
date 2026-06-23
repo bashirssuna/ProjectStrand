@@ -5,18 +5,20 @@ import { budgetLineRollups } from "@/server/services/budget";
 import { HBar, ColumnChart } from "@/components/charts";
 import { money, pct, fmtDate } from "@/lib/format";
 import { getFinancialStatements } from "@/server/services/financials";
-import { generateReportAction, emailReportAction } from "@/app/actions";
+import { generateReportAction, emailReportAction, updateReportSectionAction, addReportSectionAction, deleteReportSectionAction, finalizeReportAction } from "@/app/actions";
 import { SectionTitle, Empty, Badge, Field, StatusBadge } from "@/components/ui";
 import { fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import { blockStaff } from "../_staffblock";
 
 export default async function ReportsPage({
   params, searchParams,
-}: { params: Promise<{ id: string }>; searchParams: Promise<{ r?: string; fin?: string }> }) {
+}: { params: Promise<{ id: string }>; searchParams: Promise<{ r?: string; fin?: string; edited?: string; added?: string; removed?: string; finalized?: string; reopened?: string }> }) {
   const { id } = await params;
   await blockStaff(id);
-  const { r, fin } = await searchParams;
+  const sp = await searchParams;
+  const { r, fin } = sp;
   const detailed = fin === "detailed";
   const access = await getProjectAccess(id);
   const canManage = access.permissions.has("reports.manage");
@@ -92,33 +94,69 @@ export default async function ReportsPage({
           <Empty title="No report selected" hint="Generate a report or pick one from the list." />
         ) : (
           <div className="card p-6">
+            {sp.edited && <div className="mb-3 text-sm" style={{ color: "var(--ok)" }}>Section saved.</div>}
+            {sp.added && <div className="mb-3 text-sm" style={{ color: "var(--ok)" }}>Section added.</div>}
+            {sp.removed && <div className="mb-3 text-sm" style={{ color: "var(--muted)" }}>Section removed.</div>}
+            {sp.finalized && <div className="mb-3 text-sm" style={{ color: "var(--ok)" }}>Report finalised — editing is locked. Reopen to make changes.</div>}
+            {sp.reopened && <div className="mb-3 text-sm" style={{ color: "var(--ok)" }}>Report reopened for editing.</div>}
             <div className="flex items-start justify-between gap-3 mb-4">
               <div>
                 <h2 className="font-display text-xl font-semibold">{selected.title}</h2>
                 <div className="flex items-center gap-2 mt-1">
                   <StatusBadge status={selected.status} />
-                  {selected.ai && <Badge tone="info">AI-generated draft — review before sharing</Badge>}
+                  {selected.ai && <Badge tone="info">auto-drafted from project data — review before sharing</Badge>}
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <a href={`/api/reports/${selected.id}/docx`} className="btn btn-sm">Download Word</a>
                 {canManage && (
-                  <form action={emailReportAction}>
-                    <input type="hidden" name="projectId" value={id} />
-                    <input type="hidden" name="reportId" value={selected.id} />
-                    <button className="btn btn-sm" type="submit">Email to team</button>
-                  </form>
+                  <>
+                    <form action={finalizeReportAction}><input type="hidden" name="projectId" value={id} /><input type="hidden" name="reportId" value={selected.id} />
+                      <button className="btn btn-sm" type="submit">{selected.status === "final" ? "Reopen" : "Finalise"}</button>
+                    </form>
+                    <form action={emailReportAction}>
+                      <input type="hidden" name="projectId" value={id} />
+                      <input type="hidden" name="reportId" value={selected.id} />
+                      <button className="btn btn-sm" type="submit">Email to team</button>
+                    </form>
+                  </>
                 )}
               </div>
             </div>
             <div className="space-y-5">
               {sections.map((s) => (
                 <div key={s.id}>
-                  <h3 className="font-display font-semibold mb-1">{s.title}</h3>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="font-display font-semibold mb-1">{s.title}</h3>
+                    {canManage && selected.status !== "final" && (
+                      <details className="text-xs">
+                        <summary className="cursor-pointer hover:underline" style={{ color: "var(--brand)" }}>edit</summary>
+                        <div className="mt-2 space-y-2" style={{ minWidth: 280 }}>
+                          <form action={updateReportSectionAction} className="space-y-2">
+                            <input type="hidden" name="projectId" value={id} /><input type="hidden" name="reportId" value={selected.id} /><input type="hidden" name="sectionId" value={s.id} />
+                            <input name="title" defaultValue={s.title} className="input" />
+                            <textarea name="content" defaultValue={s.content} rows={6} className="textarea" />
+                            <button className="btn btn-sm btn-primary" type="submit">Save</button>
+                          </form>
+                          <form action={deleteReportSectionAction}>
+                            <input type="hidden" name="projectId" value={id} /><input type="hidden" name="reportId" value={selected.id} /><input type="hidden" name="sectionId" value={s.id} />
+                            <ConfirmSubmit message="Remove this section?" className="btn btn-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete section</ConfirmSubmit>
+                          </form>
+                        </div>
+                      </details>
+                    )}
+                  </div>
                   <div className="text-sm whitespace-pre-line leading-relaxed" style={{ color: "var(--fg)" }}>{s.content}</div>
                 </div>
               ))}
             </div>
+            {canManage && selected.status !== "final" && (
+              <form action={addReportSectionAction} className="mt-5 border-t pt-4 flex items-end gap-2" style={{ borderColor: "var(--border)" }}>
+                <input type="hidden" name="projectId" value={id} /><input type="hidden" name="reportId" value={selected.id} />
+                <Field label="Add a custom section"><input name="title" required className="input" placeholder="Section title" /></Field>
+                <button className="btn btn-sm btn-primary" type="submit">Add section</button>
+              </form>
+            )}
           </div>
         )}
       </div>

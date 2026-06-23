@@ -5446,3 +5446,55 @@ export async function updateParticipantConsentAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "update", entity: "lab_participant", entityId: pid, after: { consentStatus: status } });
   redirect(`/lab/participants/${pid}?saved=consent`);
 }
+
+/* ===================== Report sections: manual edits + finalize ===================== */
+async function loadReportForProject(projectId: string, reportId: string) {
+  const r = await one<{ id: string; status: string }>(`SELECT id, status FROM report WHERE id=$1 AND project_id=$2`, [reportId, projectId]);
+  if (!r) redirect(`/projects/${projectId}/reports`);
+  return r;
+}
+
+export async function updateReportSectionAction(formData: FormData) {
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "reports.manage");
+  const reportId = String(formData.get("reportId"));
+  await loadReportForProject(projectId, reportId);
+  const sectionId = String(formData.get("sectionId"));
+  await q(`UPDATE report_section SET title=$2, content=$3 WHERE id=$1 AND report_id=$4`,
+    [sectionId, String(formData.get("title") || "Section"), String(formData.get("content") || ""), reportId]);
+  revalidatePath(`/projects/${projectId}/reports`);
+  redirect(`/projects/${projectId}/reports?r=${reportId}&edited=1`);
+}
+
+export async function addReportSectionAction(formData: FormData) {
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "reports.manage");
+  const reportId = String(formData.get("reportId"));
+  await loadReportForProject(projectId, reportId);
+  const maxOrder = (await one<{ m: number }>(`SELECT COALESCE(MAX("order"),-1)::int m FROM report_section WHERE report_id=$1`, [reportId]))?.m ?? -1;
+  await q(`INSERT INTO report_section (id, report_id, key, title, content, "order") VALUES ($1,$2,$3,$4,$5,$6)`,
+    [id("rsec"), reportId, "custom", String(formData.get("title") || "New section"), String(formData.get("content") || ""), maxOrder + 1]);
+  redirect(`/projects/${projectId}/reports?r=${reportId}&added=1`);
+}
+
+export async function deleteReportSectionAction(formData: FormData) {
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "reports.manage");
+  const reportId = String(formData.get("reportId"));
+  await loadReportForProject(projectId, reportId);
+  await q(`DELETE FROM report_section WHERE id=$1 AND report_id=$2`, [String(formData.get("sectionId")), reportId]);
+  redirect(`/projects/${projectId}/reports?r=${reportId}&removed=1`);
+}
+
+export async function finalizeReportAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "reports.manage");
+  const reportId = String(formData.get("reportId"));
+  const r = await loadReportForProject(projectId, reportId);
+  const next = r.status === "final" ? "draft" : "final";
+  await q(`UPDATE report SET status=$2 WHERE id=$1 AND project_id=$3`, [reportId, next, projectId]);
+  const orgId = (await one<{ o: string }>(`SELECT org_id o FROM project WHERE id=$1`, [projectId]))?.o;
+  await writeAudit({ orgId, userId: user.id, action: next === "final" ? "finalize" : "reopen", entity: "report", entityId: reportId });
+  redirect(`/projects/${projectId}/reports?r=${reportId}&${next === "final" ? "finalized" : "reopened"}=1`);
+}

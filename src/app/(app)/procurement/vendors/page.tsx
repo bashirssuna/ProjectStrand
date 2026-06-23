@@ -3,6 +3,7 @@ import { requireProcOrg } from "../_guard";
 import { q } from "@/server/db";
 import { PageHeader, SectionTitle, Field, Empty } from "@/components/ui";
 import { addVendorAction } from "@/app/actions";
+import { ExportMenu } from "@/components/export-menu";
 
 export default async function VendorsPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string }> }) {
   const { orgId } = await requireProcOrg();
@@ -12,7 +13,7 @@ export default async function VendorsPage({ searchParams }: { searchParams: Prom
   );
   return (
     <div className="max-w-4xl">
-      <PageHeader title="Vendors" subtitle="Supplier directory" actions={<Link href="/procurement" className="btn btn-sm">← Procurement</Link>} />
+      <PageHeader title="Vendors" subtitle="Supplier directory" actions={<div className="flex flex-wrap gap-2 no-print"><Link href="/print/procurement/vendors" target="_blank" className="btn btn-sm">Print</Link><ExportMenu scope="vendors" /><Link href="/procurement" className="btn btn-sm">← Procurement</Link></div>} />
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Vendor added.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Vendor name is required.</div>}
       <SectionTitle>Vendors</SectionTitle>

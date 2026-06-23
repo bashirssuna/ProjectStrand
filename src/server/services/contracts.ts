@@ -22,14 +22,21 @@ export async function listContracts(orgId: string, f?: { status?: string; search
   );
 }
 
-export type ContractStats = { total: number; active: number; completed: number; value: number };
+export type ContractStats = { total: number; active: number; completed: number; valueByCcy: Record<string, number> };
 export async function contractStats(orgId: string): Promise<ContractStats> {
-  const rows = await q<{ status: string; c: number; v: number }>(`SELECT status, COUNT(*)::int c, COALESCE(SUM(contract_value),0)::float8 v FROM contract WHERE org_id=$1 GROUP BY status`, [orgId]);
+  const rows = await q<{ status: string; c: number }>(`SELECT status, COUNT(*)::int c FROM contract WHERE org_id=$1 GROUP BY status`, [orgId]);
   const total = rows.reduce((a, x) => a + x.c, 0);
-  const value = rows.reduce((a, x) => a + x.v, 0);
   const active = rows.find((x) => x.status === "active")?.c ?? 0;
   const completed = rows.find((x) => x.status === "completed")?.c ?? 0;
-  return { total, active, completed, value };
+  // Contract values can be denominated in different currencies, so they are
+  // summed per-currency rather than collapsed into one (potentially meaningless) total.
+  const vrows = await q<{ ccy: string | null; v: number }>(
+    `SELECT currency AS ccy, COALESCE(SUM(contract_value),0)::float8 v FROM contract WHERE org_id=$1 GROUP BY currency`, [orgId]
+  );
+  const baseCur = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+  const valueByCcy: Record<string, number> = {};
+  for (const r of vrows) { const c = r.ccy || baseCur; valueByCcy[c] = (valueByCcy[c] ?? 0) + r.v; }
+  return { total, active, completed, valueByCcy };
 }
 
 export type MilestoneRow = { id: string; name: string; dueDate: string | null; amount: number | null; status: string; deliveredDate: string | null; note: string | null };

@@ -23,6 +23,7 @@ import { recomputeRollups } from "@/server/services/activities";
 import { evaluateProject } from "@/server/services/anomaly";
 import { ensureStandardCategories } from "@/server/services/budget";
 import { reDenominateProject } from "@/server/services/currency";
+import { createInventoryImport, applyInventoryImport, cancelInventoryImport, INVENTORY_IMPORT_FIELDS, type ImportFieldKey } from "@/server/services/inventory";
 import { newSignToken, linkExpired } from "@/server/services/payment-slips";
 import { writeAudit, notify } from "@/server/services/audit";
 
@@ -5497,4 +5498,42 @@ export async function finalizeReportAction(formData: FormData) {
   const orgId = (await one<{ o: string }>(`SELECT org_id o FROM project WHERE id=$1`, [projectId]))?.o;
   await writeAudit({ orgId, userId: user.id, action: next === "final" ? "finalize" : "reopen", entity: "report", entityId: reportId });
   redirect(`/projects/${projectId}/reports?r=${reportId}&${next === "final" ? "finalized" : "reopened"}=1`);
+}
+
+/* ===================== Inventory: bulk import from spreadsheet ===================== */
+export async function importInventoryUploadAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInventoryActor();
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) redirect("/inventory/import?err=nofile");
+  const buf = Buffer.from(await file.arrayBuffer());
+  const { rows } = await extractFile(file.name, buf);
+  if (!rows || rows.length === 0) redirect("/inventory/import?err=parse");
+  // Drop fully-blank rows; the first remaining row is treated as the header.
+  const nonEmpty = rows.filter((r) => r.some((c) => String(c ?? "").trim() !== ""));
+  if (nonEmpty.length < 2) redirect("/inventory/import?err=empty");
+  const header = nonEmpty[0];
+  const dataRows = nonEmpty.slice(1);
+  const impId = await createInventoryImport(orgId, { id: userId, name: userName }, file.name, header, dataRows);
+  await writeAudit({ orgId, userId, action: "upload", entity: "inventory_import", entityId: impId, after: { fileName: file.name, rows: dataRows.length } });
+  redirect(`/inventory/import?job=${impId}`);
+}
+
+export async function confirmInventoryImportAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInventoryActor();
+  const importId = String(formData.get("importId") || "");
+  const mapping = {} as Record<ImportFieldKey, number>;
+  for (const f of INVENTORY_IMPORT_FIELDS) {
+    const v = parseInt(String(formData.get(`map_${f.key}`) ?? "-1"), 10);
+    mapping[f.key] = Number.isFinite(v) ? v : -1;
+  }
+  if (mapping.name == null || mapping.name < 0) redirect(`/inventory/import?job=${importId}&err=name`);
+  const res = await applyInventoryImport(orgId, { id: userId, name: userName }, importId, mapping);
+  await writeAudit({ orgId, userId, action: "import", entity: "inventory_import", entityId: importId, after: { created: res.created, skipped: res.skipped } });
+  redirect(`/inventory?imported=${res.created}${res.skipped ? `&skipped=${res.skipped}` : ""}`);
+}
+
+export async function cancelInventoryImportAction(formData: FormData) {
+  const { orgId } = await requireInventoryActor();
+  await cancelInventoryImport(orgId, String(formData.get("importId") || ""));
+  redirect("/inventory/import?cancelled=1");
 }

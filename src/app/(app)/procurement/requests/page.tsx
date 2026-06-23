@@ -5,6 +5,7 @@ import { getProcurementConfig, requiredQuotations } from "@/server/services/proc
 import { PageHeader, SectionTitle, Field, StatusBadge, Empty, Badge } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
 import { createPurchaseRequestAction, createPOAction } from "@/app/actions";
+import { ExportMenu } from "@/components/export-menu";
 
 export default async function RequestsPage({ searchParams }: { searchParams: Promise<{ created?: string; decided?: string; err?: string }> }) {
   const { orgId } = await requireProcOrg();
@@ -38,7 +39,7 @@ export default async function RequestsPage({ searchParams }: { searchParams: Pro
 
   return (
     <div className="max-w-5xl">
-      <PageHeader title="Purchase requests" subtitle="Raise, approve, and convert to orders" actions={<div className="flex gap-2"><Link href="/procurement/config" className="btn btn-sm">Thresholds</Link><Link href="/procurement" className="btn btn-sm">← Procurement</Link></div>} />
+      <PageHeader title="Purchase requests" subtitle="Raise, approve, and convert to orders" actions={<div className="flex flex-wrap gap-2 no-print"><Link href="/print/procurement/requests" target="_blank" className="btn btn-sm">Print</Link><ExportMenu scope="requests" /><Link href="/procurement/config" className="btn btn-sm">Thresholds</Link><Link href="/procurement" className="btn btn-sm">← Procurement</Link></div>} />
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Purchase request submitted.</div>}
       {sp.decided && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Decision recorded.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{sp.err === "vendor" ? "Choose a vendor to create the order." : sp.err === "1" ? "Title and item description are required." : decodeURIComponent(sp.err)}</div>}

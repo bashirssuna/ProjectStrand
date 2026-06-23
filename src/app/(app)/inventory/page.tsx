@@ -4,13 +4,14 @@ import { listItems, listStores, isLow } from "@/server/services/inventory";
 import { getUserOrg } from "@/server/services/accounts";
 import { requireUser } from "@/server/auth";
 import { PageHeader, SectionTitle, Field, Badge, StatusBadge, Empty, Stat } from "@/components/ui";
-import { money } from "@/lib/format";
+import { money, ccyTotal } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { createStoreAction } from "@/app/actions";
+import { ExportMenu } from "@/components/export-menu";
 
 const TYPES = ["consumable", "asset", "other"];
 
-export default async function Inventory({ searchParams }: { searchParams: Promise<{ search?: string; itemType?: string; added?: string; deleted?: string }> }) {
+export default async function Inventory({ searchParams }: { searchParams: Promise<{ search?: string; itemType?: string; added?: string; deleted?: string; imported?: string; skipped?: string }> }) {
   const { orgId, orgName } = await requireInventoryOrg();
   const sp = await searchParams;
   const user = await requireUser();
@@ -24,26 +25,26 @@ export default async function Inventory({ searchParams }: { searchParams: Promis
   const low = items.filter(isLow);
   const valueByCcy: Record<string, number> = {};
   for (const i of items) { const c = i.currency ?? cur; valueByCcy[c] = (valueByCcy[c] ?? 0) + i.balance * i.unitCost; }
-  const ccyKeys = Object.keys(valueByCcy).sort();
-  const valueStat = ccyKeys.length === 0 ? money(0, cur) : ccyKeys.length === 1 ? money(valueByCcy[ccyKeys[0]], ccyKeys[0]) : `${ccyKeys.length} currencies`;
+  const totalValue = ccyTotal(valueByCcy, cur);
 
   return (
     <div>
-      <PageHeader title="Inventory & stores" subtitle={`Stock control for ${orgName}`} actions={<Link href="/inventory/new" className="btn btn-sm btn-primary">+ New item</Link>} />
+      <PageHeader title="Inventory & stores" subtitle={`Stock control for ${orgName}`} actions={<div className="flex flex-wrap gap-2 no-print"><Link href="/inventory/new" className="btn btn-sm btn-primary">+ New item</Link><Link href="/inventory/import" className="btn btn-sm">Import Excel</Link><Link href={`/print/inventory${sp.itemType ? `?itemType=${sp.itemType}` : ""}`} target="_blank" className="btn btn-sm">Print</Link><ExportMenu scope="inventory" query={{ search: sp.search, itemType: sp.itemType }} /></div>} />
+      {sp.imported && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Imported {sp.imported} item{sp.imported === "1" ? "" : "s"}{sp.skipped ? ` · ${sp.skipped} row${sp.skipped === "1" ? "" : "s"} skipped (no name)` : ""}.</div>}
       {sp.added === "store" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Store added.</div>}
       {sp.deleted && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)" }}>Item deleted.</div>}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
         <Stat label="Stock items" value={String(items.length)} />
         <Stat label="Low stock" value={String(low.length)} tone={low.length ? "warn" : undefined} />
-        <Stat label="Stock value" value={valueStat} sub={ccyKeys.length > 1 ? "multiple currencies" : undefined} />
+        <Stat label="Stock value" value={totalValue.value} sub={totalValue.mixed ? "multiple currencies" : undefined} />
         <Stat label="Stores" value={String(stores.length)} />
       </div>
 
-      {ccyKeys.length > 1 && (
+      {totalValue.mixed && (
         <div className="card p-3 mb-5 text-sm flex flex-wrap gap-x-5 gap-y-1">
           <span style={{ color: "var(--muted)" }}>Stock value by currency:</span>
-          {ccyKeys.map((c) => <span key={c} className="tabular-nums">{money(valueByCcy[c], c)}</span>)}
+          {totalValue.parts.map(([c, v]) => <span key={c} className="tabular-nums">{money(v, c)}</span>)}
         </div>
       )}
 

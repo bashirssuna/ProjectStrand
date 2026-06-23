@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireProcOrg } from "../_guard";
 import { q } from "@/server/db";
 import { PageHeader, SectionTitle, Field, Badge, Empty } from "@/components/ui";
-import { money, fmtDate } from "@/lib/format";
+import { money, fmtDate, ccyTotal, groupByCcy } from "@/lib/format";
 import { addPlanItemAction, updatePlanItemStatusAction, deletePlanItemAction } from "@/app/actions";
 
 const STATUSES = ["planned", "requested", "procured", "cancelled"] as const;
@@ -24,7 +24,7 @@ export default async function ProcurementPlanPage({ searchParams }: { searchPara
   // group by period
   const byPeriod = new Map<string, typeof items>();
   for (const it of items) { if (!byPeriod.has(it.period)) byPeriod.set(it.period, []); byPeriod.get(it.period)!.push(it); }
-  const grand = items.filter((i) => i.status !== "cancelled").reduce((s, i) => s + i.estTotal, 0);
+  const grandTotal = ccyTotal(groupByCcy(items.filter((i) => i.status !== "cancelled"), (i) => i.estTotal, (i) => i.currency, items[0]?.currency ?? "UGX"), items[0]?.currency ?? "UGX");
   const planCurrency = items[0]?.currency ?? "UGX";
 
   return (
@@ -41,12 +41,12 @@ export default async function ProcurementPlanPage({ searchParams }: { searchPara
       {items.length === 0 ? <Empty title="No planned purchases yet" hint="Add the first line below." /> : (
         <div className="space-y-6 mb-6">
           {[...byPeriod.entries()].map(([period, list]) => {
-            const subtotal = list.filter((i) => i.status !== "cancelled").reduce((s, i) => s + i.estTotal, 0);
+            const subtotal = ccyTotal(groupByCcy(list.filter((i) => i.status !== "cancelled"), (i) => i.estTotal, (i) => i.currency, planCurrency), planCurrency);
             return (
               <div key={period}>
                 <div className="flex items-center justify-between mb-1">
                   <SectionTitle>{period}</SectionTitle>
-                  <span className="text-sm tabular-nums" style={{ color: "var(--muted)" }}>Subtotal {money(subtotal, list[0]?.currency ?? planCurrency)}</span>
+                  <span className="text-sm tabular-nums" style={{ color: "var(--muted)" }}>Subtotal {subtotal.value}</span>
                 </div>
                 <div className="card overflow-x-auto">
                   <table className="w-full text-sm">
@@ -80,7 +80,9 @@ export default async function ProcurementPlanPage({ searchParams }: { searchPara
               </div>
             );
           })}
-          <div className="text-right text-sm font-medium">Total planned (excl. cancelled): <span className="tabular-nums">{money(grand, planCurrency)}</span></div>
+          <div className="text-right text-sm font-medium">Total planned (excl. cancelled): <span className="tabular-nums">{grandTotal.value}</span>
+            {grandTotal.mixed && <span className="text-xs ml-2" style={{ color: "var(--muted)" }}>({grandTotal.parts.map(([c, v]) => money(v, c)).join(" · ")})</span>}
+          </div>
         </div>
       )}
 

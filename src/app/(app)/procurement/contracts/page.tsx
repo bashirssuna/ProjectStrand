@@ -5,10 +5,11 @@ import { isModuleEnabled } from "@/server/modules";
 import { q, one } from "@/server/db";
 import { listContracts, contractStats } from "@/server/services/contracts";
 import { PageHeader, SectionTitle, Field, Badge, StatusBadge, Empty, Stat } from "@/components/ui";
-import { money, fmtDate, pct } from "@/lib/format";
+import { money, fmtDate, pct, ccyTotal } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { currencyOptions } from "@/lib/currencies";
 import { createContractAction } from "@/app/actions";
+import { ExportMenu } from "@/components/export-menu";
 
 const STATUSES = ["draft", "active", "suspended", "completed", "terminated"];
 
@@ -22,18 +23,26 @@ export default async function Contracts({ searchParams }: { searchParams: Promis
     q<{ id: string; name: string }>(`SELECT id, name FROM vendor WHERE org_id=$1 ORDER BY name`, [orgId]),
   ]);
   const baseCur = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+  const totalValue = ccyTotal(stats.valueByCcy, baseCur);
 
   return (
     <div className="max-w-5xl">
-      <PageHeader title="Contracts" subtitle={`Contract management for ${orgName}`} actions={<Link href="/procurement" className="btn btn-sm">← Procurement</Link>} />
+      <PageHeader title="Contracts" subtitle={`Contract management for ${orgName}`} actions={<div className="flex flex-wrap gap-2 no-print"><Link href="/print/procurement/contracts" target="_blank" className="btn btn-sm">Print</Link><ExportMenu scope="contracts" /><Link href="/procurement" className="btn btn-sm">← Procurement</Link></div>} />
       {sp.deleted && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)" }}>Contract deleted.</div>}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         <Stat label="Contracts" value={String(stats.total)} />
         <Stat label="Active" value={String(stats.active)} />
         <Stat label="Completed" value={String(stats.completed)} />
-        <Stat label="Total value" value={money(stats.value, baseCur)} />
+        <Stat label="Total value" value={totalValue.value} sub={totalValue.mixed ? "multiple currencies" : undefined} />
       </div>
+
+      {totalValue.mixed && (
+        <div className="card p-3 mb-5 text-sm flex flex-wrap gap-x-5 gap-y-1">
+          <span style={{ color: "var(--muted)" }}>Total value by currency:</span>
+          {totalValue.parts.map(([c, v]) => <span key={c} className="tabular-nums">{money(v, c)}</span>)}
+        </div>
+      )}
 
       <form className="card p-4 mb-5 grid sm:grid-cols-3 gap-3 items-end">
         <div><Field label="Search"><input name="search" defaultValue={sp.search ?? ""} className="input" placeholder="Title, reference or provider" /></Field></div>

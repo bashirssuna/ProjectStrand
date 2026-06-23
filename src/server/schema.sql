@@ -2005,6 +2005,21 @@ CREATE TABLE IF NOT EXISTS stock_movement (
 -- Per-item currency for inventory valuation.
 ALTER TABLE stock_item ADD COLUMN IF NOT EXISTS currency text;
 
+-- Staging for bulk inventory/asset import from a spreadsheet. Parsed rows are held
+-- here for review (column mapping + preview) before being written as stock items.
+CREATE TABLE IF NOT EXISTS inventory_import (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  file_name text NOT NULL,
+  status text NOT NULL DEFAULT 'preview',   -- preview | applied | cancelled
+  header_json text,        -- JSON array of detected header labels
+  mapping_json text,       -- JSON object: field -> source column index (-1 = unmapped)
+  rows_json text,          -- JSON array of raw data rows (arrays of cells)
+  created_count integer NOT NULL DEFAULT 0,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- ===================== Disposal management (board of survey workflow) =====================
 CREATE TABLE IF NOT EXISTS disposal (
   id text PRIMARY KEY,

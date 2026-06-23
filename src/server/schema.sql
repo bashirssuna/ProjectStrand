@@ -2236,3 +2236,6 @@ CREATE TABLE IF NOT EXISTS lab_test (
 
 -- Groups samples disposed together in one bulk disposal event (board-of-survey traceability).
 ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS disposal_batch_id text;
+
+-- Link a sample to a registered freezer so cold-chain excursions/incidents can flag affected samples.
+ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS freezer_id text REFERENCES lab_freezer(id) ON DELETE SET NULL;

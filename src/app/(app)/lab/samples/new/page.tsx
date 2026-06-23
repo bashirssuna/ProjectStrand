@@ -19,6 +19,7 @@ export default async function RegisterSample({ searchParams }: { searchParams: P
     projectIds.length ? `SELECT id, code, title FROM project WHERE id IN (${projectIds.map((_, i) => `$${i + 1}`).join(",")}) ORDER BY code` : `SELECT id, code, title FROM project WHERE false`, projectIds
   );
   const types = await q<{ id: string; category: string; type: string }>(`SELECT id, category, type FROM lab_sample_type WHERE org_id=$1 ORDER BY category, type`, [orgId]);
+  const freezers = await q<{ id: string; name: string; location: string | null }>(`SELECT id, name, location FROM lab_freezer WHERE org_id=$1 AND status='active' ORDER BY name`, [orgId]);
   const seePII = canSeePII(isOrgAdmin, isSuperAdmin);
   const canCreate = await canCreateProjects(userId, isSuperAdmin);
 
@@ -100,6 +101,12 @@ export default async function RegisterSample({ searchParams }: { searchParams: P
         {/* Storage */}
         <div className="card p-4">
           <SectionTitle>Storage location</SectionTitle>
+          {freezers.length > 0 && (
+            <div className="mb-3">
+              <Field label="Registered freezer"><select name="freezerId" className="select"><option value="">— none —</option>{freezers.map((f) => <option key={f.id} value={f.id}>{f.name}{f.location ? ` · ${f.location}` : ""}</option>)}</select></Field>
+              <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>Linking to a registered freezer means temperature excursions and incidents on that unit will flag this sample.</p>
+            </div>
+          )}
           <div className="grid sm:grid-cols-3 gap-3">
             <Field label="Room"><input name="storageRoom" className="input" placeholder="e.g. Cold Room 1" /></Field>
             <Field label="Freezer / equipment"><input name="storageEquipment" className="input" placeholder="e.g. FZR-01" /></Field>

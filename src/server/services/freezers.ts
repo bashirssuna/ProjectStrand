@@ -65,3 +65,28 @@ export async function freezerStats(orgId: string): Promise<FreezerStats> {
     `SELECT COUNT(*)::int c FROM lab_freezer_incident i JOIN lab_freezer f ON f.id=i.freezer_id WHERE f.org_id=$1 AND i.resolved=false AND i.severity='critical'`, [orgId]))?.c ?? 0;
   return { total, outOfRange, openIncidents, criticalOpen };
 }
+
+// Current cold-chain status of a single freezer (for sample-level risk flagging).
+export type FreezerStatus = { name: string; lastInRange: boolean | null; lastTemp: number | null; lastReadingAt: string | null; openIncidents: number; criticalOpen: number; atRisk: boolean };
+export async function freezerStatus(freezerId: string): Promise<FreezerStatus | null> {
+  const f = await one<{ name: string }>(`SELECT name FROM lab_freezer WHERE id=$1`, [freezerId]);
+  if (!f) return null;
+  const last = await one<{ inRange: boolean; temperature: number; readingAt: string }>(`SELECT in_range AS "inRange", temperature, reading_at AS "readingAt" FROM lab_temp_log WHERE freezer_id=$1 ORDER BY reading_at DESC LIMIT 1`, [freezerId]);
+  const inc = await one<{ open: number; crit: number }>(`SELECT COUNT(*)::int open, COUNT(*) FILTER (WHERE severity='critical')::int crit FROM lab_freezer_incident WHERE freezer_id=$1 AND resolved=false`, [freezerId]);
+  const openIncidents = inc?.open ?? 0, criticalOpen = inc?.crit ?? 0;
+  const lastInRange = last ? last.inRange : null;
+  return { name: f.name, lastInRange, lastTemp: last?.temperature ?? null, lastReadingAt: last?.readingAt ?? null, openIncidents, criticalOpen, atRisk: lastInRange === false || openIncidents > 0 };
+}
+
+export type StoredSample = { id: string; sampleCode: string; typeName: string | null; studyId: string | null; visitLabel: string | null; status: string };
+export async function freezerSamples(freezerId: string, limit = 200): Promise<StoredSample[]> {
+  return await q<StoredSample>(
+    `SELECT s.id, s.sample_code AS "sampleCode", st.type AS "typeName", pa.study_id AS "studyId", v.label AS "visitLabel", s.status
+     FROM lab_sample s LEFT JOIN lab_sample_type st ON st.id=s.sample_type_id LEFT JOIN lab_participant pa ON pa.id=s.participant_id LEFT JOIN lab_visit v ON v.id=s.visit_id
+     WHERE s.freezer_id=$1 AND s.status<>'disposed' ORDER BY pa.study_id NULLS LAST, s.sample_code LIMIT ${Math.max(1, Math.min(500, limit))}`, [freezerId]
+  );
+}
+
+export async function freezerSampleCount(freezerId: string): Promise<number> {
+  return (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM lab_sample WHERE freezer_id=$1 AND status<>'disposed'`, [freezerId]))?.c ?? 0;
+}

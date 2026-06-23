@@ -20,7 +20,7 @@ export default async function EditSample({ params }: { params: Promise<{ id: str
     collectionDate: string | null; collectionTime: string | null; dateAliquoted: string | null; numberOfAliquots: number; aliquotVolume: number | null; aliquotUnit: string;
     condition: string | null; abnormalities: string | null; comments: string | null;
     room: string | null; equipment: string | null; rack: string | null; shelf: string | null; box: string | null; position: string | null; dateStored: string | null; storageTemp: string | null;
-    facility: string | null; district: string | null; site: string | null; visitLabel: string | null;
+    facility: string | null; district: string | null; site: string | null; visitLabel: string | null; freezerId: string | null;
     studyId: string | null; pName: string | null; dob: string | null; pSex: string | null;
   }>(
     `SELECT s.id, s.sample_code AS code, s.project_id AS "projectId", p.code AS "projectCode", s.status, s.sample_type_id AS "sampleTypeId", s.participant_id AS "participantId",
@@ -28,7 +28,7 @@ export default async function EditSample({ params }: { params: Promise<{ id: str
             s.aliquot_volume AS "aliquotVolume", s.aliquot_unit AS "aliquotUnit", s.condition_on_receipt AS condition, s.abnormalities, s.comments,
             s.storage_room AS room, s.storage_equipment AS equipment, s.storage_rack AS rack, s.storage_shelf AS shelf, s.storage_box AS box, s.storage_position AS position,
             s.date_stored::text AS "dateStored", s.storage_temp AS "storageTemp",
-            s.collection_facility AS facility, s.collection_district AS district, s.collection_site AS site, v.label AS "visitLabel",
+            s.collection_facility AS facility, s.collection_district AS district, s.collection_site AS site, v.label AS "visitLabel", s.freezer_id AS "freezerId",
             pa.study_id AS "studyId", pa.name AS "pName", pa.date_of_birth::text AS dob, pa.sex AS "pSex"
      FROM lab_sample s LEFT JOIN lab_participant pa ON pa.id=s.participant_id LEFT JOIN lab_visit v ON v.id=s.visit_id LEFT JOIN project p ON p.id=s.project_id
      WHERE s.id=$1 AND s.org_id=$2`, [id, orgId]
@@ -38,6 +38,7 @@ export default async function EditSample({ params }: { params: Promise<{ id: str
   if (s.status === "disposed") redirect(`/lab/samples/${id}?err=disposed`);
 
   const types = await q<{ id: string; category: string; type: string }>(`SELECT id, category, type FROM lab_sample_type WHERE org_id=$1 ORDER BY category, type`, [orgId]);
+  const freezers = await q<{ id: string; name: string; location: string | null }>(`SELECT id, name, location FROM lab_freezer WHERE org_id=$1 AND status='active' ORDER BY name`, [orgId]);
   const canStatus = s.status === "active" || s.status === "quarantined";
 
   return (
@@ -105,6 +106,9 @@ export default async function EditSample({ params }: { params: Promise<{ id: str
 
         <div className="card p-4">
           <SectionTitle>Storage location</SectionTitle>
+          {freezers.length > 0 && (
+            <div className="mb-3"><Field label="Registered freezer"><select name="freezerId" defaultValue={s.freezerId ?? ""} className="select"><option value="">— none —</option>{freezers.map((f) => <option key={f.id} value={f.id}>{f.name}{f.location ? ` · ${f.location}` : ""}</option>)}</select></Field></div>
+          )}
           <div className="grid sm:grid-cols-3 gap-3">
             <Field label="Room"><input name="storageRoom" defaultValue={s.room ?? ""} className="input" /></Field>
             <Field label="Freezer / equipment"><input name="storageEquipment" defaultValue={s.equipment ?? ""} className="input" /></Field>

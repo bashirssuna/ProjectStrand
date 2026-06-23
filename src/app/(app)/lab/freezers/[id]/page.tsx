@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { requireLabOrg } from "../../_guard";
-import { getFreezer, freezerTempLogs, freezerIncidents } from "@/server/services/freezers";
+import { getFreezer, freezerTempLogs, freezerIncidents, freezerSamples, freezerSampleCount } from "@/server/services/freezers";
 import { PageHeader, SectionTitle, Field, Badge, StatusBadge, Empty, Stat } from "@/components/ui";
 import { fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
@@ -23,9 +23,10 @@ export default async function FreezerDetail({ params, searchParams }: { params: 
 
   const f = await getFreezer(orgId, id);
   if (!f) notFound();
-  const [logs, incidents] = await Promise.all([freezerTempLogs(id, 60), freezerIncidents(id)]);
+  const [logs, incidents, samples, sampleCount] = await Promise.all([freezerTempLogs(id, 60), freezerIncidents(id), freezerSamples(id, 200), freezerSampleCount(id)]);
   const latest = logs[0] ?? null;
   const openInc = incidents.filter((i) => !i.resolved).length;
+  const atRisk = (latest && !latest.inRange) || openInc > 0;
   const now = new Date().toISOString().slice(0, 16);
 
   // Sparkline from the most recent readings (oldest -> newest).
@@ -83,6 +84,26 @@ export default async function FreezerDetail({ params, searchParams }: { params: 
         </div>
         {spark && <div className="mt-4">{spark}<div className="text-xs mt-1" style={{ color: "var(--muted)" }}>Recent readings (oldest → newest); shaded band is the acceptable range, red points are excursions.</div></div>}
         {f.notes && <p className="text-sm mt-3"><span style={{ color: "var(--muted)" }}>Notes: </span>{f.notes}</p>}
+      </div>
+
+      {/* Samples stored here */}
+      <div className="card p-4 mb-5">
+        <SectionTitle>Samples stored here ({sampleCount})</SectionTitle>
+        {atRisk && sampleCount > 0 && (
+          <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
+            {sampleCount} sample{sampleCount === 1 ? "" : "s"} may be affected — this freezer {latest && !latest.inRange ? "has an out-of-range reading" : ""}{latest && !latest.inRange && openInc > 0 ? " and " : ""}{openInc > 0 ? `has ${openInc} open incident${openInc === 1 ? "" : "s"}` : ""}. Review integrity before use.
+          </div>
+        )}
+        {sampleCount === 0 ? (
+          <p className="text-sm" style={{ color: "var(--muted)" }}>No samples are linked to this freezer. Link samples by choosing this freezer in the sample&apos;s storage location.</p>
+        ) : (
+          <div className="overflow-x-auto"><table className="w-full text-sm">
+            <thead><tr><th className="th text-left">Sample</th><th className="th text-left">Type</th><th className="th text-left">Study ID</th><th className="th text-left">Visit</th><th className="th text-left">Status</th></tr></thead>
+            <tbody>{samples.map((sm) => (
+              <tr key={sm.id}><td className="td"><Link href={`/lab/samples/${sm.id}`} className="font-mono text-xs hover:underline" style={{ color: "var(--brand)" }}>{sm.sampleCode}</Link></td><td className="td">{sm.typeName ?? "—"}</td><td className="td">{sm.studyId ?? "—"}</td><td className="td">{sm.visitLabel ?? "—"}</td><td className="td"><StatusBadge status={sm.status} /></td></tr>
+            ))}</tbody>
+          </table>{sampleCount > samples.length && <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>Showing {samples.length} of {sampleCount}.</p>}</div>
+        )}
       </div>
 
       {/* Record reading */}

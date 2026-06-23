@@ -2222,4 +2222,6 @@ CREATE TABLE IF NOT EXISTS lab_test (
 
 
 ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS disposal_batch_id text;
+
+ALTER TABLE lab_sample ADD COLUMN IF NOT EXISTS freezer_id text REFERENCES lab_freezer(id) ON DELETE SET NULL;
 `;

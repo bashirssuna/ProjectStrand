@@ -4,6 +4,7 @@ import { requireLabOrg } from "../../_guard";
 import { q, one } from "@/server/db";
 import { accessibleProjectIds, canSeePII, maskName, formatAge } from "@/server/services/lab";
 import { sampleTests, listAssays } from "@/server/services/tests";
+import { freezerStatus } from "@/server/services/freezers";
 import { PageHeader, SectionTitle, Field, Badge, StatusBadge, Stat } from "@/components/ui";
 import { fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
@@ -27,7 +28,7 @@ export default async function SampleDetail({ params, searchParams }: { params: P
     room: string | null; equipment: string | null; rack: string | null; shelf: string | null; box: string | null; position: string | null;
     dateStored: string | null; storageTemp: string | null; storedByName: string | null;
     condition: string | null; abnormalities: string | null; comments: string | null;
-    facility: string | null; district: string | null; site: string | null; visitLabel: string | null; visitDate: string | null; freezeThawCount: number; maxFreezeThaw: number | null;
+    facility: string | null; district: string | null; site: string | null; visitLabel: string | null; visitDate: string | null; freezeThawCount: number; maxFreezeThaw: number | null; freezerId: string | null; freezerName: string | null;
     disposalDate: string | null; disposalMethod: string | null; disposalReason: string | null; disposalWitness: string | null; disposedByName: string | null;
     createdByName: string | null; createdAt: string;
   }>(
@@ -39,13 +40,14 @@ export default async function SampleDetail({ params, searchParams }: { params: P
             s.storage_room AS room, s.storage_equipment AS equipment, s.storage_rack AS rack, s.storage_shelf AS shelf, s.storage_box AS box, s.storage_position AS position,
             s.date_stored AS "dateStored", s.storage_temp AS "storageTemp", s.stored_by_name AS "storedByName",
             s.condition_on_receipt AS condition, s.abnormalities, s.comments,
-            s.collection_facility AS facility, s.collection_district AS district, s.collection_site AS site, v.label AS "visitLabel", v.visit_date AS "visitDate", s.freeze_thaw_count AS "freezeThawCount", st.max_freeze_thaw AS "maxFreezeThaw",
+            s.collection_facility AS facility, s.collection_district AS district, s.collection_site AS site, v.label AS "visitLabel", v.visit_date AS "visitDate", s.freeze_thaw_count AS "freezeThawCount", st.max_freeze_thaw AS "maxFreezeThaw", s.freezer_id AS "freezerId", fz.name AS "freezerName",
             s.disposal_date AS "disposalDate", s.disposal_method AS "disposalMethod", s.disposal_reason AS "disposalReason", s.disposal_witness AS "disposalWitness", s.disposed_by_name AS "disposedByName",
             s.created_by_name AS "createdByName", s.created_at AS "createdAt"
      FROM lab_sample s
      LEFT JOIN lab_participant pa ON pa.id=s.participant_id
      LEFT JOIN lab_sample_type st ON st.id=s.sample_type_id
      LEFT JOIN lab_visit v ON v.id=s.visit_id
+     LEFT JOIN lab_freezer fz ON fz.id=s.freezer_id
      LEFT JOIN project p ON p.id=s.project_id
      WHERE s.id=$1 AND s.org_id=$2`, [id, orgId]
   );
@@ -83,6 +85,7 @@ export default async function SampleDetail({ params, searchParams }: { params: P
   const disposed = s.status === "disposed";
   const tests = await sampleTests(id);
   const assays = await listAssays(orgId);
+  const frz = s.freezerId ? await freezerStatus(s.freezerId) : null;
   const testNote: Record<string, string> = { ordered: "Test ordered.", result: "Result recorded.", status: "Test status updated.", removed: "Test removed." };
 
   // Chain of custody (oldest first)
@@ -104,6 +107,11 @@ export default async function SampleDetail({ params, searchParams }: { params: P
       {sp.retrieved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Retrieval logged.</div>}
       {sp.ft && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Freeze-thaw cycle recorded.</div>}
       {sp.test && testNote[sp.test] && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>{testNote[sp.test]}</div>}
+      {frz?.atRisk && !disposed && (
+        <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
+          Cold-chain alert: this sample&apos;s freezer <strong>{frz.name}</strong> {frz.lastInRange === false ? "has an out-of-range reading" : ""}{frz.lastInRange === false && frz.openIncidents > 0 ? " and " : ""}{frz.openIncidents > 0 ? `has ${frz.openIncidents} open incident${frz.openIncidents === 1 ? "" : "s"}${frz.criticalOpen > 0 ? " (critical)" : ""}` : ""}. Check sample integrity. <Link href={`/lab/freezers/${s.freezerId}`} style={{ color: "var(--brand)" }}>View freezer →</Link>
+        </div>
+      )}
       {sp.returned && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Return to storage recorded.</div>}
       {sp.disposed && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Sample disposed.</div>}
       {sp.consent && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Consent status updated.</div>}
@@ -156,6 +164,7 @@ export default async function SampleDetail({ params, searchParams }: { params: P
               <div><span style={{ color: "var(--muted)" }}>Aliquoted: </span>{s.dateAliquoted ? `${fmtDate(s.dateAliquoted)} · ${s.numberOfAliquots} × ${s.aliquotVolume ?? "?"} ${s.aliquotUnit}` : "—"}</div>
               <div><span style={{ color: "var(--muted)" }}>Temperature: </span>{s.storageTemp ?? "—"}</div>
               <div className="sm:col-span-2"><span style={{ color: "var(--muted)" }}>Location: </span><span className="font-mono text-xs">{storagePath}</span>{s.dateStored ? <span style={{ color: "var(--muted)" }}> · stored {fmtDate(s.dateStored)}</span> : ""}</div>
+              {s.freezerName && <div className="sm:col-span-2"><span style={{ color: "var(--muted)" }}>Freezer: </span><Link href={`/lab/freezers/${s.freezerId}`} className="hover:underline" style={{ color: "var(--brand)" }}>{s.freezerName}</Link>{frz ? (frz.atRisk ? <Badge tone="danger">at risk</Badge> : <Badge tone="ok">in range</Badge>) : null}{frz?.lastTemp != null ? <span className="text-xs" style={{ color: "var(--muted)" }}> · last {frz.lastTemp} °C</span> : null}</div>}
               {(s.facility || s.district || s.site) && <div className="sm:col-span-2"><span style={{ color: "var(--muted)" }}>Collection origin: </span>{[s.facility, s.district, s.site].filter(Boolean).join(" · ")}</div>}
               {s.abnormalities && <div className="sm:col-span-2"><span style={{ color: "var(--warn)" }}>Abnormalities: </span>{s.abnormalities}</div>}
               {s.comments && <div className="sm:col-span-2"><span style={{ color: "var(--muted)" }}>Comments: </span>{s.comments}</div>}

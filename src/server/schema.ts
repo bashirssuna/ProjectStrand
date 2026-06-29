@@ -1226,6 +1226,66 @@ CREATE TABLE IF NOT EXISTS er_case_event (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_er_case_event_case ON er_case_event(case_id);
+
+-- ===================== Onboarding / Exit Checklists =====================
+CREATE TABLE IF NOT EXISTS checklist_template (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  type text NOT NULL DEFAULT 'onboarding',
+  name text NOT NULL,
+  description text,
+  active boolean NOT NULL DEFAULT true,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_checklist_template_org ON checklist_template(org_id);
+
+CREATE TABLE IF NOT EXISTS checklist_template_item (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  template_id text NOT NULL REFERENCES checklist_template(id) ON DELETE CASCADE,
+  category text,
+  title text NOT NULL,
+  description text,
+  assignee_role text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_checklist_template_item_tpl ON checklist_template_item(template_id);
+
+CREATE TABLE IF NOT EXISTS checklist_instance (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  template_id text REFERENCES checklist_template(id) ON DELETE SET NULL,
+  type text NOT NULL DEFAULT 'onboarding',
+  title text NOT NULL,
+  status text NOT NULL DEFAULT 'open',
+  started_date date,
+  due_date date,
+  completed_date date,
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_checklist_instance_org ON checklist_instance(org_id);
+
+CREATE TABLE IF NOT EXISTS checklist_instance_item (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  instance_id text NOT NULL REFERENCES checklist_instance(id) ON DELETE CASCADE,
+  category text,
+  title text NOT NULL,
+  description text,
+  assignee text,
+  status text NOT NULL DEFAULT 'pending',
+  done_by text, done_at timestamptz,
+  due_date date,
+  notes text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_checklist_instance_item_inst ON checklist_instance_item(instance_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

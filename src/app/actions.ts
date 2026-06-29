@@ -5990,3 +5990,121 @@ export async function addCaseEventAction(formData: FormData) {
      _rstr(formData, "eventDate") ?? new Date().toISOString().slice(0, 10), String(formData.get("author") || userName), fileKey, fileName]);
   redirect(`/hr/relations/${cid}`);
 }
+
+/* ===================== Onboarding / Exit Checklists ===================== */
+export async function createChecklistTemplateAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/hr/checklists?err=name");
+  const tid = id("clt");
+  await q(`INSERT INTO checklist_template (id, org_id, type, name, description, created_by_id, created_by_name) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [tid, orgId, String(formData.get("type") || "onboarding"), name, _rstr(formData, "description"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "checklist_template", entityId: tid, after: { name } });
+  redirect(`/hr/checklists/template/${tid}`);
+}
+export async function addTemplateItemAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const tid = String(formData.get("templateId") || "");
+  const title = String(formData.get("title") || "").trim();
+  if (!title) redirect(`/hr/checklists/template/${tid}?err=title`);
+  const so = (await one<{ m: number }>(`SELECT COALESCE(MAX(sort_order),0)+1 m FROM checklist_template_item WHERE template_id=$1`, [tid]))?.m ?? 1;
+  await q(`INSERT INTO checklist_template_item (id, org_id, template_id, category, title, description, assignee_role, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("clti"), orgId, tid, _rstr(formData, "category"), title, _rstr(formData, "description"), _rstr(formData, "assigneeRole"), so]);
+  redirect(`/hr/checklists/template/${tid}`);
+}
+export async function deleteTemplateItemAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const tid = String(formData.get("templateId") || "");
+  await q(`DELETE FROM checklist_template_item WHERE id=$1 AND org_id=$2`, [String(formData.get("itemId") || ""), orgId]);
+  redirect(`/hr/checklists/template/${tid}`);
+}
+export async function deleteChecklistTemplateAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  await q(`DELETE FROM checklist_template WHERE id=$1 AND org_id=$2`, [String(formData.get("templateId") || ""), orgId]);
+  redirect(`/hr/checklists`);
+}
+
+export async function startChecklistAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const templateId = String(formData.get("templateId") || "");
+  const employeeId = String(formData.get("employeeId") || "") || null;
+  const tpl = await one<{ name: string; type: string }>(`SELECT name, type FROM checklist_template WHERE id=$1 AND org_id=$2`, [templateId, orgId]);
+  if (!tpl) redirect("/hr/checklists?err=tpl");
+  const emp = employeeId ? await one<{ n: string }>(`SELECT (first_name || ' ' || last_name) n FROM employee WHERE id=$1`, [employeeId]) : null;
+  const instId = id("cli");
+  await q(`INSERT INTO checklist_instance (id, org_id, employee_id, template_id, type, title, started_date, due_date, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,CURRENT_DATE,$7,$8,$9)`,
+    [instId, orgId, employeeId, templateId, tpl.type, `${tpl.name}${emp ? ` — ${emp.n}` : ""}`, _rstr(formData, "dueDate"), userId, userName]);
+  const items = await q<{ category: string | null; title: string; description: string | null; assigneeRole: string | null }>(
+    `SELECT category, title, description, assignee_role AS "assigneeRole" FROM checklist_template_item WHERE template_id=$1 AND org_id=$2 ORDER BY sort_order, created_at`, [templateId, orgId]);
+  let i = 0;
+  for (const it of items) {
+    await q(`INSERT INTO checklist_instance_item (id, org_id, instance_id, category, title, description, assignee, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [id("cii"), orgId, instId, it.category, it.title, it.description, it.assigneeRole, i++]);
+  }
+  await writeAudit({ orgId, userId, action: "create", entity: "checklist_instance", entityId: instId, after: { template: tpl.name, items: items.length } });
+  redirect(`/hr/checklists/${instId}`);
+}
+
+export async function addInstanceItemAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const instId = String(formData.get("instanceId") || "");
+  const title = String(formData.get("title") || "").trim();
+  if (!title) redirect(`/hr/checklists/${instId}?err=title`);
+  const so = (await one<{ m: number }>(`SELECT COALESCE(MAX(sort_order),0)+1 m FROM checklist_instance_item WHERE instance_id=$1`, [instId]))?.m ?? 1;
+  await q(`INSERT INTO checklist_instance_item (id, org_id, instance_id, category, title, assignee, due_date, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("cii"), orgId, instId, _rstr(formData, "category"), title, _rstr(formData, "assignee"), _rstr(formData, "dueDate"), so]);
+  redirect(`/hr/checklists/${instId}`);
+}
+
+// Relationship-aware: HR (org admin) or the employee whose checklist it is.
+async function checklistAccess(instanceId: string) {
+  const user = await requireUser();
+  const org = await getUserOrg(user.id);
+  if (!org) redirect("/dashboard");
+  const c = await one<{ orgId: string; employeeId: string | null }>(`SELECT org_id AS "orgId", employee_id AS "employeeId" FROM checklist_instance WHERE id=$1`, [instanceId]);
+  if (!c || c.orgId !== org.id) redirect("/dashboard");
+  const myEmp = await employeeForUser(user.id);
+  const isOrgAdmin = !!org.isOrgAdmin || !!user.isSuperAdmin;
+  const isOwner = !!myEmp && !!c.employeeId && myEmp.id === c.employeeId;
+  if (!isOrgAdmin && !isOwner) redirect("/dashboard");
+  return { user, orgId: org.id, userName: user.name, isOrgAdmin, isOwner };
+}
+function checklistReturn(formData: FormData, instId: string): string {
+  return String(formData.get("returnTo") || "") === "portal" ? `/portal/onboarding/${instId}` : `/hr/checklists/${instId}`;
+}
+
+export async function toggleChecklistItemAction(formData: FormData) {
+  const instId = String(formData.get("instanceId") || "");
+  const acc = await checklistAccess(instId);
+  const itemId = String(formData.get("itemId") || "");
+  const status = String(formData.get("status") || "pending");
+  await q(`UPDATE checklist_instance_item
+           SET status=$2, notes=COALESCE($3,notes),
+               done_by = CASE WHEN $2 IN ('done','na') THEN $4 ELSE NULL END,
+               done_at = CASE WHEN $2 IN ('done','na') THEN now() ELSE NULL END
+           WHERE id=$1 AND instance_id=$5 AND org_id=$6`,
+    [itemId, status, _rstr(formData, "notes"), acc.userName, instId, acc.orgId]);
+  redirect(checklistReturn(formData, instId));
+}
+
+export async function completeChecklistAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const instId = String(formData.get("instanceId") || "");
+  await q(`UPDATE checklist_instance SET status='completed', completed_date=CURRENT_DATE WHERE id=$1 AND org_id=$2`, [instId, orgId]);
+  await writeAudit({ orgId, userId, action: "complete", entity: "checklist_instance", entityId: instId });
+  redirect(`/hr/checklists/${instId}`);
+}
+export async function reopenChecklistAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const instId = String(formData.get("instanceId") || "");
+  await q(`UPDATE checklist_instance SET status='open', completed_date=NULL WHERE id=$1 AND org_id=$2`, [instId, orgId]);
+  redirect(`/hr/checklists/${instId}`);
+}
+export async function deleteChecklistInstanceAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const instId = String(formData.get("instanceId") || "");
+  await q(`DELETE FROM checklist_instance WHERE id=$1 AND org_id=$2`, [instId, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "checklist_instance", entityId: instId });
+  redirect(`/hr/checklists`);
+}

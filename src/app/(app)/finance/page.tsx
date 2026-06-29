@@ -54,6 +54,10 @@ export default async function FinanceHome() {
           <div className="font-display font-semibold">Financial statements</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Trial balance, income statement, balance sheet &amp; cash flow.</div>
         </Link>
+        <Link href="/finance/funding" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Grant agreements</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Donor funding pipeline: committed amounts, expected tranches and income received.</div>
+        </Link>
         <Link href="/finance/revenue" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
           <div className="font-display font-semibold">Institutional revenue</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Overhead recovered per project &amp; other income, with a contribution pie chart.</div>

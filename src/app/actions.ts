@@ -6196,3 +6196,80 @@ export async function deletePettyCashAccountAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "delete", entity: "petty_cash_account", entityId: aid });
   redirect(`/finance/petty-cash`);
 }
+
+/* ===================== Grant Agreements / Income Register ===================== */
+export async function createAgreementAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const donor = String(formData.get("donor") || "").trim();
+  const title = String(formData.get("title") || "").trim();
+  if (!donor || !title) redirect("/finance/funding?err=req");
+  const aid = id("fag");
+  let fileKey: string | null = null, fileName: string | null = null;
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); fileName = file.name; fileKey = await saveUpload(aid, file.name, buf); }
+  await q(`INSERT INTO funding_agreement (id, org_id, donor, title, reference, project_id, currency, total_amount, signed_date, start_date, end_date, focal_person, file_key, file_name, notes, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+    [aid, orgId, donor, title, _rstr(formData, "reference"), _rstr(formData, "projectId"), String(formData.get("currency") || "UGX"),
+     _rnum(formData, "totalAmount") ?? 0, _rstr(formData, "signedDate"), _rstr(formData, "startDate"), _rstr(formData, "endDate"),
+     _rstr(formData, "focalPerson"), fileKey, fileName, _rstr(formData, "notes"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "funding_agreement", entityId: aid, after: { donor, title } });
+  redirect(`/finance/funding/${aid}`);
+}
+
+export async function addTrancheAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const aid = String(formData.get("agreementId") || "");
+  const label = String(formData.get("label") || "").trim();
+  if (!label) redirect(`/finance/funding/${aid}?err=label`);
+  const so = (await one<{ m: number }>(`SELECT COALESCE(MAX(sort_order),0)+1 m FROM funding_tranche WHERE agreement_id=$1`, [aid]))?.m ?? 1;
+  await q(`INSERT INTO funding_tranche (id, org_id, agreement_id, label, expected_date, amount, condition, sort_order) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [id("ftr"), orgId, aid, label, _rstr(formData, "expectedDate"), _rnum(formData, "amount") ?? 0, _rstr(formData, "condition"), so]);
+  redirect(`/finance/funding/${aid}`);
+}
+export async function deleteTrancheAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const aid = String(formData.get("agreementId") || "");
+  await q(`DELETE FROM funding_tranche WHERE id=$1 AND org_id=$2`, [String(formData.get("trancheId") || ""), orgId]);
+  redirect(`/finance/funding/${aid}`);
+}
+
+export async function recordReceiptAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const aid = String(formData.get("agreementId") || "");
+  const amount = _rnum(formData, "amount") ?? 0;
+  if (amount <= 0) redirect(`/finance/funding/${aid}?err=amount`);
+  const rid = id("frc");
+  let fileKey: string | null = null, fileName: string | null = null;
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); fileName = file.name; fileKey = await saveUpload(rid, file.name, buf); }
+  await q(`INSERT INTO funding_receipt (id, org_id, agreement_id, tranche_id, receipt_date, amount, reference, method, file_key, file_name, notes, recorded_by_id, recorded_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [rid, orgId, aid, _rstr(formData, "trancheId"), _rstr(formData, "receiptDate") ?? new Date().toISOString().slice(0, 10), amount,
+     _rstr(formData, "reference"), _rstr(formData, "method"), fileKey, fileName, _rstr(formData, "notes"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "funding_receipt", entityId: rid, after: { agreementId: aid, amount } });
+  redirect(`/finance/funding/${aid}`);
+}
+export async function deleteFundingReceiptAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const aid = String(formData.get("agreementId") || "");
+  const rid = String(formData.get("receiptId") || "");
+  await q(`DELETE FROM funding_receipt WHERE id=$1 AND org_id=$2`, [rid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "funding_receipt", entityId: rid });
+  redirect(`/finance/funding/${aid}`);
+}
+
+export async function closeAgreementAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const aid = String(formData.get("agreementId") || "");
+  const reopen = formData.get("reopen") === "1";
+  await q(`UPDATE funding_agreement SET status=$2 WHERE id=$1 AND org_id=$3`, [aid, reopen ? "active" : "closed", orgId]);
+  await writeAudit({ orgId, userId, action: reopen ? "reopen" : "close", entity: "funding_agreement", entityId: aid });
+  redirect(`/finance/funding/${aid}`);
+}
+export async function deleteAgreementAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const aid = String(formData.get("agreementId") || "");
+  await q(`DELETE FROM funding_agreement WHERE id=$1 AND org_id=$2`, [aid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "funding_agreement", entityId: aid });
+  redirect(`/finance/funding`);
+}

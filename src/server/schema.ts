@@ -1322,6 +1322,55 @@ CREATE TABLE IF NOT EXISTS petty_cash_txn (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_petty_cash_txn_account ON petty_cash_txn(account_id);
+
+-- ===================== Grant Agreements / Income Register =====================
+CREATE TABLE IF NOT EXISTS funding_agreement (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  donor text NOT NULL,
+  title text NOT NULL,
+  reference text,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
+  currency text NOT NULL DEFAULT 'UGX',
+  total_amount numeric(18,2) NOT NULL DEFAULT 0,
+  signed_date date, start_date date, end_date date,
+  status text NOT NULL DEFAULT 'active',
+  focal_person text,
+  file_key text, file_name text,
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_funding_agreement_org ON funding_agreement(org_id);
+
+CREATE TABLE IF NOT EXISTS funding_tranche (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  agreement_id text NOT NULL REFERENCES funding_agreement(id) ON DELETE CASCADE,
+  label text NOT NULL,
+  expected_date date,
+  amount numeric(18,2) NOT NULL DEFAULT 0,
+  condition text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_funding_tranche_agreement ON funding_tranche(agreement_id);
+
+CREATE TABLE IF NOT EXISTS funding_receipt (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  agreement_id text NOT NULL REFERENCES funding_agreement(id) ON DELETE CASCADE,
+  tranche_id text REFERENCES funding_tranche(id) ON DELETE SET NULL,
+  receipt_date date NOT NULL,
+  amount numeric(18,2) NOT NULL,
+  reference text,
+  method text,
+  file_key text, file_name text,
+  notes text,
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_funding_receipt_agreement ON funding_receipt(agreement_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

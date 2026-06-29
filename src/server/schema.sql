@@ -1338,6 +1338,57 @@ CREATE TABLE IF NOT EXISTS petty_cash_txn (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_petty_cash_txn_account ON petty_cash_txn(account_id);
+
+-- ===================== Grant Agreements / Income Register =====================
+-- A signed donor/funding agreement: total committed, with a tranche schedule
+-- (expected instalments) and receipts of grant income recorded against it.
+CREATE TABLE IF NOT EXISTS funding_agreement (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  donor text NOT NULL,
+  title text NOT NULL,
+  reference text,                              -- agreement / contract no.
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
+  currency text NOT NULL DEFAULT 'UGX',
+  total_amount numeric(18,2) NOT NULL DEFAULT 0,
+  signed_date date, start_date date, end_date date,
+  status text NOT NULL DEFAULT 'active',        -- active | closed | draft
+  focal_person text,
+  file_key text, file_name text,                -- signed agreement document
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_funding_agreement_org ON funding_agreement(org_id);
+
+CREATE TABLE IF NOT EXISTS funding_tranche (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  agreement_id text NOT NULL REFERENCES funding_agreement(id) ON DELETE CASCADE,
+  label text NOT NULL,                          -- 'Tranche 1', 'Year 1' ...
+  expected_date date,
+  amount numeric(18,2) NOT NULL DEFAULT 0,
+  condition text,                               -- milestone / condition for release
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_funding_tranche_agreement ON funding_tranche(agreement_id);
+
+CREATE TABLE IF NOT EXISTS funding_receipt (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  agreement_id text NOT NULL REFERENCES funding_agreement(id) ON DELETE CASCADE,
+  tranche_id text REFERENCES funding_tranche(id) ON DELETE SET NULL,
+  receipt_date date NOT NULL,
+  amount numeric(18,2) NOT NULL,
+  reference text,                               -- bank / transfer reference
+  method text,                                  -- bank transfer | cheque | cash | mobile
+  file_key text, file_name text,                -- remittance advice / receipt
+  notes text,
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_funding_receipt_agreement ON funding_receipt(agreement_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

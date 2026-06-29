@@ -1496,6 +1496,44 @@ CREATE TABLE IF NOT EXISTS cash_forecast_line (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_cash_forecast_line_fc ON cash_forecast_line(forecast_id);
+
+-- ===================== Whistleblower / Confidential Reporting =====================
+-- A confidential (optionally anonymous) report. The tracking_code is the
+-- reporter's access token for following up without an account.
+CREATE TABLE IF NOT EXISTS whistleblower_report (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  tracking_code text UNIQUE NOT NULL,
+  category text,
+  title text NOT NULL,
+  description text,
+  is_anonymous boolean NOT NULL DEFAULT true,
+  reporter_name text, reporter_contact text,        -- only if the reporter chose to identify
+  incident_date date, location text, persons_involved text,
+  severity text NOT NULL DEFAULT 'medium',           -- low | medium | high | critical
+  status text NOT NULL DEFAULT 'submitted',          -- submitted | under_review | investigating | resolved | dismissed | closed
+  handler text,                                      -- assigned reviewer / ethics officer
+  retaliation_concern boolean NOT NULL DEFAULT false,
+  outcome text, outcome_notes text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  closed_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_whistleblower_report_org ON whistleblower_report(org_id);
+CREATE INDEX IF NOT EXISTS idx_whistleblower_report_code ON whistleblower_report(tracking_code);
+
+-- Two-way thread. internal notes are visible to reviewers only (never the reporter).
+CREATE TABLE IF NOT EXISTS whistleblower_message (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  report_id text NOT NULL REFERENCES whistleblower_report(id) ON DELETE CASCADE,
+  sender text NOT NULL,                              -- reporter | reviewer
+  author_name text,                                  -- reviewer name; null for anonymous reporter
+  body text,
+  internal boolean NOT NULL DEFAULT false,
+  file_key text, file_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_whistleblower_message_report ON whistleblower_message(report_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

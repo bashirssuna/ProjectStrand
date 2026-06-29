@@ -78,6 +78,10 @@ export default async function FinanceHome() {
           <div className="font-display font-semibold">Asset register</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Fixed assets with straight-line depreciation posting.</div>
         </Link>
+        <Link href="/finance/whistleblower" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Whistleblower reports</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Confidential reporting channel with anonymous intake and case handling.</div>
+        </Link>
         <Link href="/finance/audit" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
           <div className="font-display font-semibold">Audit &amp; compliance</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Control checks plus the append-only financial audit trail.</div>

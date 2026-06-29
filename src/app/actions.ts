@@ -6433,3 +6433,95 @@ export async function deleteForecastAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "delete", entity: "cash_forecast", entityId: fid });
   redirect(`/finance/cash-forecast`);
 }
+
+/* ===================== Whistleblower / Confidential Reporting ===================== */
+// Public submission — intentionally unauthenticated (the channel must be open).
+// Resolves the org from its slug; only ever inserts a report. No data is read back.
+export async function submitWhistleblowerReportAction(formData: FormData) {
+  const slug = String(formData.get("slug") || "").trim();
+  const org = await one<{ id: string }>(`SELECT id FROM organization WHERE slug=$1`, [slug]);
+  if (!org) redirect(`/report/track?err=org`);
+  const title = String(formData.get("title") || "").trim();
+  const description = String(formData.get("description") || "").trim();
+  if (!title || !description) redirect(`/report/${slug}?err=req`);
+  const isAnon = formData.get("anonymous") === "on";
+  const code = (globalThis.crypto?.randomUUID?.() ?? id("wb")).replace(/-/g, "").slice(0, 12).toUpperCase();
+  const rid = id("wbr");
+  await q(`INSERT INTO whistleblower_report (id, org_id, tracking_code, category, title, description, is_anonymous, reporter_name, reporter_contact, incident_date, location, persons_involved, retaliation_concern)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [rid, org.id, code, _rstr(formData, "category"), title.slice(0, 300), description.slice(0, 8000), isAnon,
+     isAnon ? null : _rstr(formData, "reporterName"), isAnon ? null : _rstr(formData, "reporterContact"),
+     _rstr(formData, "incidentDate"), _rstr(formData, "location"), _rstr(formData, "personsInvolved"), formData.get("retaliation") === "on"]);
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) {
+    const mid = id("wbm"); const buf = Buffer.from(await file.arrayBuffer());
+    const key = await saveUpload(mid, file.name, buf);
+    await q(`INSERT INTO whistleblower_message (id, org_id, report_id, sender, body, file_key, file_name) VALUES ($1,$2,$3,'reporter','Attachment provided at submission',$4,$5)`, [mid, org.id, rid, key, file.name]);
+  }
+  redirect(`/report/${slug}/submitted?code=${code}`);
+}
+
+// Public follow-up — add information to an existing report using the tracking code.
+export async function addReporterMessageAction(formData: FormData) {
+  const code = String(formData.get("code") || "").trim();
+  const r = await one<{ id: string; orgId: string }>(`SELECT id, org_id AS "orgId" FROM whistleblower_report WHERE tracking_code=$1`, [code]);
+  if (!r) redirect(`/report/track?err=code`);
+  const body = String(formData.get("body") || "").trim();
+  if (!body) redirect(`/report/track?code=${encodeURIComponent(code)}`);
+  const mid = id("wbm");
+  let fileKey: string | null = null, fileName: string | null = null;
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); fileName = file.name; fileKey = await saveUpload(mid, file.name, buf); }
+  await q(`INSERT INTO whistleblower_message (id, org_id, report_id, sender, body, file_key, file_name) VALUES ($1,$2,$3,'reporter',$4,$5,$6)`,
+    [mid, r.orgId, r.id, body.slice(0, 8000), fileKey, fileName]);
+  redirect(`/report/track?code=${encodeURIComponent(code)}&sent=1`);
+}
+
+// ---- Reviewer side (org admins / designated officers) ----
+export async function setWhistleblowerStatusAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const rid = String(formData.get("reportId") || "");
+  const status = String(formData.get("status") || "submitted");
+  const closing = ["resolved", "dismissed", "closed"].includes(status);
+  await q(`UPDATE whistleblower_report SET status=$2, closed_at = CASE WHEN $3 THEN COALESCE(closed_at, now()) ELSE NULL END WHERE id=$1 AND org_id=$4`,
+    [rid, status, closing, orgId]);
+  await writeAudit({ orgId, userId, action: "status", entity: "whistleblower_report", entityId: rid, after: { status } });
+  redirect(`/finance/whistleblower/${rid}`);
+}
+export async function triageWhistleblowerAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const rid = String(formData.get("reportId") || "");
+  await q(`UPDATE whistleblower_report SET handler=$2, severity=$3 WHERE id=$1 AND org_id=$4`,
+    [rid, _rstr(formData, "handler"), String(formData.get("severity") || "medium"), orgId]);
+  await writeAudit({ orgId, userId, action: "triage", entity: "whistleblower_report", entityId: rid });
+  redirect(`/finance/whistleblower/${rid}`);
+}
+export async function recordWhistleblowerOutcomeAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const rid = String(formData.get("reportId") || "");
+  await q(`UPDATE whistleblower_report SET outcome=$2, outcome_notes=$3, status='closed', closed_at=COALESCE(closed_at, now()) WHERE id=$1 AND org_id=$4`,
+    [rid, _rstr(formData, "outcome"), _rstr(formData, "outcomeNotes"), orgId]);
+  await writeAudit({ orgId, userId, action: "outcome", entity: "whistleblower_report", entityId: rid });
+  redirect(`/finance/whistleblower/${rid}`);
+}
+export async function addReviewerMessageAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const rid = String(formData.get("reportId") || "");
+  const body = String(formData.get("body") || "").trim();
+  if (!body) redirect(`/finance/whistleblower/${rid}?err=body`);
+  const mid = id("wbm");
+  let fileKey: string | null = null, fileName: string | null = null;
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); fileName = file.name; fileKey = await saveUpload(mid, file.name, buf); }
+  await q(`INSERT INTO whistleblower_message (id, org_id, report_id, sender, author_name, body, internal, file_key, file_name) VALUES ($1,$2,$3,'reviewer',$4,$5,$6,$7,$8)`,
+    [mid, orgId, rid, userName, body, formData.get("internal") === "on", fileKey, fileName]);
+  await writeAudit({ orgId, userId, action: "message", entity: "whistleblower_report", entityId: rid, after: { internal: formData.get("internal") === "on" } });
+  redirect(`/finance/whistleblower/${rid}`);
+}
+export async function deleteWhistleblowerReportAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const rid = String(formData.get("reportId") || "");
+  await q(`DELETE FROM whistleblower_report WHERE id=$1 AND org_id=$2`, [rid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "whistleblower_report", entityId: rid });
+  redirect(`/finance/whistleblower`);
+}

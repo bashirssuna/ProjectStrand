@@ -6273,3 +6273,102 @@ export async function deleteAgreementAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "delete", entity: "funding_agreement", entityId: aid });
   redirect(`/finance/funding`);
 }
+
+/* ===================== Reserves & Investments (Treasury) ===================== */
+const _resBal = async (orgId: string, fundId: string): Promise<number> =>
+  (await one<{ b: number }>(`SELECT COALESCE(SUM(CASE WHEN type='utilization' THEN -amount ELSE amount END),0)::float8 b FROM reserve_movement WHERE fund_id=$1 AND org_id=$2`, [fundId, orgId]))?.b ?? 0;
+const _invOut = async (orgId: string, invId: string): Promise<number> =>
+  (await one<{ o: number }>(`SELECT (i.principal + COALESCE((SELECT SUM(CASE WHEN type IN ('withdrawal','maturity') THEN -amount WHEN type='interest' THEN 0 ELSE amount END) FROM investment_movement WHERE investment_id=i.id),0))::float8 o FROM investment i WHERE i.id=$1 AND i.org_id=$2`, [invId, orgId]))?.o ?? 0;
+
+export async function createReserveFundAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/finance/treasury?err=resname");
+  const fid = id("rsv");
+  await q(`INSERT INTO reserve_fund (id, org_id, name, type, purpose, currency, target_amount, opened_date, notes, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_DATE,$8,$9,$10)`,
+    [fid, orgId, name, String(formData.get("type") || "general"), _rstr(formData, "purpose"), String(formData.get("currency") || "UGX"),
+     _rnum(formData, "targetAmount"), _rstr(formData, "notes"), userId, userName]);
+  const opening = _rnum(formData, "opening") ?? 0;
+  if (opening > 0)
+    await q(`INSERT INTO reserve_movement (id, org_id, fund_id, movement_date, type, amount, description, recorded_by_id, recorded_by_name)
+             VALUES ($1,$2,$3,CURRENT_DATE,'allocation',$4,'Opening allocation',$5,$6)`, [id("rmv"), orgId, fid, opening, userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "reserve_fund", entityId: fid, after: { name, opening } });
+  redirect(`/finance/treasury/reserve/${fid}`);
+}
+
+export async function recordReserveMovementAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const fid = String(formData.get("fundId") || "");
+  const type = String(formData.get("type") || "allocation");
+  const amount = _rnum(formData, "amount") ?? 0;
+  if (amount <= 0) redirect(`/finance/treasury/reserve/${fid}?err=amount`);
+  if (type === "utilization" && amount > await _resBal(orgId, fid)) redirect(`/finance/treasury/reserve/${fid}?err=insufficient`);
+  await q(`INSERT INTO reserve_movement (id, org_id, fund_id, movement_date, type, amount, description, reference, project_id, recorded_by_id, recorded_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [id("rmv"), orgId, fid, _rstr(formData, "movementDate") ?? new Date().toISOString().slice(0, 10), type, amount,
+     _rstr(formData, "description"), _rstr(formData, "reference"), _rstr(formData, "projectId"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "reserve_movement", entityId: fid, after: { type, amount } });
+  redirect(`/finance/treasury/reserve/${fid}`);
+}
+export async function closeReserveFundAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const fid = String(formData.get("fundId") || "");
+  const reopen = formData.get("reopen") === "1";
+  await q(`UPDATE reserve_fund SET status=$2 WHERE id=$1 AND org_id=$3`, [fid, reopen ? "active" : "closed", orgId]);
+  await writeAudit({ orgId, userId, action: reopen ? "reopen" : "close", entity: "reserve_fund", entityId: fid });
+  redirect(`/finance/treasury/reserve/${fid}`);
+}
+export async function deleteReserveFundAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const fid = String(formData.get("fundId") || "");
+  await q(`DELETE FROM reserve_fund WHERE id=$1 AND org_id=$2`, [fid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "reserve_fund", entityId: fid });
+  redirect(`/finance/treasury`);
+}
+
+export async function createInvestmentAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/finance/treasury?err=invname");
+  const iid = id("inv");
+  await q(`INSERT INTO investment (id, org_id, name, institution, instrument_type, currency, principal, interest_rate, placement_date, maturity_date, expected_value, reference, notes, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+    [iid, orgId, name, _rstr(formData, "institution"), String(formData.get("instrumentType") || "fixed_deposit"), String(formData.get("currency") || "UGX"),
+     _rnum(formData, "principal") ?? 0, _rnum(formData, "interestRate"), _rstr(formData, "placementDate"), _rstr(formData, "maturityDate"),
+     _rnum(formData, "expectedValue"), _rstr(formData, "reference"), _rstr(formData, "notes"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "investment", entityId: iid, after: { name, principal: _rnum(formData, "principal") } });
+  redirect(`/finance/treasury/investment/${iid}`);
+}
+
+export async function recordInvestmentMovementAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const iid = String(formData.get("investmentId") || "");
+  const type = String(formData.get("type") || "interest");
+  const amount = _rnum(formData, "amount") ?? 0;
+  if (amount <= 0) redirect(`/finance/treasury/investment/${iid}?err=amount`);
+  if ((type === "withdrawal" || type === "maturity") && amount > await _invOut(orgId, iid)) redirect(`/finance/treasury/investment/${iid}?err=insufficient`);
+  await q(`INSERT INTO investment_movement (id, org_id, investment_id, movement_date, type, amount, description, reference, recorded_by_id, recorded_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [id("imv"), orgId, iid, _rstr(formData, "movementDate") ?? new Date().toISOString().slice(0, 10), type, amount, _rstr(formData, "description"), _rstr(formData, "reference"), userId, userName]);
+  // a maturity movement that clears the principal marks the investment matured
+  if (type === "maturity" && await _invOut(orgId, iid) <= 0)
+    await q(`UPDATE investment SET status='matured' WHERE id=$1 AND org_id=$2`, [iid, orgId]);
+  await writeAudit({ orgId, userId, action: "create", entity: "investment_movement", entityId: iid, after: { type, amount } });
+  redirect(`/finance/treasury/investment/${iid}`);
+}
+export async function setInvestmentStatusAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const iid = String(formData.get("investmentId") || "");
+  const status = String(formData.get("status") || "active");
+  await q(`UPDATE investment SET status=$2 WHERE id=$1 AND org_id=$3`, [iid, status, orgId]);
+  await writeAudit({ orgId, userId, action: "status", entity: "investment", entityId: iid, after: { status } });
+  redirect(`/finance/treasury/investment/${iid}`);
+}
+export async function deleteInvestmentAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const iid = String(formData.get("investmentId") || "");
+  await q(`DELETE FROM investment WHERE id=$1 AND org_id=$2`, [iid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "investment", entityId: iid });
+  redirect(`/finance/treasury`);
+}

@@ -70,6 +70,10 @@ export default async function FinanceHome() {
           <div className="font-display font-semibold">Receipts</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Record money received; settle invoices; print receipts.</div>
         </Link>
+        <Link href="/finance/treasury" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Reserves &amp; investments</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Designated reserve funds and placed investments with maturity tracking.</div>
+        </Link>
         <Link href="/finance/assets" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
           <div className="font-display font-semibold">Asset register</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Fixed assets with straight-line depreciation posting.</div>

@@ -1371,6 +1371,71 @@ CREATE TABLE IF NOT EXISTS funding_receipt (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_funding_receipt_agreement ON funding_receipt(agreement_id);
+
+-- ===================== Reserves & Investments (Treasury) =====================
+CREATE TABLE IF NOT EXISTS reserve_fund (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  type text NOT NULL DEFAULT 'general',
+  purpose text,
+  currency text NOT NULL DEFAULT 'UGX',
+  target_amount numeric(18,2),
+  status text NOT NULL DEFAULT 'active',
+  opened_date date,
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_reserve_fund_org ON reserve_fund(org_id);
+
+CREATE TABLE IF NOT EXISTS reserve_movement (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  fund_id text NOT NULL REFERENCES reserve_fund(id) ON DELETE CASCADE,
+  movement_date date NOT NULL,
+  type text NOT NULL,
+  amount numeric(18,2) NOT NULL,
+  description text,
+  reference text,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_reserve_movement_fund ON reserve_movement(fund_id);
+
+CREATE TABLE IF NOT EXISTS investment (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  institution text,
+  instrument_type text NOT NULL DEFAULT 'fixed_deposit',
+  currency text NOT NULL DEFAULT 'UGX',
+  principal numeric(18,2) NOT NULL DEFAULT 0,
+  interest_rate numeric(7,3),
+  placement_date date, maturity_date date,
+  expected_value numeric(18,2),
+  status text NOT NULL DEFAULT 'active',
+  reference text,
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_investment_org ON investment(org_id);
+
+CREATE TABLE IF NOT EXISTS investment_movement (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  investment_id text NOT NULL REFERENCES investment(id) ON DELETE CASCADE,
+  movement_date date NOT NULL,
+  type text NOT NULL,
+  amount numeric(18,2) NOT NULL,
+  description text,
+  reference text,
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_investment_movement_inv ON investment_movement(investment_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

@@ -1012,6 +1012,117 @@ CREATE TABLE IF NOT EXISTS department (
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (org_id, name)
 );
+
+-- ===================== Recruitment / Applicant Tracking (ATS) =====================
+-- A vacancy being recruited for (carries the job description).
+CREATE TABLE IF NOT EXISTS job_opening (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  reference text,
+  title text NOT NULL,
+  department_id text REFERENCES department(id) ON DELETE SET NULL,
+  department text,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
+  employment_type text NOT NULL DEFAULT 'full_time', -- full_time | part_time | fixed_term | contract | internship | consultant
+  location text,
+  positions integer NOT NULL DEFAULT 1,
+  description text,            -- role summary / JD
+  responsibilities text,
+  requirements text,          -- qualifications & requirements
+  salary_min numeric(18,2),
+  salary_max numeric(18,2),
+  currency text,
+  hiring_manager text,
+  status text NOT NULL DEFAULT 'open',  -- draft | open | on_hold | closed | filled | cancelled
+  opened_date date,
+  closing_date date,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_job_opening_org ON job_opening(org_id);
+
+-- A person in the talent pool (reusable across openings).
+CREATE TABLE IF NOT EXISTS candidate (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  full_name text NOT NULL,
+  email text, phone text,
+  gender text,                -- optional, for fair-recruitment reporting
+  location text,
+  current_title text, current_employer text,
+  highest_qualification text,
+  years_experience numeric(5,1),
+  source text,                -- advert | referral | headhunt | walk_in | direct
+  cv_key text, cv_name text,  -- uploaded CV (storage key + original name)
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_candidate_org ON candidate(org_id);
+
+-- A candidate's application to one opening; the `stage` is the pipeline position.
+CREATE TABLE IF NOT EXISTS job_application (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  opening_id text NOT NULL REFERENCES job_opening(id) ON DELETE CASCADE,
+  candidate_id text NOT NULL REFERENCES candidate(id) ON DELETE CASCADE,
+  stage text NOT NULL DEFAULT 'applied', -- applied | screening | shortlisted | interview | offer | hired | rejected | withdrawn
+  applied_date date,
+  cover_note text,
+  rejection_reason text,
+  rejected_stage text,
+  hired_employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (opening_id, candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_job_application_opening ON job_application(opening_id);
+
+CREATE TABLE IF NOT EXISTS interview (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  application_id text NOT NULL REFERENCES job_application(id) ON DELETE CASCADE,
+  round integer NOT NULL DEFAULT 1,
+  kind text NOT NULL DEFAULT 'panel',    -- phone_screen | technical | panel | final
+  mode text NOT NULL DEFAULT 'in_person', -- in_person | video | phone
+  scheduled_at timestamptz,
+  location text,
+  status text NOT NULL DEFAULT 'scheduled', -- scheduled | completed | cancelled | no_show
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_interview_application ON interview(application_id);
+
+-- One panelist's scorecard for an interview (evaluation matrix + COI declaration).
+CREATE TABLE IF NOT EXISTS interview_score (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  interview_id text NOT NULL REFERENCES interview(id) ON DELETE CASCADE,
+  panelist text NOT NULL,
+  technical numeric(4,1),      -- 1-5
+  experience numeric(4,1),     -- 1-5
+  communication numeric(4,1),  -- 1-5
+  motivation numeric(4,1),     -- 1-5 (motivation / culture fit)
+  recommendation text,         -- recommend | maybe | do_not_recommend
+  coi_declared boolean NOT NULL DEFAULT false, -- panelist conflict-of-interest declared
+  comments text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_interview_score_interview ON interview_score(interview_id);
+
+CREATE TABLE IF NOT EXISTS job_offer (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  application_id text NOT NULL REFERENCES job_application(id) ON DELETE CASCADE,
+  salary numeric(18,2),
+  currency text,
+  employment_type text,
+  start_date date,
+  status text NOT NULL DEFAULT 'draft', -- draft | sent | accepted | declined | withdrawn
+  offer_date date,
+  response_date date,
+  notes text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_job_offer_application ON job_offer(application_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

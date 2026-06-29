@@ -5588,3 +5588,186 @@ export async function cancelRegisterImportAction(formData: FormData) {
   await cancelImport(orgId, String(formData.get("importId") || ""));
   redirect(`/procurement/import/${entity}?cancelled=1`);
 }
+
+/* ===================== Recruitment / ATS ===================== */
+// employment_type (opening) -> contract_type (employee) when a candidate is hired.
+const EMP_TO_CONTRACT: Record<string, string> = {
+  full_time: "permanent", part_time: "permanent", fixed_term: "fixed_term",
+  contract: "fixed_term", internship: "intern", consultant: "consultant",
+};
+const _rstr = (fd: FormData, k: string) => (String(fd.get(k) ?? "").trim() || null);
+const _rnum = (fd: FormData, k: string) => { const v = parseFloat(String(fd.get(k) ?? "")); return Number.isFinite(v) ? v : null; };
+
+export async function createJobOpeningAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const title = String(formData.get("title") || "").trim();
+  if (!title) redirect("/hr/recruitment?err=title");
+  const deptNameInput = String(formData.get("departmentName") || "").trim();
+  let deptId: string | null = String(formData.get("departmentId") || "") || null;
+  let deptName: string | null = null;
+  if (deptNameInput) { const dep = await ensureDepartment(orgId, deptNameInput); if (dep) { deptId = dep.id; deptName = dep.name; } }
+  else if (deptId) { deptName = (await one<{ name: string }>(`SELECT name FROM department WHERE id=$1`, [deptId]))?.name ?? null; }
+  const oid = id("job");
+  await q(`INSERT INTO job_opening (id, org_id, reference, title, department_id, department, project_id, employment_type, location, positions,
+             description, responsibilities, requirements, salary_min, salary_max, currency, hiring_manager, status, opened_date, closing_date, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,COALESCE($19, CURRENT_DATE),$20,$21,$22)`,
+    [oid, orgId, _rstr(formData, "reference"), title, deptId, deptName, _rstr(formData, "projectId"),
+     String(formData.get("employmentType") || "full_time"), _rstr(formData, "location"), parseInt(String(formData.get("positions") || "1"), 10) || 1,
+     _rstr(formData, "description"), _rstr(formData, "responsibilities"), _rstr(formData, "requirements"),
+     _rnum(formData, "salaryMin"), _rnum(formData, "salaryMax"), _rstr(formData, "currency"), _rstr(formData, "hiringManager"),
+     "open", _rstr(formData, "openedDate"), _rstr(formData, "closingDate"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "job_opening", entityId: oid, after: { title } });
+  redirect(`/hr/recruitment/${oid}`);
+}
+
+export async function updateJobOpeningAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const oid = String(formData.get("openingId") || "");
+  await q(`UPDATE job_opening SET title=$2, employment_type=$3, location=$4, positions=$5, description=$6, responsibilities=$7,
+             requirements=$8, salary_min=$9, salary_max=$10, currency=$11, hiring_manager=$12, closing_date=$13
+           WHERE id=$1 AND org_id=$14`,
+    [oid, String(formData.get("title") || "").trim() || "Untitled", String(formData.get("employmentType") || "full_time"),
+     _rstr(formData, "location"), parseInt(String(formData.get("positions") || "1"), 10) || 1, _rstr(formData, "description"),
+     _rstr(formData, "responsibilities"), _rstr(formData, "requirements"), _rnum(formData, "salaryMin"), _rnum(formData, "salaryMax"),
+     _rstr(formData, "currency"), _rstr(formData, "hiringManager"), _rstr(formData, "closingDate"), orgId]);
+  redirect(`/hr/recruitment/${oid}?saved=1`);
+}
+
+export async function setOpeningStatusAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const oid = String(formData.get("openingId") || "");
+  const status = String(formData.get("status") || "open");
+  await q(`UPDATE job_opening SET status=$2 WHERE id=$1 AND org_id=$3`, [oid, status, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "job_opening", entityId: oid, after: { status } });
+  redirect(`/hr/recruitment/${oid}`);
+}
+
+export async function addCandidateApplicationAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const oid = String(formData.get("openingId") || "");
+  const name = String(formData.get("fullName") || "").trim();
+  if (!name) redirect(`/hr/recruitment/${oid}?err=cand`);
+  const candId = id("cand");
+  let cvKey: string | null = null, cvName: string | null = null;
+  const file = formData.get("cv") as File | null;
+  if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); cvName = file.name; cvKey = await saveUpload(candId, file.name, buf); }
+  await q(`INSERT INTO candidate (id, org_id, full_name, email, phone, gender, location, current_title, current_employer, highest_qualification, years_experience, source, cv_key, cv_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    [candId, orgId, name, _rstr(formData, "email"), _rstr(formData, "phone"), _rstr(formData, "gender"), _rstr(formData, "location"),
+     _rstr(formData, "currentTitle"), _rstr(formData, "currentEmployer"), _rstr(formData, "highestQualification"),
+     _rnum(formData, "yearsExperience"), _rstr(formData, "source"), cvKey, cvName]);
+  const appId = id("app");
+  await q(`INSERT INTO job_application (id, org_id, opening_id, candidate_id, stage, applied_date, cover_note, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,'applied',CURRENT_DATE,$5,$6,$7)`,
+    [appId, orgId, oid, candId, _rstr(formData, "coverNote"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "job_application", entityId: appId, after: { candidate: name, opening: oid } });
+  redirect(`/hr/recruitment/${oid}?added=1`);
+}
+
+export async function moveApplicationStageAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const appId = String(formData.get("applicationId") || "");
+  const stage = String(formData.get("stage") || "applied");
+  await q(`UPDATE job_application SET stage=$2, rejection_reason=NULL, rejected_stage=NULL WHERE id=$1 AND org_id=$3`, [appId, stage, orgId]);
+  redirect(`/hr/recruitment/application/${appId}`);
+}
+
+export async function rejectApplicationAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const appId = String(formData.get("applicationId") || "");
+  const cur = (await one<{ stage: string }>(`SELECT stage FROM job_application WHERE id=$1 AND org_id=$2`, [appId, orgId]))?.stage ?? null;
+  await q(`UPDATE job_application SET stage='rejected', rejection_reason=$2, rejected_stage=$3 WHERE id=$1 AND org_id=$4`,
+    [appId, _rstr(formData, "reason"), cur, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "job_application", entityId: appId, after: { stage: "rejected" } });
+  redirect(`/hr/recruitment/application/${appId}`);
+}
+
+export async function withdrawApplicationAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const appId = String(formData.get("applicationId") || "");
+  await q(`UPDATE job_application SET stage='withdrawn' WHERE id=$1 AND org_id=$2`, [appId, orgId]);
+  redirect(`/hr/recruitment/application/${appId}`);
+}
+
+export async function scheduleInterviewAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const appId = String(formData.get("applicationId") || "");
+  const iid = id("intv");
+  await q(`INSERT INTO interview (id, org_id, application_id, round, kind, mode, scheduled_at, location, status, notes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'scheduled',$9)`,
+    [iid, orgId, appId, parseInt(String(formData.get("round") || "1"), 10) || 1, String(formData.get("kind") || "panel"),
+     String(formData.get("mode") || "in_person"), _rstr(formData, "scheduledAt"), _rstr(formData, "location"), _rstr(formData, "notes")]);
+  // advance the pipeline to interview if it is still earlier
+  await q(`UPDATE job_application SET stage='interview' WHERE id=$1 AND org_id=$2 AND stage IN ('applied','screening','shortlisted')`, [appId, orgId]);
+  redirect(`/hr/recruitment/application/${appId}`);
+}
+
+export async function setInterviewStatusAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const iid = String(formData.get("interviewId") || "");
+  const appId = String(formData.get("applicationId") || "");
+  await q(`UPDATE interview SET status=$2 WHERE id=$1 AND org_id=$3`, [iid, String(formData.get("status") || "completed"), orgId]);
+  redirect(`/hr/recruitment/application/${appId}`);
+}
+
+export async function addInterviewScoreAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const iid = String(formData.get("interviewId") || "");
+  const appId = String(formData.get("applicationId") || "");
+  const panelist = String(formData.get("panelist") || "").trim();
+  if (!panelist) redirect(`/hr/recruitment/application/${appId}?err=panelist`);
+  await q(`INSERT INTO interview_score (id, org_id, interview_id, panelist, technical, experience, communication, motivation, recommendation, coi_declared, comments)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [id("isc"), orgId, iid, panelist, _rnum(formData, "technical"), _rnum(formData, "experience"), _rnum(formData, "communication"),
+     _rnum(formData, "motivation"), _rstr(formData, "recommendation"), formData.get("coiDeclared") === "on", _rstr(formData, "comments")]);
+  redirect(`/hr/recruitment/application/${appId}`);
+}
+
+export async function createOfferAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const appId = String(formData.get("applicationId") || "");
+  const send = formData.get("send") === "1";
+  await q(`INSERT INTO job_offer (id, org_id, application_id, salary, currency, employment_type, start_date, status, offer_date, notes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_DATE,$9)`,
+    [id("offer"), orgId, appId, _rnum(formData, "salary"), _rstr(formData, "currency"), _rstr(formData, "employmentType"),
+     _rstr(formData, "startDate"), send ? "sent" : "draft", _rstr(formData, "notes")]);
+  await q(`UPDATE job_application SET stage='offer' WHERE id=$1 AND org_id=$2 AND stage NOT IN ('hired','rejected','withdrawn')`, [appId, orgId]);
+  await writeAudit({ orgId, userId, action: "create", entity: "job_offer", entityId: appId, after: { status: send ? "sent" : "draft" } });
+  redirect(`/hr/recruitment/application/${appId}`);
+}
+
+export async function setOfferStatusAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const offerId = String(formData.get("offerId") || "");
+  const appId = String(formData.get("applicationId") || "");
+  const status = String(formData.get("status") || "sent");
+  await q(`UPDATE job_offer SET status=$2, response_date=CASE WHEN $2 IN ('accepted','declined') THEN CURRENT_DATE ELSE response_date END WHERE id=$1 AND org_id=$3`,
+    [offerId, status, orgId]);
+  redirect(`/hr/recruitment/application/${appId}`);
+}
+
+export async function hireApplicantAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const appId = String(formData.get("applicationId") || "");
+  const app = await one<{ candidateId: string; openingId: string; fullName: string; email: string | null; phone: string | null;
+    title: string; deptId: string | null; deptName: string | null; empType: string; offerSalary: number | null; offerCcy: string | null; offerStart: string | null }>(
+    `SELECT a.candidate_id AS "candidateId", a.opening_id AS "openingId", c.full_name AS "fullName", c.email, c.phone,
+            o.title, o.department_id AS "deptId", o.department AS "deptName", o.employment_type AS "empType",
+            (SELECT salary::float8 FROM job_offer jo WHERE jo.application_id=a.id ORDER BY created_at DESC LIMIT 1) AS "offerSalary",
+            (SELECT currency FROM job_offer jo WHERE jo.application_id=a.id ORDER BY created_at DESC LIMIT 1) AS "offerCcy",
+            (SELECT start_date::text FROM job_offer jo WHERE jo.application_id=a.id ORDER BY created_at DESC LIMIT 1) AS "offerStart"
+     FROM job_application a JOIN candidate c ON c.id=a.candidate_id JOIN job_opening o ON o.id=a.opening_id
+     WHERE a.id=$1 AND a.org_id=$2`, [appId, orgId]);
+  if (!app) redirect("/hr/recruitment");
+  const parts = app.fullName.split(/\s+/);
+  const first = parts[0]; const last = parts.slice(1).join(" ") || first;
+  const eid = id("emp");
+  await q(`INSERT INTO employee (id, org_id, first_name, last_name, email, phone, job_title, department, department_id, contract_type, start_date, basic_salary, currency, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'active')`,
+    [eid, orgId, first, last, app.email, app.phone, app.title, app.deptName, app.deptId,
+     EMP_TO_CONTRACT[app.empType] ?? "permanent", app.offerStart, app.offerSalary ?? 0, app.offerCcy ?? "USD"]);
+  await q(`UPDATE job_application SET stage='hired', hired_employee_id=$2 WHERE id=$1 AND org_id=$3`, [appId, eid, orgId]);
+  if (formData.get("fillOpening") === "on") await q(`UPDATE job_opening SET status='filled' WHERE id=$1 AND org_id=$2`, [app.openingId, orgId]);
+  await writeAudit({ orgId, userId, action: "create", entity: "employee", entityId: eid, after: { from: "recruitment", application: appId, name: app.fullName } });
+  redirect(`/hr/employees/${eid}?hired=1`);
+}

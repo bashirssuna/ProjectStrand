@@ -189,6 +189,7 @@ body {
     color: var(--fg);
   }
   .input::placeholder, .textarea::placeholder { color: var(--muted); }
+  .input-sm, .select-sm { @apply px-2 py-1 text-xs rounded-md; }
   .input:focus, .select:focus, .textarea:focus {
     border-color: var(--brand);
     box-shadow: 0 0 0 3px var(--ring);

@@ -5867,3 +5867,63 @@ export async function acknowledgeAppraisalAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "update", entity: "appraisal", entityId: aid, after: { status: "acknowledged" } });
   redirect(`/hr/appraisals/record/${aid}`);
 }
+
+/* ===================== Employee Relations (Grievance & Disciplinary) ===================== */
+export async function createCaseAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const type = String(formData.get("type") || "grievance");
+  const title = String(formData.get("title") || "").trim();
+  if (!title) redirect("/hr/relations?err=title");
+  // case_no: GRV-YYYY-NNN / DSC-YYYY-NNN
+  const prefix = type === "grievance" ? "GRV" : "DSC";
+  const year = new Date().getFullYear();
+  const seq = ((await one<{ c: number }>(`SELECT COUNT(*)::int c FROM er_case WHERE org_id=$1 AND type=$2 AND EXTRACT(YEAR FROM created_at)=$3`, [orgId, type, year]))?.c ?? 0) + 1;
+  const caseNo = `${prefix}-${year}-${String(seq).padStart(3, "0")}`;
+  const cid = id("erc");
+  await q(`INSERT INTO er_case (id, org_id, case_no, type, employee_id, counterparty, category, title, description, severity, confidential, status, assigned_to, opened_date, due_date, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'open',$12,CURRENT_DATE,$13,$14,$15)`,
+    [cid, orgId, caseNo, type, _rstr(formData, "employeeId"), _rstr(formData, "counterparty"), _rstr(formData, "category"),
+     title, _rstr(formData, "description"), String(formData.get("severity") || "medium"), formData.get("confidential") === "on",
+     _rstr(formData, "assignedTo"), _rstr(formData, "dueDate"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "er_case", entityId: cid, after: { caseNo, type, title } });
+  redirect(`/hr/relations/${cid}`);
+}
+
+export async function setCaseStatusAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const cid = String(formData.get("caseId") || "");
+  const status = String(formData.get("status") || "open");
+  await q(`UPDATE er_case SET status=$2 WHERE id=$1 AND org_id=$3`, [cid, status, orgId]);
+  await q(`INSERT INTO er_case_event (id, org_id, case_id, kind, summary, event_date, author) VALUES ($1,$2,$3,'status_change',$4,CURRENT_DATE,$5)`,
+    [id("erce"), orgId, cid, `Stage changed to ${status.replace(/_/g, " ")}`, userName]);
+  await writeAudit({ orgId, userId, action: "update", entity: "er_case", entityId: cid, after: { status } });
+  redirect(`/hr/relations/${cid}`);
+}
+
+export async function recordCaseOutcomeAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const cid = String(formData.get("caseId") || "");
+  const outcome = String(formData.get("outcome") || "");
+  await q(`UPDATE er_case SET outcome=$2, outcome_notes=$3, status='closed', closed_date=CURRENT_DATE WHERE id=$1 AND org_id=$4`,
+    [cid, outcome || null, _rstr(formData, "outcomeNotes"), orgId]);
+  await q(`INSERT INTO er_case_event (id, org_id, case_id, kind, summary, detail, event_date, author) VALUES ($1,$2,$3,'decision',$4,$5,CURRENT_DATE,$6)`,
+    [id("erce"), orgId, cid, `Outcome: ${outcome.replace(/_/g, " ")}`, _rstr(formData, "outcomeNotes"), userName]);
+  await writeAudit({ orgId, userId, action: "update", entity: "er_case", entityId: cid, after: { outcome, status: "closed" } });
+  redirect(`/hr/relations/${cid}`);
+}
+
+export async function addCaseEventAction(formData: FormData) {
+  const { orgId, userName } = await requireInstitutionFinance();
+  const cid = String(formData.get("caseId") || "");
+  const summary = String(formData.get("summary") || "").trim();
+  if (!summary) redirect(`/hr/relations/${cid}?err=event`);
+  const evId = id("erce");
+  let fileKey: string | null = null, fileName: string | null = null;
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); fileName = file.name; fileKey = await saveUpload(evId, file.name, buf); }
+  await q(`INSERT INTO er_case_event (id, org_id, case_id, kind, summary, detail, event_date, author, file_key, file_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [evId, orgId, cid, String(formData.get("kind") || "note"), summary, _rstr(formData, "detail"),
+     _rstr(formData, "eventDate") ?? new Date().toISOString().slice(0, 10), String(formData.get("author") || userName), fileKey, fileName]);
+  redirect(`/hr/relations/${cid}`);
+}

@@ -1170,6 +1170,45 @@ CREATE TABLE IF NOT EXISTS appraisal_item (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_appraisal_item_appraisal ON appraisal_item(appraisal_id);
+
+-- ===================== Employee Relations (Grievance & Disciplinary) =====================
+CREATE TABLE IF NOT EXISTS er_case (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  case_no text,
+  type text NOT NULL,
+  employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  counterparty text,
+  category text,
+  title text NOT NULL,
+  description text,
+  severity text NOT NULL DEFAULT 'medium',
+  confidential boolean NOT NULL DEFAULT false,
+  status text NOT NULL DEFAULT 'open',
+  outcome text,
+  outcome_notes text,
+  assigned_to text,
+  opened_date date,
+  due_date date,
+  closed_date date,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_er_case_org ON er_case(org_id);
+
+CREATE TABLE IF NOT EXISTS er_case_event (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  case_id text NOT NULL REFERENCES er_case(id) ON DELETE CASCADE,
+  kind text NOT NULL DEFAULT 'note',
+  summary text,
+  detail text,
+  event_date date,
+  author text,
+  file_key text, file_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_er_case_event_case ON er_case_event(case_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

@@ -1176,6 +1176,48 @@ CREATE TABLE IF NOT EXISTS appraisal_item (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_appraisal_item_appraisal ON appraisal_item(appraisal_id);
+
+-- ===================== Employee Relations (Grievance & Disciplinary) =====================
+-- A grievance (raised by an employee) or disciplinary case (raised against one).
+-- `employee_id` is the complainant for grievances, the respondent for disciplinary.
+CREATE TABLE IF NOT EXISTS er_case (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  case_no text,
+  type text NOT NULL,                        -- grievance | disciplinary
+  employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  counterparty text,                         -- respondent (grievance) / reporter (disciplinary)
+  category text,
+  title text NOT NULL,
+  description text,
+  severity text NOT NULL DEFAULT 'medium',   -- low | medium | high
+  confidential boolean NOT NULL DEFAULT false,
+  status text NOT NULL DEFAULT 'open',        -- type-specific workflow stage
+  outcome text,
+  outcome_notes text,
+  assigned_to text,                          -- handler / investigator
+  opened_date date,
+  due_date date,
+  closed_date date,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_er_case_org ON er_case(org_id);
+
+-- Timeline entry on a case: note, investigation step, hearing, notice, decision, appeal.
+CREATE TABLE IF NOT EXISTS er_case_event (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  case_id text NOT NULL REFERENCES er_case(id) ON DELETE CASCADE,
+  kind text NOT NULL DEFAULT 'note',         -- note | investigation | hearing | notice | decision | appeal | status_change
+  summary text,
+  detail text,
+  event_date date,
+  author text,
+  file_key text, file_name text,             -- optional attachment (evidence, notice, minutes)
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_er_case_event_case ON er_case_event(case_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

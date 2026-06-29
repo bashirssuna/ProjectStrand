@@ -26,6 +26,7 @@ export default async function HrHome() {
         {[
           ["/hr/recruitment", "Recruitment", "Job openings, candidates, interviews & offers."],
           ["/hr/appraisals", "Appraisals", "Review cycles, objectives, ratings & sign-off."],
+          ["/hr/relations", "Employee relations", "Grievances & disciplinary cases with audit trail."],
           ["/hr/employees", "Employees", "Records, contracts, salary & bank details."],
           ["/hr/leave", "Leave", "Requests, approvals and balance tracking."],
           ["/hr/timesheets", "Timesheets", "Log and approve hours, by project."],

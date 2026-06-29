@@ -1506,6 +1506,60 @@ CREATE TABLE IF NOT EXISTS whistleblower_message (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_whistleblower_message_report ON whistleblower_message(report_id);
+
+-- ===================== External Audit / Compliance Reviews =====================
+CREATE TABLE IF NOT EXISTS audit_engagement (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  type text NOT NULL DEFAULT 'external_audit',
+  auditor text,
+  fiscal_year text,
+  scope text,
+  period_start date, period_end date,
+  start_date date, end_date date, report_date date,
+  status text NOT NULL DEFAULT 'planned',
+  opinion text,
+  lead_contact text,
+  file_key text, file_name text,
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_engagement_org ON audit_engagement(org_id);
+
+CREATE TABLE IF NOT EXISTS audit_finding (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  engagement_id text NOT NULL REFERENCES audit_engagement(id) ON DELETE CASCADE,
+  ref text,
+  area text,
+  title text NOT NULL,
+  observation text,
+  risk text NOT NULL DEFAULT 'medium',
+  recommendation text,
+  mgmt_response text,
+  agreed_action text,
+  responsible text,
+  target_date date,
+  status text NOT NULL DEFAULT 'open',
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_finding_engagement ON audit_finding(engagement_id);
+
+CREATE TABLE IF NOT EXISTS audit_finding_update (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  finding_id text NOT NULL REFERENCES audit_finding(id) ON DELETE CASCADE,
+  update_date date NOT NULL,
+  note text,
+  status_at text,
+  author text,
+  file_key text, file_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_finding_update_finding ON audit_finding_update(finding_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

@@ -1534,6 +1534,62 @@ CREATE TABLE IF NOT EXISTS whistleblower_message (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_whistleblower_message_report ON whistleblower_message(report_id);
+
+-- ===================== External Audit / Compliance Reviews =====================
+-- An audit or compliance-review engagement, its findings, and the remediation
+-- trail (management action plan) for each finding.
+CREATE TABLE IF NOT EXISTS audit_engagement (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  title text NOT NULL,
+  type text NOT NULL DEFAULT 'external_audit',   -- external_audit | internal_audit | donor_audit | compliance_review | statutory_audit
+  auditor text,                                  -- audit firm / reviewer
+  fiscal_year text,
+  scope text,
+  period_start date, period_end date,
+  start_date date, end_date date, report_date date,
+  status text NOT NULL DEFAULT 'planned',         -- planned | fieldwork | draft_report | finalized | closed
+  opinion text,                                   -- overall opinion / rating
+  lead_contact text,
+  file_key text, file_name text,                  -- audit report document
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_engagement_org ON audit_engagement(org_id);
+
+CREATE TABLE IF NOT EXISTS audit_finding (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  engagement_id text NOT NULL REFERENCES audit_engagement(id) ON DELETE CASCADE,
+  ref text,                                       -- F-01, F-02 ...
+  area text,                                      -- financial controls | procurement | HR | governance ...
+  title text NOT NULL,
+  observation text,
+  risk text NOT NULL DEFAULT 'medium',            -- high | medium | low
+  recommendation text,
+  mgmt_response text,                             -- management response
+  agreed_action text,
+  responsible text,
+  target_date date,
+  status text NOT NULL DEFAULT 'open',            -- open | in_progress | implemented | accepted_risk | closed
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_finding_engagement ON audit_finding(engagement_id);
+
+CREATE TABLE IF NOT EXISTS audit_finding_update (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  finding_id text NOT NULL REFERENCES audit_finding(id) ON DELETE CASCADE,
+  update_date date NOT NULL,
+  note text,
+  status_at text,                                 -- status recorded at this update
+  author text,
+  file_key text, file_name text,                  -- evidence of remediation
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_finding_update_finding ON audit_finding_update(finding_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

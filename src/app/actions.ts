@@ -6525,3 +6525,104 @@ export async function deleteWhistleblowerReportAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "delete", entity: "whistleblower_report", entityId: rid });
   redirect(`/finance/whistleblower`);
 }
+
+/* ===================== External Audit / Compliance Reviews ===================== */
+export async function createAuditEngagementAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const title = String(formData.get("title") || "").trim();
+  if (!title) redirect("/finance/audits?err=title");
+  const eid = id("aud");
+  let fileKey: string | null = null, fileName: string | null = null;
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); fileName = file.name; fileKey = await saveUpload(eid, file.name, buf); }
+  await q(`INSERT INTO audit_engagement (id, org_id, title, type, auditor, fiscal_year, scope, period_start, period_end, start_date, end_date, report_date, status, opinion, lead_contact, file_key, file_name, notes, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+    [eid, orgId, title, String(formData.get("type") || "external_audit"), _rstr(formData, "auditor"), _rstr(formData, "fiscalYear"), _rstr(formData, "scope"),
+     _rstr(formData, "periodStart"), _rstr(formData, "periodEnd"), _rstr(formData, "startDate"), _rstr(formData, "endDate"), _rstr(formData, "reportDate"),
+     String(formData.get("status") || "planned"), _rstr(formData, "opinion"), _rstr(formData, "leadContact"), fileKey, fileName, _rstr(formData, "notes"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "audit_engagement", entityId: eid, after: { title } });
+  redirect(`/finance/audits/${eid}`);
+}
+export async function setAuditEngagementStatusAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const eid = String(formData.get("engagementId") || "");
+  await q(`UPDATE audit_engagement SET status=$2 WHERE id=$1 AND org_id=$3`, [eid, String(formData.get("status") || "planned"), orgId]);
+  await writeAudit({ orgId, userId, action: "status", entity: "audit_engagement", entityId: eid });
+  redirect(`/finance/audits/${eid}`);
+}
+export async function updateAuditEngagementAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const eid = String(formData.get("engagementId") || "");
+  let setFile = "";
+  const params: unknown[] = [eid, _rstr(formData, "auditor"), _rstr(formData, "fiscalYear"), _rstr(formData, "scope"),
+    _rstr(formData, "periodStart"), _rstr(formData, "periodEnd"), _rstr(formData, "startDate"), _rstr(formData, "endDate"),
+    _rstr(formData, "reportDate"), _rstr(formData, "opinion"), _rstr(formData, "leadContact"), _rstr(formData, "notes")];
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); const key = await saveUpload(eid, file.name, buf); setFile = `, file_key=$14, file_name=$15`; params.push(orgId, key, file.name); }
+  else params.push(orgId);
+  await q(`UPDATE audit_engagement SET auditor=$2, fiscal_year=$3, scope=$4, period_start=$5, period_end=$6, start_date=$7, end_date=$8, report_date=$9, opinion=$10, lead_contact=$11, notes=$12${setFile} WHERE id=$1 AND org_id=$13`, params);
+  await writeAudit({ orgId, userId, action: "update", entity: "audit_engagement", entityId: eid });
+  redirect(`/finance/audits/${eid}`);
+}
+export async function deleteAuditEngagementAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const eid = String(formData.get("engagementId") || "");
+  await q(`DELETE FROM audit_engagement WHERE id=$1 AND org_id=$2`, [eid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "audit_engagement", entityId: eid });
+  redirect(`/finance/audits`);
+}
+
+export async function addAuditFindingAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const eid = String(formData.get("engagementId") || "");
+  const title = String(formData.get("title") || "").trim();
+  if (!title) redirect(`/finance/audits/${eid}?err=ftitle`);
+  const cnt = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM audit_finding WHERE engagement_id=$1`, [eid]))?.c ?? 0;
+  const ref = `F-${String(cnt + 1).padStart(2, "0")}`;
+  await q(`INSERT INTO audit_finding (id, org_id, engagement_id, ref, area, title, observation, risk, recommendation, target_date, responsible, sort_order)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [id("afn"), orgId, eid, ref, _rstr(formData, "area"), title, _rstr(formData, "observation"), String(formData.get("risk") || "medium"),
+     _rstr(formData, "recommendation"), _rstr(formData, "targetDate"), _rstr(formData, "responsible"), cnt]);
+  await writeAudit({ orgId, userId, action: "add_finding", entity: "audit_engagement", entityId: eid, after: { ref } });
+  redirect(`/finance/audits/${eid}`);
+}
+export async function updateAuditFindingResponseAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const fid = String(formData.get("findingId") || "");
+  await q(`UPDATE audit_finding SET mgmt_response=$2, agreed_action=$3, responsible=$4, target_date=$5 WHERE id=$1 AND org_id=$6`,
+    [fid, _rstr(formData, "mgmtResponse"), _rstr(formData, "agreedAction"), _rstr(formData, "responsible"), _rstr(formData, "targetDate"), orgId]);
+  await writeAudit({ orgId, userId, action: "response", entity: "audit_finding", entityId: fid });
+  redirect(`/finance/audits/finding/${fid}`);
+}
+export async function setAuditFindingStatusAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const fid = String(formData.get("findingId") || "");
+  await q(`UPDATE audit_finding SET status=$2 WHERE id=$1 AND org_id=$3`, [fid, String(formData.get("status") || "open"), orgId]);
+  await writeAudit({ orgId, userId, action: "status", entity: "audit_finding", entityId: fid });
+  redirect(`/finance/audits/finding/${fid}`);
+}
+export async function deleteAuditFindingAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const fid = String(formData.get("findingId") || "");
+  const eid = String(formData.get("engagementId") || "");
+  await q(`DELETE FROM audit_finding WHERE id=$1 AND org_id=$2`, [fid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "audit_finding", entityId: fid });
+  redirect(`/finance/audits/${eid}`);
+}
+export async function addAuditFindingUpdateAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const fid = String(formData.get("findingId") || "");
+  const note = String(formData.get("note") || "").trim();
+  const statusAt = _rstr(formData, "statusAt");
+  if (!note && !statusAt) redirect(`/finance/audits/finding/${fid}?err=note`);
+  const uid = id("afu");
+  let fileKey: string | null = null, fileName: string | null = null;
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); fileName = file.name; fileKey = await saveUpload(uid, file.name, buf); }
+  await q(`INSERT INTO audit_finding_update (id, org_id, finding_id, update_date, note, status_at, author, file_key, file_name)
+           VALUES ($1,$2,$3,COALESCE($4, CURRENT_DATE),$5,$6,$7,$8,$9)`,
+    [uid, orgId, fid, _rstr(formData, "updateDate"), note || null, statusAt, userName, fileKey, fileName]);
+  if (statusAt) await q(`UPDATE audit_finding SET status=$2 WHERE id=$1 AND org_id=$3`, [fid, statusAt, orgId]);
+  await writeAudit({ orgId, userId, action: "remediation_update", entity: "audit_finding", entityId: fid });
+  redirect(`/finance/audits/finding/${fid}`);
+}

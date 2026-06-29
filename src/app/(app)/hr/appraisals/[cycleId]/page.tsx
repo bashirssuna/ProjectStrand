@@ -10,14 +10,14 @@ import { createAppraisalAction, setCycleStatusAction } from "@/app/actions";
 
 const CYCLE_STATUSES = ["draft", "open", "closed"];
 
-export default async function CycleDetailPage({ params, searchParams }: { params: Promise<{ cycleId: string }>; searchParams: Promise<{ err?: string }> }) {
+export default async function CycleDetailPage({ params, searchParams }: { params: Promise<{ cycleId: string }>; searchParams: Promise<{ err?: string; archived?: string }> }) {
   const { orgId, orgName } = await requireHrOrg();
   const { cycleId } = await params;
   const sp = await searchParams;
   const cycle = await getCycle(orgId, cycleId);
   if (!cycle) notFound();
   const [appraisals, employees] = await Promise.all([
-    listAppraisals(orgId, cycleId),
+    listAppraisals(orgId, cycleId, sp.archived === "1"),
     q<{ id: string; name: string; jobTitle: string | null }>(
       `SELECT id, (first_name || ' ' || last_name) AS name, job_title AS "jobTitle" FROM employee WHERE org_id=$1 AND status != 'terminated' ORDER BY first_name, last_name`, [orgId]),
   ]);
@@ -40,7 +40,10 @@ export default async function CycleDetailPage({ params, searchParams }: { params
         </form>
       </div>
 
-      <SectionTitle>Appraisals ({appraisals.length})</SectionTitle>
+      <div className="flex items-center justify-between">
+        <SectionTitle>Appraisals ({appraisals.length})</SectionTitle>
+        <Link href={sp.archived === "1" ? `/hr/appraisals/${cycle.id}` : `/hr/appraisals/${cycle.id}?archived=1`} className="text-xs hover:underline" style={{ color: "var(--brand)" }}>{sp.archived === "1" ? "Hide archived" : "Show archived"}</Link>
+      </div>
       {appraisals.length === 0 ? (
         <Empty title="No appraisals in this cycle" hint="Add one for a staff member below." />
       ) : (
@@ -50,11 +53,11 @@ export default async function CycleDetailPage({ params, searchParams }: { params
             <tbody>
               {appraisals.map((a) => (
                 <tr key={a.id}>
-                  <td className="td"><div className="font-medium">{a.employeeName}</div>{a.jobTitle && <div className="text-xs" style={{ color: "var(--muted)" }}>{a.jobTitle}</div>}</td>
+                  <td className="td"><div className="font-medium">{a.employeeName}{a.archived && <span className="ml-2"><Badge tone="muted">Archived</Badge></span>}</div>{a.jobTitle && <div className="text-xs" style={{ color: "var(--muted)" }}>{a.jobTitle}</div>}</td>
                   <td className="td">{a.appraiserName ?? "—"}</td>
                   <td className="td text-right tabular-nums">{a.items}</td>
                   <td className="td text-right">{a.overallRating != null ? <span title={ratingLabel(a.overallRating) ?? ""}>{a.overallRating}/5</span> : a.managerAvg != null ? <span style={{ color: "var(--muted)" }}>{a.managerAvg}/5*</span> : "—"}</td>
-                  <td className="td"><StatusBadge status={a.status} /></td>
+                  <td className="td"><StatusBadge status={a.status} />{a.signatures > 0 && <span className="ml-1 text-xs" style={{ color: "var(--muted)" }}>· {a.signatures}/3 signed</span>}</td>
                   <td className="td text-right"><Link href={`/hr/appraisals/record/${a.id}`} className="hover:underline" style={{ color: "var(--brand)" }}>Open →</Link></td>
                 </tr>
               ))}

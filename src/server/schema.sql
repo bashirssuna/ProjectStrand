@@ -1153,6 +1153,11 @@ CREATE TABLE IF NOT EXISTS appraisal (
   manager_comments text,
   employee_comments text,
   development_plan text,                   -- growth / training needs
+  hr_comments text,                        -- Director HR comments (Section G)
+  archived boolean NOT NULL DEFAULT false,
+  employee_signed_at timestamptz, employee_signature text, employee_signed_name text,
+  appraiser_signed_at timestamptz, appraiser_signature text, appraiser_signed_name text,
+  hr_signed_at timestamptz, hr_signature text, hr_signed_name text,
   acknowledged_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (cycle_id, employee_id)
@@ -1176,6 +1181,19 @@ CREATE TABLE IF NOT EXISTS appraisal_item (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_appraisal_item_appraisal ON appraisal_item(appraisal_id);
+
+-- additive columns for appraisal sign-off / archive (existing installs)
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS hr_comments text;
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS employee_signed_at timestamptz;
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS employee_signature text;
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS employee_signed_name text;
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS appraiser_signed_at timestamptz;
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS appraiser_signature text;
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS appraiser_signed_name text;
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS hr_signed_at timestamptz;
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS hr_signature text;
+ALTER TABLE appraisal ADD COLUMN IF NOT EXISTS hr_signed_name text;
 
 -- ===================== Employee Relations (Grievance & Disciplinary) =====================
 -- A grievance (raised by an employee) or disciplinary case (raised against one).

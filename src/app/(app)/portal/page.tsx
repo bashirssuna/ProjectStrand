@@ -41,6 +41,7 @@ export default async function PortalHome() {
         {[
           ["/portal/timesheets", "Fill timesheet", "Log your hours."],
           ["/portal/leave", "Request leave", "Submit a leave request."],
+          ["/portal/appraisals", "My appraisals", "View, complete & sign your reviews."],
           ["/portal/requests", "Purchase request", "Request something to buy."],
           ["/portal/profile", "My profile & CV", "Update details & documents."],
         ].map(([href, t, d]) => (

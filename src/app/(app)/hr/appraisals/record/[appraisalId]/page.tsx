@@ -3,11 +3,13 @@ import { notFound } from "next/navigation";
 import { requireHrOrg } from "../../../_guard";
 import { getAppraisal, listItems, ratingLabel, APPRAISAL_STATUSES } from "@/server/services/appraisals";
 import { PageHeader, SectionTitle, Field, Stat, StatusBadge, Badge, Empty } from "@/components/ui";
+import { AppraisalSignatures } from "@/components/appraisal-signatures";
 import { fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
 import {
   addAppraisalItemAction, updateAppraisalItemAction, deleteAppraisalItemAction,
   saveAppraisalReviewAction, setAppraisalStatusAction, acknowledgeAppraisalAction,
+  archiveAppraisalAction, deleteAppraisalAction,
 } from "@/app/actions";
 
 const NEXT_STATUS: Record<string, { to: string; label: string } | null> = {
@@ -18,7 +20,7 @@ const NEXT_STATUS: Record<string, { to: string; label: string } | null> = {
   acknowledged: null,
 };
 
-export default async function AppraisalRecordPage({ params, searchParams }: { params: Promise<{ appraisalId: string }>; searchParams: Promise<{ saved?: string; err?: string }> }) {
+export default async function AppraisalRecordPage({ params, searchParams }: { params: Promise<{ appraisalId: string }>; searchParams: Promise<{ saved?: string; err?: string; signed?: string }> }) {
   const { orgId } = await requireHrOrg();
   const { appraisalId } = await params;
   const sp = await searchParams;
@@ -57,16 +59,25 @@ export default async function AppraisalRecordPage({ params, searchParams }: { pa
 
   return (
     <div className="max-w-4xl">
-      <PageHeader title={a.employeeName} subtitle={`${a.cycleName}${a.jobTitle ? ` · ${a.jobTitle}` : ""}`} actions={<Link href={`/hr/appraisals/${a.cycleId}`} className="btn btn-sm">← Cycle</Link>} />
+      <PageHeader title={a.employeeName} subtitle={`${a.cycleName}${a.jobTitle ? ` · ${a.jobTitle}` : ""}`} actions={
+        <div className="flex items-center gap-2">
+          <Link href={`/print/appraisal/${a.id}`} className="btn btn-sm" target="_blank">Print</Link>
+          <Link href={`/hr/appraisals/${a.cycleId}`} className="btn btn-sm">← Cycle</Link>
+        </div>} />
       {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Saved.</div>}
+      {sp.signed && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Signature applied.</div>}
+      {sp.err === "nosig" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>No signature on file — add one in your <Link href="/profile" className="underline">profile</Link> first, then sign.</div>}
 
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <StatusBadge status={a.status} />
+        {a.archived && <Badge tone="muted">Archived</Badge>}
         {a.appraiserName && <span className="text-sm" style={{ color: "var(--muted)" }}>Appraiser: {a.appraiserName}</span>}
         {a.acknowledgedAt && <span className="text-sm" style={{ color: "var(--ok)" }}>Acknowledged {fmtDateTime(a.acknowledgedAt)}</span>}
         <div className="ml-auto flex items-center gap-2">
           {next && <form action={setAppraisalStatusAction}><input type="hidden" name="appraisalId" value={a.id} /><input type="hidden" name="status" value={next.to} /><button className="btn btn-sm btn-primary" type="submit">{next.label}</button></form>}
           {a.status === "completed" && <form action={acknowledgeAppraisalAction}><input type="hidden" name="appraisalId" value={a.id} /><button className="btn btn-sm" type="submit">Employee acknowledge</button></form>}
+          <form action={archiveAppraisalAction}><input type="hidden" name="appraisalId" value={a.id} /><input type="hidden" name="archived" value={a.archived ? "0" : "1"} /><button className="btn btn-sm" type="submit">{a.archived ? "Unarchive" : "Archive"}</button></form>
+          <form action={deleteAppraisalAction}><input type="hidden" name="appraisalId" value={a.id} /><input type="hidden" name="cycleId" value={a.cycleId} /><button className="btn btn-sm" type="submit" style={{ color: "var(--danger)" }}>Delete</button></form>
         </div>
       </div>
 
@@ -103,11 +114,18 @@ export default async function AppraisalRecordPage({ params, searchParams }: { pa
         <Field label="Manager / appraiser comments"><textarea name="managerComments" defaultValue={a.managerComments ?? ""} disabled={locked} rows={3} className="input" placeholder="Overall narrative assessment" /></Field>
         <Field label="Development plan (growth & training needs)"><textarea name="developmentPlan" defaultValue={a.developmentPlan ?? ""} disabled={locked} rows={3} className="input" /></Field>
         <Field label="Employee comments"><textarea name="employeeComments" defaultValue={a.employeeComments ?? ""} disabled={a.status === "acknowledged"} rows={2} className="input" placeholder="Employee's response" /></Field>
+        <Field label="Director, HR comments / recommendation"><textarea name="hrComments" defaultValue={a.hrComments ?? ""} disabled={locked} rows={2} className="input" /></Field>
         <div className="grid sm:grid-cols-2 gap-3 items-end">
           <Field label={`Overall rating (1–${a.ratingMax}, blank = use manager average)`}><select name="overallRating" defaultValue={a.overallRating ?? ""} disabled={locked} className="select"><option value="">— (auto from manager average)</option>{ratings.map((r) => <option key={r} value={r}>{r} — {ratingLabel(r)}</option>)}</select></Field>
           {!locked && <div><button className="btn btn-primary" type="submit">Save review</button></div>}
         </div>
       </form>
+
+      <SectionTitle>Sign-off</SectionTitle>
+      <div className="card p-4 mt-2">
+        <AppraisalSignatures a={a} caps={{ employee: true, appraiser: true, hr: true }} />
+        <p className="text-xs mt-3" style={{ color: "var(--muted)" }}>Signing applies the signer&apos;s saved signature (set one in your profile). HR may sign on behalf of any party.</p>
+      </div>
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { q, one } from "@/server/db";
 
 export const APPRAISAL_STATUSES = ["draft", "self_assessment", "manager_review", "completed", "acknowledged"] as const;
 export const RATING_LABELS: Record<number, string> = {
-  1: "Unsatisfactory", 2: "Needs improvement", 3: "Meets expectations", 4: "Exceeds expectations", 5: "Outstanding",
+  1: "Poor", 2: "Fair", 3: "Good", 4: "Very good", 5: "Excellent",
 };
 export function ratingLabel(r: number | null | undefined): string | null {
   if (r == null) return null;
@@ -42,19 +42,38 @@ export async function orgAppraisalStats(orgId: string): Promise<{ cycles: number
 export type AppraisalRow = {
   id: string; employeeId: string; employeeName: string; jobTitle: string | null; department: string | null;
   appraiserName: string | null; status: string; overallRating: number | null; items: number; managerAvg: number | null;
+  archived: boolean; signatures: number;
 };
 
-export async function listAppraisals(orgId: string, cycleId: string): Promise<AppraisalRow[]> {
+export async function listAppraisals(orgId: string, cycleId: string, includeArchived = false): Promise<AppraisalRow[]> {
   return q<AppraisalRow>(
     `SELECT a.id, a.employee_id AS "employeeId", (e.first_name || ' ' || e.last_name) AS "employeeName",
             e.job_title AS "jobTitle", e.department,
             COALESCE(a.appraiser_name, ae.first_name || ' ' || ae.last_name) AS "appraiserName",
-            a.status, a.overall_rating::float8 AS "overallRating",
+            a.status, a.overall_rating::float8 AS "overallRating", a.archived,
+            ((a.employee_signed_at IS NOT NULL)::int + (a.appraiser_signed_at IS NOT NULL)::int + (a.hr_signed_at IS NOT NULL)::int) AS signatures,
             (SELECT COUNT(*) FROM appraisal_item i WHERE i.appraisal_id=a.id)::int AS items,
             (SELECT ROUND(AVG(i.manager_rating),1) FROM appraisal_item i WHERE i.appraisal_id=a.id)::float8 AS "managerAvg"
      FROM appraisal a JOIN employee e ON e.id=a.employee_id
      LEFT JOIN employee ae ON ae.id=a.appraiser_employee_id
-     WHERE a.cycle_id=$1 AND a.org_id=$2 ORDER BY e.first_name, e.last_name`, [cycleId, orgId]);
+     WHERE a.cycle_id=$1 AND a.org_id=$2 AND (a.archived = false OR $3) ORDER BY e.first_name, e.last_name`, [cycleId, orgId, includeArchived]);
+}
+
+// Appraisals the logged-in employee is involved in (as appraisee or appraiser).
+export type MyAppraisalRow = {
+  id: string; cycleName: string; cycleId: string; status: string; overallRating: number | null;
+  role: "appraisee" | "appraiser"; employeeName: string; appraiserName: string | null; archived: boolean;
+};
+export async function listAppraisalsForUser(orgId: string, employeeId: string): Promise<MyAppraisalRow[]> {
+  return q<MyAppraisalRow>(
+    `SELECT a.id, c.name AS "cycleName", a.cycle_id AS "cycleId", a.status, a.overall_rating::float8 AS "overallRating",
+            CASE WHEN a.employee_id=$2 THEN 'appraisee' ELSE 'appraiser' END AS role,
+            (e.first_name || ' ' || e.last_name) AS "employeeName",
+            COALESCE(a.appraiser_name, ae.first_name || ' ' || ae.last_name) AS "appraiserName", a.archived
+     FROM appraisal a JOIN appraisal_cycle c ON c.id=a.cycle_id JOIN employee e ON e.id=a.employee_id
+     LEFT JOIN employee ae ON ae.id=a.appraiser_employee_id
+     WHERE a.org_id=$1 AND a.archived=false AND ($2 IN (a.employee_id, a.appraiser_employee_id))
+     ORDER BY a.created_at DESC`, [orgId, employeeId]);
 }
 
 export type AppraisalDetail = {
@@ -62,8 +81,11 @@ export type AppraisalDetail = {
   employeeId: string; employeeName: string; jobTitle: string | null; department: string | null;
   appraiserName: string | null; appraiserEmployeeId: string | null; status: string;
   overallRating: number | null; managerComments: string | null; employeeComments: string | null;
-  developmentPlan: string | null; acknowledgedAt: string | null;
+  developmentPlan: string | null; hrComments: string | null; acknowledgedAt: string | null; archived: boolean;
   selfAvg: number | null; managerAvg: number | null;
+  employeeSignedAt: string | null; employeeSignature: string | null; employeeSignedName: string | null;
+  appraiserSignedAt: string | null; appraiserSignature: string | null; appraiserSignedName: string | null;
+  hrSignedAt: string | null; hrSignature: string | null; hrSignedName: string | null;
 };
 
 export async function getAppraisal(orgId: string, id: string): Promise<AppraisalDetail | null> {
@@ -72,7 +94,11 @@ export async function getAppraisal(orgId: string, id: string): Promise<Appraisal
             a.employee_id AS "employeeId", (e.first_name || ' ' || e.last_name) AS "employeeName", e.job_title AS "jobTitle", e.department,
             COALESCE(a.appraiser_name, ae.first_name || ' ' || ae.last_name) AS "appraiserName", a.appraiser_employee_id AS "appraiserEmployeeId",
             a.status, a.overall_rating::float8 AS "overallRating", a.manager_comments AS "managerComments",
-            a.employee_comments AS "employeeComments", a.development_plan AS "developmentPlan", a.acknowledged_at AS "acknowledgedAt",
+            a.employee_comments AS "employeeComments", a.development_plan AS "developmentPlan", a.hr_comments AS "hrComments",
+            a.acknowledged_at AS "acknowledgedAt", a.archived,
+            a.employee_signed_at AS "employeeSignedAt", a.employee_signature AS "employeeSignature", a.employee_signed_name AS "employeeSignedName",
+            a.appraiser_signed_at AS "appraiserSignedAt", a.appraiser_signature AS "appraiserSignature", a.appraiser_signed_name AS "appraiserSignedName",
+            a.hr_signed_at AS "hrSignedAt", a.hr_signature AS "hrSignature", a.hr_signed_name AS "hrSignedName",
             (SELECT ROUND(AVG(i.self_rating),1) FROM appraisal_item i WHERE i.appraisal_id=a.id)::float8 AS "selfAvg",
             (SELECT ROUND(AVG(i.manager_rating),1) FROM appraisal_item i WHERE i.appraisal_id=a.id)::float8 AS "managerAvg"
      FROM appraisal a JOIN appraisal_cycle c ON c.id=a.cycle_id JOIN employee e ON e.id=a.employee_id

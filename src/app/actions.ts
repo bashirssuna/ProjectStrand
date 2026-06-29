@@ -5822,13 +5822,16 @@ export async function addAppraisalItemAction(formData: FormData) {
 }
 
 export async function updateAppraisalItemAction(formData: FormData) {
-  const { orgId } = await requireInstitutionFinance();
-  const itemId = String(formData.get("itemId") || "");
   const aid = String(formData.get("appraisalId") || "");
-  await q(`UPDATE appraisal_item SET self_rating=$2, self_comment=$3, manager_rating=$4, manager_comment=$5, result=$6 WHERE id=$1 AND org_id=$7`,
-    [itemId, _rnum(formData, "selfRating"), _rstr(formData, "selfComment"), _rnum(formData, "managerRating"),
-     _rstr(formData, "managerComment"), _rstr(formData, "result"), orgId]);
-  redirect(`/hr/appraisals/record/${aid}`);
+  const acc = await appraisalAccess(aid);
+  const itemId = String(formData.get("itemId") || "");
+  if (acc.isOrgAdmin || acc.isAppraiser)
+    await q(`UPDATE appraisal_item SET manager_rating=$2, manager_comment=$3, result=$4 WHERE id=$1 AND appraisal_id=$5`,
+      [itemId, _rnum(formData, "managerRating"), _rstr(formData, "managerComment"), _rstr(formData, "result"), aid]);
+  if (acc.isAppraisee || acc.isOrgAdmin)
+    await q(`UPDATE appraisal_item SET self_rating=$2, self_comment=$3 WHERE id=$1 AND appraisal_id=$4`,
+      [itemId, _rnum(formData, "selfRating"), _rstr(formData, "selfComment"), aid]);
+  redirect(apprReturn(formData, aid));
 }
 
 export async function deleteAppraisalItemAction(formData: FormData) {
@@ -5840,12 +5843,72 @@ export async function deleteAppraisalItemAction(formData: FormData) {
 }
 
 export async function saveAppraisalReviewAction(formData: FormData) {
-  const { orgId } = await requireInstitutionFinance();
   const aid = String(formData.get("appraisalId") || "");
-  await q(`UPDATE appraisal SET manager_comments=$2, development_plan=$3, employee_comments=$4, overall_rating=$5 WHERE id=$1 AND org_id=$6`,
-    [aid, _rstr(formData, "managerComments"), _rstr(formData, "developmentPlan"), _rstr(formData, "employeeComments"),
-     _rnum(formData, "overallRating"), orgId]);
-  redirect(`/hr/appraisals/record/${aid}?saved=1`);
+  const acc = await appraisalAccess(aid);
+  if (acc.isOrgAdmin || acc.isAppraiser)
+    await q(`UPDATE appraisal SET manager_comments=$2, development_plan=$3, overall_rating=$4 WHERE id=$1 AND org_id=$5`,
+      [aid, _rstr(formData, "managerComments"), _rstr(formData, "developmentPlan"), _rnum(formData, "overallRating"), acc.orgId]);
+  if (acc.isOrgAdmin)
+    await q(`UPDATE appraisal SET hr_comments=$2 WHERE id=$1 AND org_id=$3`, [aid, _rstr(formData, "hrComments"), acc.orgId]);
+  if (acc.isAppraisee || acc.isOrgAdmin)
+    await q(`UPDATE appraisal SET employee_comments=$2 WHERE id=$1 AND org_id=$3`, [aid, _rstr(formData, "employeeComments"), acc.orgId]);
+  redirect(apprReturn(formData, aid) + "?saved=1");
+}
+
+// Relationship-aware access for appraisal forms: HR (org admin), the appraiser, or the appraisee.
+async function appraisalAccess(appraisalId: string) {
+  const user = await requireUser();
+  const org = await getUserOrg(user.id);
+  if (!org) redirect("/dashboard");
+  const a = await one<{ orgId: string; employeeId: string; appraiserId: string | null }>(
+    `SELECT org_id AS "orgId", employee_id AS "employeeId", appraiser_employee_id AS "appraiserId" FROM appraisal WHERE id=$1`, [appraisalId]);
+  if (!a || a.orgId !== org.id) redirect("/dashboard");
+  const myEmp = await employeeForUser(user.id);
+  const isOrgAdmin = !!org.isOrgAdmin || !!user.isSuperAdmin;
+  const isAppraisee = !!myEmp && myEmp.id === a.employeeId;
+  const isAppraiser = !!myEmp && !!a.appraiserId && myEmp.id === a.appraiserId;
+  if (!isOrgAdmin && !isAppraisee && !isAppraiser) redirect("/dashboard");
+  return { user, orgId: org.id, userName: user.name, isOrgAdmin, isAppraisee, isAppraiser };
+}
+function apprReturn(formData: FormData, aid: string): string {
+  return String(formData.get("returnTo") || "") === "portal" ? `/portal/appraisals/${aid}` : `/hr/appraisals/record/${aid}`;
+}
+
+export async function signAppraisalAction(formData: FormData) {
+  const aid = String(formData.get("appraisalId") || "");
+  const role = String(formData.get("role") || "");
+  const acc = await appraisalAccess(aid);
+  const ok = (role === "employee" && (acc.isAppraisee || acc.isOrgAdmin))
+    || (role === "appraiser" && (acc.isAppraiser || acc.isOrgAdmin))
+    || (role === "hr" && acc.isOrgAdmin);
+  if (!ok) redirect(apprReturn(formData, aid));
+  const sig = await one<{ dataUrl: string | null }>(`SELECT data_url AS "dataUrl" FROM signature_asset WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, [acc.user.id]);
+  if (!sig?.dataUrl) redirect(apprReturn(formData, aid) + "?err=nosig");
+  const col = role === "appraiser" ? "appraiser" : role === "hr" ? "hr" : "employee";
+  await q(`UPDATE appraisal SET ${col}_signature=$2, ${col}_signed_at=now(), ${col}_signed_name=$3 WHERE id=$1 AND org_id=$4`,
+    [aid, sig.dataUrl, acc.userName, acc.orgId]);
+  await writeAudit({ orgId: acc.orgId, userId: acc.user.id, action: "sign", entity: "appraisal", entityId: aid, after: { role } });
+  redirect(apprReturn(formData, aid) + "?signed=1");
+}
+
+export async function archiveAppraisalAction(formData: FormData) {
+  const aid = String(formData.get("appraisalId") || "");
+  const acc = await appraisalAccess(aid);
+  if (!acc.isOrgAdmin && !acc.isAppraiser) redirect(apprReturn(formData, aid));
+  const archived = formData.get("archived") === "1";
+  await q(`UPDATE appraisal SET archived=$2 WHERE id=$1 AND org_id=$3`, [aid, archived, acc.orgId]);
+  await writeAudit({ orgId: acc.orgId, userId: acc.user.id, action: archived ? "archive" : "unarchive", entity: "appraisal", entityId: aid });
+  redirect(apprReturn(formData, aid));
+}
+
+export async function deleteAppraisalAction(formData: FormData) {
+  const aid = String(formData.get("appraisalId") || "");
+  const acc = await appraisalAccess(aid);
+  if (!acc.isOrgAdmin && !acc.isAppraiser) redirect(apprReturn(formData, aid));
+  const cycleId = String(formData.get("cycleId") || "");
+  await q(`DELETE FROM appraisal WHERE id=$1 AND org_id=$2`, [aid, acc.orgId]);
+  await writeAudit({ orgId: acc.orgId, userId: acc.user.id, action: "delete", entity: "appraisal", entityId: aid });
+  redirect(String(formData.get("returnTo") || "") === "portal" ? "/portal/appraisals" : (cycleId ? `/hr/appraisals/${cycleId}` : "/hr/appraisals"));
 }
 
 export async function setAppraisalStatusAction(formData: FormData) {

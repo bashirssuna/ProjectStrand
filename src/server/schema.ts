@@ -1294,6 +1294,7 @@ CREATE TABLE IF NOT EXISTS petty_cash_account (
   name text NOT NULL,
   custodian text,
   custodian_employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
   currency text NOT NULL DEFAULT 'UGX',
   float_limit numeric(16,2) NOT NULL DEFAULT 0,
   status text NOT NULL DEFAULT 'active',
@@ -1303,6 +1304,7 @@ CREATE TABLE IF NOT EXISTS petty_cash_account (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_petty_cash_account_org ON petty_cash_account(org_id);
+ALTER TABLE petty_cash_account ADD COLUMN IF NOT EXISTS project_id text REFERENCES project(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS petty_cash_txn (
   id text PRIMARY KEY,
@@ -1436,6 +1438,39 @@ CREATE TABLE IF NOT EXISTS investment_movement (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_investment_movement_inv ON investment_movement(investment_id);
+
+-- ===================== Rolling Cash Forecast =====================
+CREATE TABLE IF NOT EXISTS cash_forecast (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  currency text NOT NULL DEFAULT 'UGX',
+  opening_balance numeric(18,2) NOT NULL DEFAULT 0,
+  start_date date NOT NULL,
+  months integer NOT NULL DEFAULT 6,
+  include_funding boolean NOT NULL DEFAULT true,
+  include_investments boolean NOT NULL DEFAULT true,
+  status text NOT NULL DEFAULT 'active',
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cash_forecast_org ON cash_forecast(org_id);
+
+CREATE TABLE IF NOT EXISTS cash_forecast_line (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  forecast_id text NOT NULL REFERENCES cash_forecast(id) ON DELETE CASCADE,
+  line_date date NOT NULL,
+  direction text NOT NULL,
+  category text,
+  description text,
+  amount numeric(18,2) NOT NULL,
+  recurring text NOT NULL DEFAULT 'none',
+  recur_until date,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cash_forecast_line_fc ON cash_forecast_line(forecast_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

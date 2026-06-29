@@ -10,11 +10,12 @@ import { createPettyCashAccountAction } from "@/app/actions";
 export default async function PettyCashPage({ searchParams }: { searchParams: Promise<{ err?: string }> }) {
   const { orgId, orgName, } = await requireFinanceOrg();
   const sp = await searchParams;
-  const [accounts, stats, employees, org] = await Promise.all([
+  const [accounts, stats, employees, org, projects] = await Promise.all([
     listAccounts(orgId),
     accountStats(orgId),
     q<{ id: string; name: string }>(`SELECT id, (first_name || ' ' || last_name) AS name FROM employee WHERE org_id=$1 AND status != 'terminated' ORDER BY first_name, last_name`, [orgId]),
     q<{ baseCurrency: string }>(`SELECT base_currency AS "baseCurrency" FROM organization WHERE id=$1`, [orgId]),
+    q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY code`, [orgId]),
   ]);
   const baseCcy = org[0]?.baseCurrency || "UGX";
 
@@ -43,7 +44,7 @@ export default async function PettyCashPage({ searchParams }: { searchParams: Pr
                   return (
                     <tr key={a.id}>
                       <td className="td"><div className="font-medium">{a.name}{a.status === "closed" && <span className="ml-2"><Badge tone="muted">Closed</Badge></span>}{a.low && <span className="ml-2"><Badge tone="danger">Low</Badge></span>}</div></td>
-                      <td className="td">{a.custodian ?? "—"}</td>
+                      <td className="td">{a.custodian ?? "—"}{a.projectTitle && <div className="text-xs" style={{ color: "var(--muted)" }}>{a.projectTitle}</div>}</td>
                       <td className="td text-right whitespace-nowrap">{money(a.floatLimit, a.currency)}</td>
                       <td className="td text-right whitespace-nowrap">{money(a.balance, a.currency)}</td>
                       <td className="td" style={{ minWidth: 120 }}><ProgressBar value={used} /></td>
@@ -64,6 +65,7 @@ export default async function PettyCashPage({ searchParams }: { searchParams: Pr
           <Field label="Float name *"><input name="name" required className="input" placeholder="e.g. Head Office Petty Cash" /></Field>
           <Field label="Custodian"><input name="custodian" className="input" placeholder="Name of cash holder" /></Field>
           <Field label="Link to employee (optional)"><select name="custodianEmployeeId" className="select"><option value="">—</option>{employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select></Field>
+          <Field label="Link to project (optional)"><select name="projectId" className="select"><option value="">—</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.title}</option>)}</select></Field>
           <Field label="Currency"><select name="currency" defaultValue={baseCcy} className="select">{currencyOptions(baseCcy).map((c) => <option key={c} value={c}>{c}</option>)}</select></Field>
           <Field label="Float limit (imprest ceiling)"><input name="floatLimit" type="number" step="0.01" min="0" className="input" placeholder="0.00" /></Field>
           <Field label="Opening float (optional)"><input name="opening" type="number" step="0.01" min="0" className="input" placeholder="0.00" /></Field>

@@ -94,6 +94,10 @@ export default async function FinanceHome() {
           <div className="font-display font-semibold">Petty cash</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Imprest floats with disbursements, replenishment and cash-count reconciliation.</div>
         </Link>
+        <Link href="/finance/cash-forecast" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">Cash forecast</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Rolling cash-position projection with funding, maturities and planned flows.</div>
+        </Link>
         <Link href="/finance/reconcile" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
           <div className="font-display font-semibold">Bank reconciliation</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Match the bank statement against the ledger balance.</div>

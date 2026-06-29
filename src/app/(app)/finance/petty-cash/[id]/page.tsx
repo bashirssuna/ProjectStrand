@@ -33,6 +33,7 @@ export default async function PettyCashAccountPage({ params, searchParams }: { p
 
       <div className="flex flex-wrap items-center gap-3 mb-4">
         {closed ? <Badge tone="muted">Closed</Badge> : <Badge tone="ok">Active</Badge>}
+        {a.projectTitle && <Badge tone="info">{a.projectTitle}</Badge>}
         {a.custodian && <span className="text-sm" style={{ color: "var(--muted)" }}>Custodian: {a.custodian}</span>}
         {a.openedDate && <span className="text-sm" style={{ color: "var(--muted)" }}>Opened {fmtDate(a.openedDate)}</span>}
         <div className="ml-auto flex items-center gap-2">

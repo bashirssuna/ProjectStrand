@@ -6119,9 +6119,9 @@ export async function createPettyCashAccountAction(formData: FormData) {
   if (!name) redirect("/finance/petty-cash?err=name");
   const aid = id("pca");
   const limit = _rnum(formData, "floatLimit") ?? 0;
-  await q(`INSERT INTO petty_cash_account (id, org_id, name, custodian, custodian_employee_id, currency, float_limit, opened_date, notes, created_by_id, created_by_name)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_DATE,$8,$9,$10)`,
-    [aid, orgId, name, _rstr(formData, "custodian"), _rstr(formData, "custodianEmployeeId"), String(formData.get("currency") || "UGX"), limit, _rstr(formData, "notes"), userId, userName]);
+  await q(`INSERT INTO petty_cash_account (id, org_id, name, custodian, custodian_employee_id, project_id, currency, float_limit, opened_date, notes, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_DATE,$9,$10,$11)`,
+    [aid, orgId, name, _rstr(formData, "custodian"), _rstr(formData, "custodianEmployeeId"), _rstr(formData, "projectId"), String(formData.get("currency") || "UGX"), limit, _rstr(formData, "notes"), userId, userName]);
   // optional opening float establishes the imprest
   const opening = _rnum(formData, "opening") ?? 0;
   if (opening > 0)
@@ -6371,4 +6371,65 @@ export async function deleteInvestmentAction(formData: FormData) {
   await q(`DELETE FROM investment WHERE id=$1 AND org_id=$2`, [iid, orgId]);
   await writeAudit({ orgId, userId, action: "delete", entity: "investment", entityId: iid });
   redirect(`/finance/treasury`);
+}
+
+/* ===================== Rolling Cash Forecast ===================== */
+export async function createForecastAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/finance/cash-forecast?err=name");
+  const fid = id("cfc");
+  const months = Math.max(1, Math.min(_rnum(formData, "months") ?? 6, 36));
+  await q(`INSERT INTO cash_forecast (id, org_id, name, currency, opening_balance, start_date, months, include_funding, include_investments, notes, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+    [fid, orgId, name, String(formData.get("currency") || "UGX"), _rnum(formData, "openingBalance") ?? 0,
+     _rstr(formData, "startDate") ?? new Date().toISOString().slice(0, 10), months,
+     formData.get("includeFunding") === "on", formData.get("includeInvestments") === "on", _rstr(formData, "notes"), userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "cash_forecast", entityId: fid, after: { name, months } });
+  redirect(`/finance/cash-forecast/${fid}`);
+}
+
+export async function updateForecastAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const fid = String(formData.get("forecastId") || "");
+  const months = Math.max(1, Math.min(_rnum(formData, "months") ?? 6, 36));
+  await q(`UPDATE cash_forecast SET opening_balance=$2, start_date=$3, months=$4, include_funding=$5, include_investments=$6 WHERE id=$1 AND org_id=$7`,
+    [fid, _rnum(formData, "openingBalance") ?? 0, _rstr(formData, "startDate") ?? new Date().toISOString().slice(0, 10), months,
+     formData.get("includeFunding") === "on", formData.get("includeInvestments") === "on", orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "cash_forecast", entityId: fid });
+  redirect(`/finance/cash-forecast/${fid}`);
+}
+
+export async function addForecastLineAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const fid = String(formData.get("forecastId") || "");
+  const amount = _rnum(formData, "amount") ?? 0;
+  if (amount <= 0) redirect(`/finance/cash-forecast/${fid}?err=amount`);
+  await q(`INSERT INTO cash_forecast_line (id, org_id, forecast_id, line_date, direction, category, description, amount, recurring, recur_until)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [id("cfl"), orgId, fid, _rstr(formData, "lineDate") ?? new Date().toISOString().slice(0, 10), String(formData.get("direction") || "outflow"),
+     _rstr(formData, "category"), _rstr(formData, "description"), amount, String(formData.get("recurring") || "none"), _rstr(formData, "recurUntil")]);
+  redirect(`/finance/cash-forecast/${fid}`);
+}
+export async function deleteForecastLineAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const fid = String(formData.get("forecastId") || "");
+  await q(`DELETE FROM cash_forecast_line WHERE id=$1 AND org_id=$2`, [String(formData.get("lineId") || ""), orgId]);
+  redirect(`/finance/cash-forecast/${fid}`);
+}
+
+export async function archiveForecastAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const fid = String(formData.get("forecastId") || "");
+  const reopen = formData.get("reopen") === "1";
+  await q(`UPDATE cash_forecast SET status=$2 WHERE id=$1 AND org_id=$3`, [fid, reopen ? "active" : "archived", orgId]);
+  await writeAudit({ orgId, userId, action: reopen ? "reopen" : "archive", entity: "cash_forecast", entityId: fid });
+  redirect(`/finance/cash-forecast/${fid}`);
+}
+export async function deleteForecastAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const fid = String(formData.get("forecastId") || "");
+  await q(`DELETE FROM cash_forecast WHERE id=$1 AND org_id=$2`, [fid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "cash_forecast", entityId: fid });
+  redirect(`/finance/cash-forecast`);
 }

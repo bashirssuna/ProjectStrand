@@ -1308,6 +1308,7 @@ CREATE TABLE IF NOT EXISTS petty_cash_account (
   name text NOT NULL,
   custodian text,                                  -- person holding the float
   custodian_employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
   currency text NOT NULL DEFAULT 'UGX',
   float_limit numeric(16,2) NOT NULL DEFAULT 0,    -- imprest ceiling
   status text NOT NULL DEFAULT 'active',            -- active | closed
@@ -1317,6 +1318,7 @@ CREATE TABLE IF NOT EXISTS petty_cash_account (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_petty_cash_account_org ON petty_cash_account(org_id);
+ALTER TABLE petty_cash_account ADD COLUMN IF NOT EXISTS project_id text REFERENCES project(id) ON DELETE SET NULL;
 
 -- Ledger entry. amount is positive for top_up/expense; adjustment carries its own
 -- sign. Effect on cash = (expense ? -amount : amount).
@@ -1458,6 +1460,42 @@ CREATE TABLE IF NOT EXISTS investment_movement (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_investment_movement_inv ON investment_movement(investment_id);
+
+-- ===================== Rolling Cash Forecast =====================
+-- A forward cash-position projection: opening balance + monthly buckets of
+-- expected inflows/outflows (manual lines plus optional auto-pulls from funding
+-- tranches and investment maturities).
+CREATE TABLE IF NOT EXISTS cash_forecast (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  currency text NOT NULL DEFAULT 'UGX',
+  opening_balance numeric(18,2) NOT NULL DEFAULT 0,
+  start_date date NOT NULL,
+  months integer NOT NULL DEFAULT 6,             -- horizon length
+  include_funding boolean NOT NULL DEFAULT true,  -- pull expected funding tranches
+  include_investments boolean NOT NULL DEFAULT true, -- pull investment maturities
+  status text NOT NULL DEFAULT 'active',           -- active | archived
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cash_forecast_org ON cash_forecast(org_id);
+
+CREATE TABLE IF NOT EXISTS cash_forecast_line (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  forecast_id text NOT NULL REFERENCES cash_forecast(id) ON DELETE CASCADE,
+  line_date date NOT NULL,
+  direction text NOT NULL,                       -- inflow | outflow
+  category text,
+  description text,
+  amount numeric(18,2) NOT NULL,
+  recurring text NOT NULL DEFAULT 'none',         -- none | monthly
+  recur_until date,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_cash_forecast_line_fc ON cash_forecast_line(forecast_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

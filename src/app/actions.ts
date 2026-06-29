@@ -5771,3 +5771,99 @@ export async function hireApplicantAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "create", entity: "employee", entityId: eid, after: { from: "recruitment", application: appId, name: app.fullName } });
   redirect(`/hr/employees/${eid}?hired=1`);
 }
+
+/* ===================== Performance Appraisals ===================== */
+export async function createCycleAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/hr/appraisals?err=name");
+  const cid = id("cyc");
+  await q(`INSERT INTO appraisal_cycle (id, org_id, name, kind, period_start, period_end, due_date, rating_max, status, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',$9,$10)`,
+    [cid, orgId, name, String(formData.get("kind") || "annual"), _rstr(formData, "periodStart"), _rstr(formData, "periodEnd"),
+     _rstr(formData, "dueDate"), parseInt(String(formData.get("ratingMax") || "5"), 10) || 5, userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "appraisal_cycle", entityId: cid, after: { name } });
+  redirect(`/hr/appraisals/${cid}`);
+}
+
+export async function setCycleStatusAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const cid = String(formData.get("cycleId") || "");
+  await q(`UPDATE appraisal_cycle SET status=$2 WHERE id=$1 AND org_id=$3`, [cid, String(formData.get("status") || "open"), orgId]);
+  redirect(`/hr/appraisals/${cid}`);
+}
+
+export async function createAppraisalAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const cid = String(formData.get("cycleId") || "");
+  const empId = String(formData.get("employeeId") || "");
+  if (!empId) redirect(`/hr/appraisals/${cid}?err=emp`);
+  const existing = await one<{ id: string }>(`SELECT id FROM appraisal WHERE cycle_id=$1 AND employee_id=$2`, [cid, empId]);
+  if (existing) redirect(`/hr/appraisals/record/${existing.id}`);
+  const aid = id("appr");
+  await q(`INSERT INTO appraisal (id, org_id, cycle_id, employee_id, appraiser_employee_id, appraiser_name, status)
+           VALUES ($1,$2,$3,$4,$5,$6,'draft')`,
+    [aid, orgId, cid, empId, _rstr(formData, "appraiserEmployeeId"), _rstr(formData, "appraiserName")]);
+  await writeAudit({ orgId, userId, action: "create", entity: "appraisal", entityId: aid, after: { employee: empId, cycle: cid } });
+  redirect(`/hr/appraisals/record/${aid}`);
+}
+
+export async function addAppraisalItemAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const aid = String(formData.get("appraisalId") || "");
+  const title = String(formData.get("title") || "").trim();
+  if (!title) redirect(`/hr/appraisals/record/${aid}?err=item`);
+  const n = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM appraisal_item WHERE appraisal_id=$1`, [aid]))?.c ?? 0;
+  await q(`INSERT INTO appraisal_item (id, org_id, appraisal_id, kind, title, description, weight, target, sort_order)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [id("ai"), orgId, aid, String(formData.get("kind") || "objective"), title, _rstr(formData, "description"),
+     _rnum(formData, "weight"), _rstr(formData, "target"), n]);
+  redirect(`/hr/appraisals/record/${aid}`);
+}
+
+export async function updateAppraisalItemAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const itemId = String(formData.get("itemId") || "");
+  const aid = String(formData.get("appraisalId") || "");
+  await q(`UPDATE appraisal_item SET self_rating=$2, self_comment=$3, manager_rating=$4, manager_comment=$5, result=$6 WHERE id=$1 AND org_id=$7`,
+    [itemId, _rnum(formData, "selfRating"), _rstr(formData, "selfComment"), _rnum(formData, "managerRating"),
+     _rstr(formData, "managerComment"), _rstr(formData, "result"), orgId]);
+  redirect(`/hr/appraisals/record/${aid}`);
+}
+
+export async function deleteAppraisalItemAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const itemId = String(formData.get("itemId") || "");
+  const aid = String(formData.get("appraisalId") || "");
+  await q(`DELETE FROM appraisal_item WHERE id=$1 AND org_id=$2`, [itemId, orgId]);
+  redirect(`/hr/appraisals/record/${aid}`);
+}
+
+export async function saveAppraisalReviewAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const aid = String(formData.get("appraisalId") || "");
+  await q(`UPDATE appraisal SET manager_comments=$2, development_plan=$3, employee_comments=$4, overall_rating=$5 WHERE id=$1 AND org_id=$6`,
+    [aid, _rstr(formData, "managerComments"), _rstr(formData, "developmentPlan"), _rstr(formData, "employeeComments"),
+     _rnum(formData, "overallRating"), orgId]);
+  redirect(`/hr/appraisals/record/${aid}?saved=1`);
+}
+
+export async function setAppraisalStatusAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const aid = String(formData.get("appraisalId") || "");
+  const status = String(formData.get("status") || "draft");
+  await q(`UPDATE appraisal SET status=$2,
+             overall_rating = CASE WHEN $2='completed' AND overall_rating IS NULL
+               THEN (SELECT ROUND(AVG(manager_rating),1) FROM appraisal_item WHERE appraisal_id=$1) ELSE overall_rating END
+           WHERE id=$1 AND org_id=$3`, [aid, status, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "appraisal", entityId: aid, after: { status } });
+  redirect(`/hr/appraisals/record/${aid}`);
+}
+
+export async function acknowledgeAppraisalAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const aid = String(formData.get("appraisalId") || "");
+  await q(`UPDATE appraisal SET status='acknowledged', acknowledged_at=now() WHERE id=$1 AND org_id=$2`, [aid, orgId]);
+  await writeAudit({ orgId, userId, action: "update", entity: "appraisal", entityId: aid, after: { status: "acknowledged" } });
+  redirect(`/hr/appraisals/record/${aid}`);
+}

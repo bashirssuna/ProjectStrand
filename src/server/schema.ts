@@ -1120,6 +1120,56 @@ CREATE TABLE IF NOT EXISTS job_offer (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_job_offer_application ON job_offer(application_id);
+
+-- ===================== Performance Appraisals =====================
+CREATE TABLE IF NOT EXISTS appraisal_cycle (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  kind text NOT NULL DEFAULT 'annual',
+  period_start date, period_end date,
+  due_date date,
+  rating_max integer NOT NULL DEFAULT 5,
+  status text NOT NULL DEFAULT 'open',
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_appraisal_cycle_org ON appraisal_cycle(org_id);
+
+CREATE TABLE IF NOT EXISTS appraisal (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  cycle_id text NOT NULL REFERENCES appraisal_cycle(id) ON DELETE CASCADE,
+  employee_id text NOT NULL REFERENCES employee(id) ON DELETE CASCADE,
+  appraiser_employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  appraiser_name text,
+  status text NOT NULL DEFAULT 'draft',
+  overall_rating numeric(4,1),
+  manager_comments text,
+  employee_comments text,
+  development_plan text,
+  acknowledged_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (cycle_id, employee_id)
+);
+CREATE INDEX IF NOT EXISTS idx_appraisal_cycle ON appraisal(cycle_id);
+
+CREATE TABLE IF NOT EXISTS appraisal_item (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  appraisal_id text NOT NULL REFERENCES appraisal(id) ON DELETE CASCADE,
+  kind text NOT NULL DEFAULT 'objective',
+  title text NOT NULL,
+  description text,
+  weight numeric(5,1),
+  target text,
+  result text,
+  self_rating numeric(4,1), self_comment text,
+  manager_rating numeric(4,1), manager_comment text,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_appraisal_item_appraisal ON appraisal_item(appraisal_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

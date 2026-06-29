@@ -1286,6 +1286,42 @@ CREATE TABLE IF NOT EXISTS checklist_instance_item (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_checklist_instance_item_inst ON checklist_instance_item(instance_id);
+
+-- ===================== Petty Cash / Imprest =====================
+CREATE TABLE IF NOT EXISTS petty_cash_account (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  custodian text,
+  custodian_employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  currency text NOT NULL DEFAULT 'UGX',
+  float_limit numeric(16,2) NOT NULL DEFAULT 0,
+  status text NOT NULL DEFAULT 'active',
+  opened_date date,
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_petty_cash_account_org ON petty_cash_account(org_id);
+
+CREATE TABLE IF NOT EXISTS petty_cash_txn (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  account_id text NOT NULL REFERENCES petty_cash_account(id) ON DELETE CASCADE,
+  txn_date date NOT NULL,
+  type text NOT NULL,
+  amount numeric(16,2) NOT NULL,
+  description text,
+  payee text,
+  category text,
+  reference text,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
+  file_key text, file_name text,
+  approved_by text, approved_at timestamptz,
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_petty_cash_txn_account ON petty_cash_txn(account_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

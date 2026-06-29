@@ -6108,3 +6108,91 @@ export async function deleteChecklistInstanceAction(formData: FormData) {
   await writeAudit({ orgId, userId, action: "delete", entity: "checklist_instance", entityId: instId });
   redirect(`/hr/checklists`);
 }
+
+/* ===================== Petty Cash / Imprest ===================== */
+const _pcBal = async (orgId: string, accountId: string): Promise<number> =>
+  (await one<{ b: number }>(`SELECT COALESCE(SUM(CASE WHEN type='expense' THEN -amount ELSE amount END),0)::float8 b FROM petty_cash_txn WHERE account_id=$1 AND org_id=$2`, [accountId, orgId]))?.b ?? 0;
+
+export async function createPettyCashAccountAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const name = String(formData.get("name") || "").trim();
+  if (!name) redirect("/finance/petty-cash?err=name");
+  const aid = id("pca");
+  const limit = _rnum(formData, "floatLimit") ?? 0;
+  await q(`INSERT INTO petty_cash_account (id, org_id, name, custodian, custodian_employee_id, currency, float_limit, opened_date, notes, created_by_id, created_by_name)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_DATE,$8,$9,$10)`,
+    [aid, orgId, name, _rstr(formData, "custodian"), _rstr(formData, "custodianEmployeeId"), String(formData.get("currency") || "UGX"), limit, _rstr(formData, "notes"), userId, userName]);
+  // optional opening float establishes the imprest
+  const opening = _rnum(formData, "opening") ?? 0;
+  if (opening > 0)
+    await q(`INSERT INTO petty_cash_txn (id, org_id, account_id, txn_date, type, amount, description, recorded_by_id, recorded_by_name)
+             VALUES ($1,$2,$3,CURRENT_DATE,'top_up',$4,'Opening float',$5,$6)`, [id("pct"), orgId, aid, opening, userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "petty_cash_account", entityId: aid, after: { name, limit, opening } });
+  redirect(`/finance/petty-cash/${aid}`);
+}
+
+export async function recordPettyCashExpenseAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const aid = String(formData.get("accountId") || "");
+  const amount = _rnum(formData, "amount") ?? 0;
+  if (amount <= 0) redirect(`/finance/petty-cash/${aid}?err=amount`);
+  if (amount > await _pcBal(orgId, aid)) redirect(`/finance/petty-cash/${aid}?err=insufficient`);
+  const txnId = id("pct");
+  let fileKey: string | null = null, fileName: string | null = null;
+  const file = formData.get("file") as File | null;
+  if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); fileName = file.name; fileKey = await saveUpload(txnId, file.name, buf); }
+  const approved = formData.get("approved") === "on";
+  await q(`INSERT INTO petty_cash_txn (id, org_id, account_id, txn_date, type, amount, description, payee, category, reference, project_id, file_key, file_name, approved_by, approved_at, recorded_by_id, recorded_by_name)
+           VALUES ($1,$2,$3,$4,'expense',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+    [txnId, orgId, aid, _rstr(formData, "txnDate") ?? new Date().toISOString().slice(0, 10), amount, _rstr(formData, "description"),
+     _rstr(formData, "payee"), _rstr(formData, "category"), _rstr(formData, "reference"), _rstr(formData, "projectId"), fileKey, fileName,
+     approved ? userName : null, approved ? new Date().toISOString() : null, userId, userName]);
+  await writeAudit({ orgId, userId, action: "create", entity: "petty_cash_txn", entityId: txnId, after: { type: "expense", amount } });
+  redirect(`/finance/petty-cash/${aid}`);
+}
+
+export async function replenishPettyCashAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const aid = String(formData.get("accountId") || "");
+  const amount = _rnum(formData, "amount") ?? 0;
+  if (amount <= 0) redirect(`/finance/petty-cash/${aid}?err=amount`);
+  await q(`INSERT INTO petty_cash_txn (id, org_id, account_id, txn_date, type, amount, description, reference, approved_by, approved_at, recorded_by_id, recorded_by_name)
+           VALUES ($1,$2,$3,$4,'top_up',$5,'Replenishment',$6,$7,$8,$9,$10)`,
+    [id("pct"), orgId, aid, _rstr(formData, "txnDate") ?? new Date().toISOString().slice(0, 10), amount, _rstr(formData, "reference"), userName, new Date().toISOString(), userId, userName]);
+  await writeAudit({ orgId, userId, action: "replenish", entity: "petty_cash_account", entityId: aid, after: { amount } });
+  redirect(`/finance/petty-cash/${aid}`);
+}
+
+export async function reconcilePettyCashAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const aid = String(formData.get("accountId") || "");
+  const counted = _rnum(formData, "counted");
+  if (counted == null) redirect(`/finance/petty-cash/${aid}?err=amount`);
+  const book = await _pcBal(orgId, aid);
+  const variance = Math.round((counted - book) * 100) / 100;
+  if (variance !== 0) {
+    const note = `Cash count reconciliation: counted ${counted}, book ${book}, variance ${variance}${_rstr(formData, "note") ? ` — ${_rstr(formData, "note")}` : ""}`;
+    await q(`INSERT INTO petty_cash_txn (id, org_id, account_id, txn_date, type, amount, description, recorded_by_id, recorded_by_name)
+             VALUES ($1,$2,$3,$4,'adjustment',$5,$6,$7,$8)`,
+      [id("pct"), orgId, aid, _rstr(formData, "txnDate") ?? new Date().toISOString().slice(0, 10), variance, note, userId, userName]);
+  }
+  await writeAudit({ orgId, userId, action: "reconcile", entity: "petty_cash_account", entityId: aid, after: { counted, book, variance } });
+  redirect(`/finance/petty-cash/${aid}?reconciled=1`);
+}
+
+export async function closePettyCashAccountAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const aid = String(formData.get("accountId") || "");
+  const reopen = formData.get("reopen") === "1";
+  await q(`UPDATE petty_cash_account SET status=$2 WHERE id=$1 AND org_id=$3`, [aid, reopen ? "active" : "closed", orgId]);
+  await writeAudit({ orgId, userId, action: reopen ? "reopen" : "close", entity: "petty_cash_account", entityId: aid });
+  redirect(`/finance/petty-cash/${aid}`);
+}
+
+export async function deletePettyCashAccountAction(formData: FormData) {
+  const { orgId, userId } = await requireInstitutionFinance();
+  const aid = String(formData.get("accountId") || "");
+  await q(`DELETE FROM petty_cash_account WHERE id=$1 AND org_id=$2`, [aid, orgId]);
+  await writeAudit({ orgId, userId, action: "delete", entity: "petty_cash_account", entityId: aid });
+  redirect(`/finance/petty-cash`);
+}

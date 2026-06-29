@@ -1298,6 +1298,46 @@ CREATE TABLE IF NOT EXISTS checklist_instance_item (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_checklist_instance_item_inst ON checklist_instance_item(instance_id);
+
+-- ===================== Petty Cash / Imprest =====================
+-- A petty-cash float held by a custodian on the imprest system: disbursements
+-- draw the cash down, replenishments restore it toward the float limit.
+CREATE TABLE IF NOT EXISTS petty_cash_account (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  custodian text,                                  -- person holding the float
+  custodian_employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  currency text NOT NULL DEFAULT 'UGX',
+  float_limit numeric(16,2) NOT NULL DEFAULT 0,    -- imprest ceiling
+  status text NOT NULL DEFAULT 'active',            -- active | closed
+  opened_date date,
+  notes text,
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_petty_cash_account_org ON petty_cash_account(org_id);
+
+-- Ledger entry. amount is positive for top_up/expense; adjustment carries its own
+-- sign. Effect on cash = (expense ? -amount : amount).
+CREATE TABLE IF NOT EXISTS petty_cash_txn (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  account_id text NOT NULL REFERENCES petty_cash_account(id) ON DELETE CASCADE,
+  txn_date date NOT NULL,
+  type text NOT NULL,                              -- top_up | expense | adjustment
+  amount numeric(16,2) NOT NULL,
+  description text,
+  payee text,
+  category text,
+  reference text,                                  -- voucher / reference no.
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
+  file_key text, file_name text,                   -- receipt attachment
+  approved_by text, approved_at timestamptz,
+  recorded_by_id text, recorded_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_petty_cash_txn_account ON petty_cash_txn(account_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

@@ -16,7 +16,7 @@ export default async function CashForecastPage({ searchParams }: { searchParams:
     accountStats(orgId),
     q<{ baseCurrency: string }>(`SELECT base_currency AS "baseCurrency" FROM organization WHERE id=$1`, [orgId]),
   ]);
-  const baseCcy = org[0]?.baseCurrency || "UGX";
+  const baseCcy = org[0]?.baseCurrency || "USD";
   const today = new Date().toISOString().slice(0, 10);
 
   return (

@@ -111,7 +111,7 @@ function slugify(name: string): string {
 }
 
 export async function signupOrganization(input: {
-  orgName: string; adminName: string; adminEmail: string; password: string; confirmPassword: string;
+  orgName: string; adminName: string; adminEmail: string; password: string; confirmPassword: string; baseCurrency?: string;
 }): Promise<{ userId: string } | { error: string }> {
   const email = input.adminEmail.trim().toLowerCase();
   if (!email) return { error: "A valid email is required." };
@@ -127,8 +127,9 @@ export async function signupOrganization(input: {
 
   const orgId = id("org");
   const trialEnds = new Date(Date.now() + TRIAL_DAYS * 86400000).toISOString();
-  await q(`INSERT INTO organization (id, name, slug, plan, trial_ends_at, status) VALUES ($1,$2,$3,'trial',$4,'active')`,
-    [orgId, input.orgName.trim() || "My Organization", slug, trialEnds]);
+  const baseCcy = (input.baseCurrency || "USD").trim().toUpperCase().slice(0, 3) || "USD";
+  await q(`INSERT INTO organization (id, name, slug, plan, trial_ends_at, status, base_currency) VALUES ($1,$2,$3,'trial',$4,'active',$5)`,
+    [orgId, input.orgName.trim() || "My Organization", slug, trialEnds, baseCcy]);
 
   const adminRoleId = id("role");
   await q(`INSERT INTO role (id, org_id, key, name, is_system, permissions) VALUES ($1,$2,'org_admin','Organization Admin',true,'[]')`,

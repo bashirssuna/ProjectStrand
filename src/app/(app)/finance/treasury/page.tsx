@@ -15,7 +15,7 @@ export default async function TreasuryPage({ searchParams }: { searchParams: Pro
     listFunds(orgId), reserveStats(orgId), listInvestments(orgId), investmentStats(orgId),
     q<{ baseCurrency: string }>(`SELECT base_currency AS "baseCurrency" FROM organization WHERE id=$1`, [orgId]),
   ]);
-  const baseCcy = org[0]?.baseCurrency || "UGX";
+  const baseCcy = org[0]?.baseCurrency || "USD";
   const reserves = ccyTotal(rStats.total, baseCcy), invested = ccyTotal(iStats.invested, baseCcy), interest = ccyTotal(iStats.interestEarned, baseCcy);
 
   return (

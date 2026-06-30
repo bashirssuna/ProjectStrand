@@ -17,6 +17,7 @@ export default async function RemittancesPage({ searchParams }: { searchParams: 
             CASE WHEN paid_on IS NULL THEN GREATEST(0,(CURRENT_DATE - due_date))::int ELSE 0 END AS "daysOverdue"
      FROM statutory_remittance WHERE org_id=$1 ORDER BY due_date DESC`, [orgId]
   );
+  const baseCcy = (await q<{ c: string }>(`SELECT COALESCE(base_currency,'USD') c FROM organization WHERE id=$1`, [orgId]))[0]?.c ?? "USD";
   const outstanding = rows.filter((r) => !r.paidOn);
   const overdue = outstanding.filter((r) => r.daysOverdue > 0);
 
@@ -82,7 +83,7 @@ export default async function RemittancesPage({ searchParams }: { searchParams: 
         <Field label="Pay period (YYYY-MM)"><input name="period" required placeholder="2026-05" className="input" /></Field>
         <Field label="Tax"><select name="taxType" className="select"><option value="paye">PAYE</option><option value="nssf">NSSF</option><option value="lst">LST</option><option value="wht">Withholding tax</option></select></Field>
         <Field label="Amount"><input type="number" step="0.01" name="amount" className="input" /></Field>
-        <Field label="Currency"><input name="currency" defaultValue="UGX" className="input" /></Field>
+        <Field label="Currency"><input name="currency" defaultValue={baseCcy} className="input" /></Field>
         <Field label="Due date (defaults to 15th of next month)"><input type="date" name="dueDate" className="input" /></Field>
         <Field label="Filed on (if already paid)"><input type="date" name="paidOn" className="input" /></Field>
         <div className="sm:col-span-2"><Field label="Receipt / reference"><input name="reference" className="input" /></Field></div>

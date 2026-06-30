@@ -1013,6 +1013,7 @@ export async function signupOrganizationAction(formData: FormData) {
     adminEmail: String(formData.get("adminEmail") || ""),
     password: String(formData.get("password") || ""),
     confirmPassword: String(formData.get("confirmPassword") || ""),
+    baseCurrency: String(formData.get("baseCurrency") || "USD"),
   });
   if ("error" in res) redirect(`/signup?error=${encodeURIComponent(res.error)}`);
   // Account created but not yet active — they must confirm via email first.
@@ -1522,8 +1523,8 @@ export async function createPaymentSlipAction(formData: FormData) {
   const projectId = String(formData.get("projectId") || "") || null;
   let currency = String(formData.get("currency") || "").trim().toUpperCase();
   if (!currency) currency = projectId
-    ? ((await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [projectId]))?.currency ?? "UGX")
-    : ((await one<{ baseCurrency: string }>(`SELECT COALESCE(base_currency,'UGX') AS "baseCurrency" FROM organization WHERE id=$1`, [orgId]))?.baseCurrency ?? "UGX");
+    ? ((await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [projectId]))?.currency ?? "USD")
+    : ((await one<{ baseCurrency: string }>(`SELECT COALESCE(base_currency,'USD') AS "baseCurrency" FROM organization WHERE id=$1`, [orgId]))?.baseCurrency ?? "USD");
   const note = String(formData.get("note") || "").trim() || null;
   const num = await nextNum(orgId, "payment_slip", "PS");
   const sid = id("pslip");
@@ -3469,7 +3470,7 @@ export async function addStatutoryRemittanceAction(formData: FormData) {
   await q(`INSERT INTO statutory_remittance (id, org_id, period, tax_type, amount, currency, due_date, paid_on, reference, note)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [id("remit"), orgId, period, taxType, Number(formData.get("amount") || 0),
-     String(formData.get("currency") || "UGX").trim() || "UGX", due,
+     await _orgCcy(formData, orgId), due,
      String(formData.get("paidOn") || "") || null, String(formData.get("reference") || "") || null,
      String(formData.get("note") || "") || null]);
   await writeAudit({ orgId, userId, action: "create", entity: "statutory_remittance", entityId: period, after: { taxType, period } });
@@ -3505,7 +3506,7 @@ export async function addQuotationAction(formData: FormData) {
   await q(`INSERT INTO pr_quotation (id, request_id, vendor_id, vendor_name, amount, currency, lead_time_days, notes)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
     [id("quote"), prId, String(formData.get("vendorId") || "") || null, vendorName,
-     Number(formData.get("amount") || 0), String(formData.get("currency") || "UGX").trim() || "UGX",
+     Number(formData.get("amount") || 0), await _orgCcy(formData, orgId),
      formData.get("leadTimeDays") ? Number(formData.get("leadTimeDays")) : null,
      String(formData.get("notes") || "") || null]);
   await writeAudit({ orgId, userId, action: "create", entity: "pr_quotation", entityId: prId });
@@ -3540,7 +3541,7 @@ export async function saveSingleSourceJustificationAction(formData: FormData) {
 export async function saveProcurementConfigAction(formData: FormData) {
   const { orgId, userId } = await requireInstitutionFinance();
   const cfg: ProcurementConfig = {
-    currency: String(formData.get("currency") || "UGX").trim() || "UGX",
+    currency: await _orgCcy(formData, orgId),
     directMax: Number(formData.get("directMax") || 0),
     microMax: Number(formData.get("microMax") || 0),
     quotesDirect: Number(formData.get("quotesDirect") || 1),
@@ -3560,7 +3561,7 @@ export async function addPerdiemRateAction(formData: FormData) {
   if (!category) redirect("/finance/perdiem?err=ratefields");
   await q(`INSERT INTO perdiem_rate (id, org_id, category, daily_rate, currency, note) VALUES ($1,$2,$3,$4,$5,$6)`,
     [id("pdr"), orgId, category, Number(formData.get("dailyRate") || 0),
-     String(formData.get("currency") || "UGX").trim() || "UGX", String(formData.get("note") || "") || null]);
+     await _orgCcy(formData, orgId), String(formData.get("note") || "") || null]);
   redirect("/finance/perdiem?saved=1");
 }
 export async function deletePerdiemRateAction(formData: FormData) {
@@ -3581,7 +3582,7 @@ export async function createPerdiemClaimAction(formData: FormData) {
     [cid, orgId, String(formData.get("projectId") || "") || null, String(formData.get("employeeId") || "") || null,
      traveller, String(formData.get("purpose") || "") || null, String(formData.get("destination") || "") || null,
      String(formData.get("startDate") || "") || null, String(formData.get("endDate") || "") || null,
-     days, rate, String(formData.get("currency") || "UGX").trim() || "UGX", days * rate,
+     days, rate, await _orgCcy(formData, orgId), days * rate,
      String(formData.get("activityReport") || "") || null, userId, userName]);
   redirect(`/finance/perdiem/${cid}`);
 }
@@ -3662,7 +3663,7 @@ export async function addPlanItemAction(formData: FormData) {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'planned',$13)`,
     [id("ppi"), orgId, String(formData.get("projectId") || "") || null, period, description,
      String(formData.get("category") || "") || null, qty, unit, qty * unit,
-     String(formData.get("currency") || "UGX").trim() || "UGX", String(formData.get("neededBy") || "") || null,
+     await _orgCcy(formData, orgId), String(formData.get("neededBy") || "") || null,
      String(formData.get("department") || "") || null, String(formData.get("note") || "") || null]);
   redirect("/procurement/plan?saved=1");
 }
@@ -3705,7 +3706,7 @@ export async function addGiftAction(formData: FormData) {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
     [id("gift"), orgId, person, String(formData.get("supplierName") || "") || null, description,
      formData.get("estValue") ? Number(formData.get("estValue")) : null,
-     String(formData.get("currency") || "UGX").trim() || "UGX",
+     await _orgCcy(formData, orgId),
      String(formData.get("receivedOn") || "") || new Date().toISOString().slice(0, 10),
      String(formData.get("actionTaken") || "") || null, String(formData.get("note") || "") || null]);
   redirect("/procurement/ethics?saved=1");
@@ -5596,6 +5597,12 @@ const EMP_TO_CONTRACT: Record<string, string> = {
   contract: "fixed_term", internship: "intern", consultant: "consultant",
 };
 const _rstr = (fd: FormData, k: string) => (String(fd.get(k) ?? "").trim() || null);
+// Resolve a submitted currency, falling back to the org's own base currency (never a hardcoded country currency).
+async function _orgCcy(formData: FormData, orgId: string): Promise<string> {
+  const sub = String(formData.get("currency") || "").trim();
+  if (sub) return sub;
+  return (await one<{ b: string }>(`SELECT base_currency AS b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+}
 const _rnum = (fd: FormData, k: string) => { const v = parseFloat(String(fd.get(k) ?? "")); return Number.isFinite(v) ? v : null; };
 
 export async function createJobOpeningAction(formData: FormData) {
@@ -6121,7 +6128,7 @@ export async function createPettyCashAccountAction(formData: FormData) {
   const limit = _rnum(formData, "floatLimit") ?? 0;
   await q(`INSERT INTO petty_cash_account (id, org_id, name, custodian, custodian_employee_id, project_id, currency, float_limit, opened_date, notes, created_by_id, created_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CURRENT_DATE,$9,$10,$11)`,
-    [aid, orgId, name, _rstr(formData, "custodian"), _rstr(formData, "custodianEmployeeId"), _rstr(formData, "projectId"), String(formData.get("currency") || "UGX"), limit, _rstr(formData, "notes"), userId, userName]);
+    [aid, orgId, name, _rstr(formData, "custodian"), _rstr(formData, "custodianEmployeeId"), _rstr(formData, "projectId"), await _orgCcy(formData, orgId), limit, _rstr(formData, "notes"), userId, userName]);
   // optional opening float establishes the imprest
   const opening = _rnum(formData, "opening") ?? 0;
   if (opening > 0)
@@ -6232,7 +6239,7 @@ export async function createAgreementAction(formData: FormData) {
   if (file && file.size > 0) { const buf = Buffer.from(await file.arrayBuffer()); fileName = file.name; fileKey = await saveUpload(aid, file.name, buf); }
   await q(`INSERT INTO funding_agreement (id, org_id, donor, title, reference, project_id, currency, total_amount, signed_date, start_date, end_date, focal_person, file_key, file_name, notes, created_by_id, created_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-    [aid, orgId, donor, title, _rstr(formData, "reference"), _rstr(formData, "projectId"), String(formData.get("currency") || "UGX"),
+    [aid, orgId, donor, title, _rstr(formData, "reference"), _rstr(formData, "projectId"), await _orgCcy(formData, orgId),
      _rnum(formData, "totalAmount") ?? 0, _rstr(formData, "signedDate"), _rstr(formData, "startDate"), _rstr(formData, "endDate"),
      _rstr(formData, "focalPerson"), fileKey, fileName, _rstr(formData, "notes"), userId, userName]);
   await writeAudit({ orgId, userId, action: "create", entity: "funding_agreement", entityId: aid, after: { donor, title } });
@@ -6310,7 +6317,7 @@ export async function createReserveFundAction(formData: FormData) {
   const fid = id("rsv");
   await q(`INSERT INTO reserve_fund (id, org_id, name, type, purpose, currency, target_amount, opened_date, notes, created_by_id, created_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_DATE,$8,$9,$10)`,
-    [fid, orgId, name, String(formData.get("type") || "general"), _rstr(formData, "purpose"), String(formData.get("currency") || "UGX"),
+    [fid, orgId, name, String(formData.get("type") || "general"), _rstr(formData, "purpose"), await _orgCcy(formData, orgId),
      _rnum(formData, "targetAmount"), _rstr(formData, "notes"), userId, userName]);
   const opening = _rnum(formData, "opening") ?? 0;
   if (opening > 0)
@@ -6357,7 +6364,7 @@ export async function createInvestmentAction(formData: FormData) {
   const iid = id("inv");
   await q(`INSERT INTO investment (id, org_id, name, institution, instrument_type, currency, principal, interest_rate, placement_date, maturity_date, expected_value, reference, notes, created_by_id, created_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-    [iid, orgId, name, _rstr(formData, "institution"), String(formData.get("instrumentType") || "fixed_deposit"), String(formData.get("currency") || "UGX"),
+    [iid, orgId, name, _rstr(formData, "institution"), String(formData.get("instrumentType") || "fixed_deposit"), await _orgCcy(formData, orgId),
      _rnum(formData, "principal") ?? 0, _rnum(formData, "interestRate"), _rstr(formData, "placementDate"), _rstr(formData, "maturityDate"),
      _rnum(formData, "expectedValue"), _rstr(formData, "reference"), _rstr(formData, "notes"), userId, userName]);
   await writeAudit({ orgId, userId, action: "create", entity: "investment", entityId: iid, after: { name, principal: _rnum(formData, "principal") } });
@@ -6405,7 +6412,7 @@ export async function createForecastAction(formData: FormData) {
   const months = Math.max(1, Math.min(_rnum(formData, "months") ?? 6, 36));
   await q(`INSERT INTO cash_forecast (id, org_id, name, currency, opening_balance, start_date, months, include_funding, include_investments, notes, created_by_id, created_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-    [fid, orgId, name, String(formData.get("currency") || "UGX"), _rnum(formData, "openingBalance") ?? 0,
+    [fid, orgId, name, await _orgCcy(formData, orgId), _rnum(formData, "openingBalance") ?? 0,
      _rstr(formData, "startDate") ?? new Date().toISOString().slice(0, 10), months,
      formData.get("includeFunding") === "on", formData.get("includeInvestments") === "on", _rstr(formData, "notes"), userId, userName]);
   await writeAudit({ orgId, userId, action: "create", entity: "cash_forecast", entityId: fid, after: { name, months } });

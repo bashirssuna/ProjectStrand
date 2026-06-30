@@ -289,7 +289,7 @@ export function rollupCompensation(results: CompResult[], currency: string): Com
 }
 
 export const DEFAULT_COMP_CONFIG: CompensationConfig = {
-  currency: "UGX",
+  currency: "USD",
   nssfEmployerRate: 0.15,
   nssfEmployeeRate: 0.05,
   consultantWHTRate: 0.06,

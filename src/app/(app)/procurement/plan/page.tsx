@@ -24,8 +24,8 @@ export default async function ProcurementPlanPage({ searchParams }: { searchPara
   // group by period
   const byPeriod = new Map<string, typeof items>();
   for (const it of items) { if (!byPeriod.has(it.period)) byPeriod.set(it.period, []); byPeriod.get(it.period)!.push(it); }
-  const grandTotal = ccyTotal(groupByCcy(items.filter((i) => i.status !== "cancelled"), (i) => i.estTotal, (i) => i.currency, items[0]?.currency ?? "UGX"), items[0]?.currency ?? "UGX");
-  const planCurrency = items[0]?.currency ?? "UGX";
+  const grandTotal = ccyTotal(groupByCcy(items.filter((i) => i.status !== "cancelled"), (i) => i.estTotal, (i) => i.currency, items[0]?.currency ?? "USD"), items[0]?.currency ?? "USD");
+  const planCurrency = items[0]?.currency ?? "USD";
 
   return (
     <div className="max-w-5xl">

@@ -36,7 +36,7 @@ export default async function VoucherDetailPage({ params, searchParams }: { para
             pv.approver_id AS "approverId", pv.approver_name AS "approverName", pv.approver_signature AS "approverSignature", pv.decline_reason AS "declineReason",
             pv.prepared_by_name AS "preparedByName", pv.checked_by_name AS "checkedByName",
             pv.approved_by_name AS "approvedByName", pv.approved_at AS "approvedAt", pv.expenditure_id AS "expenditureId",
-            p.code AS "projectCode", p.title AS "projectTitle", COALESCE(p.currency, o.base_currency, 'UGX') AS currency,
+            p.code AS "projectCode", p.title AS "projectTitle", COALESCE(p.currency, o.base_currency, 'USD') AS currency,
             bl.code AS "lineCode", bl.description AS "lineDescription"
        FROM payment_voucher pv
        LEFT JOIN project p ON p.id=pv.project_id

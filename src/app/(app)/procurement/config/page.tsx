@@ -41,7 +41,7 @@ export default async function ProcurementConfigPage({ searchParams }: { searchPa
       </form>
 
       <p className="text-xs mt-4" style={{ color: "var(--muted)" }}>
-        Policy default (UGX): ≤ 1,000,000 → 1 quote; 1,000,001–5,000,000 → 3 quotes; above 5,000,000 → formal bidding with 3 bids.
+        Policy default (in your procurement currency): ≤ 1,000,000 → 1 quote; 1,000,001–5,000,000 → 3 quotes; above 5,000,000 → formal bidding with 3 bids.
       </p>
     </div>
   );

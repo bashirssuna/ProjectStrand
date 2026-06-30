@@ -18,7 +18,7 @@ function slicePath(cx: number, cy: number, r: number, a0: number, a1: number): s
 
 export default async function InstitutionalRevenuePage() {
   const { orgId, orgName } = await requireFinanceOrg();
-  const ccy = (await one<{ ccy: string }>(`SELECT COALESCE(display_currency, base_currency, 'UGX') AS ccy FROM organization WHERE id=$1`, [orgId]))?.ccy ?? "UGX";
+  const ccy = (await one<{ ccy: string }>(`SELECT COALESCE(display_currency, base_currency, 'USD') AS ccy FROM organization WHERE id=$1`, [orgId]))?.ccy ?? "USD";
 
   // Indirect-cost recovery per project = what each project has spent on its
   // indirect-cost ("overhead") budget lines. That spend is the overhead the

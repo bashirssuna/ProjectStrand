@@ -3,6 +3,7 @@ import Link from "next/link";
 import { getCurrentUser } from "@/server/auth";
 import { signupOrganizationAction } from "@/app/actions";
 import { OPERATOR_NAME, CONTACT_EMAIL } from "@/lib/config";
+import { CURRENCIES } from "@/lib/currencies";
 
 const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 90);
 
@@ -44,6 +45,15 @@ export default async function SignupPage({ searchParams }: { searchParams: Promi
               <label className="block">
                 <span className="label">Organisation name</span>
                 <input name="orgName" required className="input" placeholder="e.g. African Center for Health Research" />
+              </label>
+              <label className="block">
+                <span className="label">Reporting currency</span>
+                <select name="baseCurrency" defaultValue="USD" className="select">
+                  {CURRENCIES.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <span className="text-xs mt-1 block" style={{ color: "var(--muted)" }}>
+                  Your organisation&apos;s main currency. You can change this and add exchange rates later.
+                </span>
               </label>
               <label className="block">
                 <span className="label">Your name</span>

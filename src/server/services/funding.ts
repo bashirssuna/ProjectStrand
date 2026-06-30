@@ -31,7 +31,7 @@ export async function agreementStats(orgId: string): Promise<{ committed: CcyMap
      FROM funding_agreement a WHERE a.org_id=$1 AND a.status='active'`, [orgId]);
   const committed: CcyMap = {}, received: CcyMap = {}, outstanding: CcyMap = {};
   for (const r of rows) {
-    const c = r.currency || "UGX";
+    const c = r.currency;
     committed[c] = (committed[c] ?? 0) + r.committed;
     received[c] = (received[c] ?? 0) + r.received;
     outstanding[c] = (outstanding[c] ?? 0) + (r.committed - r.received);
@@ -42,7 +42,7 @@ export async function agreementStats(orgId: string): Promise<{ committed: CcyMap
      WHERE a.org_id=$1 AND a.status='active' AND t.expected_date IS NOT NULL AND t.expected_date < CURRENT_DATE
        AND (t.amount - COALESCE((SELECT SUM(r.amount) FROM funding_receipt r WHERE r.tranche_id=t.id),0)) > 0`, [orgId]);
   const overdueAmount: CcyMap = {}; let overdueCount = 0;
-  for (const r of odRows) { const c = r.currency || "UGX"; overdueAmount[c] = (overdueAmount[c] ?? 0) + r.short; overdueCount++; }
+  for (const r of odRows) { const c = r.currency; overdueAmount[c] = (overdueAmount[c] ?? 0) + r.short; overdueCount++; }
   return { committed, received, outstanding, overdueAmount, overdueCount, active: rows.length };
 }
 

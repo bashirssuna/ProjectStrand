@@ -17,7 +17,7 @@ export default async function PettyCashPage({ searchParams }: { searchParams: Pr
     q<{ baseCurrency: string }>(`SELECT base_currency AS "baseCurrency" FROM organization WHERE id=$1`, [orgId]),
     q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY code`, [orgId]),
   ]);
-  const baseCcy = org[0]?.baseCurrency || "UGX";
+  const baseCcy = org[0]?.baseCurrency || "USD";
   const onHand = ccyTotal(stats.onHand, baseCcy), limit = ccyTotal(stats.limit, baseCcy), replenish = ccyTotal(stats.replenishDue, baseCcy);
   const replenishPositive = replenish.parts.some(([, v]) => v > 0);
 

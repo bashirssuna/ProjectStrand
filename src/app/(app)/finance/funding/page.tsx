@@ -16,7 +16,7 @@ export default async function FundingPage({ searchParams }: { searchParams: Prom
     q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY code`, [orgId]),
     q<{ baseCurrency: string }>(`SELECT base_currency AS "baseCurrency" FROM organization WHERE id=$1`, [orgId]),
   ]);
-  const baseCcy = org[0]?.baseCurrency || "UGX";
+  const baseCcy = org[0]?.baseCurrency || "USD";
   const committed = ccyTotal(stats.committed, baseCcy), received = ccyTotal(stats.received, baseCcy), outstanding = ccyTotal(stats.outstanding, baseCcy), overdue = ccyTotal(stats.overdueAmount, baseCcy);
 
   return (

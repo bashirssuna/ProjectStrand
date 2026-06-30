@@ -43,7 +43,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ scope: s
       // Blank template (header + one example row) for organisations to fill in and re-upload.
       title = "inventory-template";
       header = ["Code", "Name", "Category", "Type", "Unit", "Opening qty", "Reorder level", "Unit cost", "Currency"];
-      rows = [["LAP-001", "Dell Latitude 5440 laptop", "IT equipment", "asset", "unit", 5, 1, 1200000, "UGX"]];
+      rows = [["LAP-001", "Dell Latitude 5440 laptop", "IT equipment", "asset", "unit", 5, 1, 1200, "USD"]];
       break;
     }
     case "contracts": {
@@ -106,7 +106,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ scope: s
       header = spec.fields.map((f) => f.label);
       const EXAMPLE: Record<string, Cell[]> = {
         vendor: ["Acme Scientific Ltd", "Jane Doe", "sales@acme.example", "+256700000000", "1001234567", "0123456789", "Plot 5, Kampala Road"],
-        contract: ["CTR/2026/001", "Supply of laboratory reagents", "Acme Scientific Ltd", 25000000, "UGX", "2026-01-01", "2026-12-31", "active", "Quarterly supply of consumables"],
+        contract: ["CTR/2026/001", "Supply of laboratory reagents", "Acme Scientific Ltd", 25000, "USD", "2026-01-01", "2026-12-31", "active", "Quarterly supply of consumables"],
       };
       rows = [EXAMPLE[ent] ?? spec.fields.map(() => "")];
       break;

@@ -16,7 +16,7 @@ export type ProcurementConfig = {
   quotesDirect: number; quotesMicro: number; quotesFormal: number; enforce: boolean;
 };
 const PROC_DEFAULTS: ProcurementConfig = {
-  currency: "UGX", directMax: 1000000, microMax: 5000000,
+  currency: "USD", directMax: 1000000, microMax: 5000000,
   quotesDirect: 1, quotesMicro: 3, quotesFormal: 3, enforce: true,
 };
 
@@ -27,7 +27,10 @@ export async function getProcurementConfig(orgId: string): Promise<ProcurementCo
             quotes_formal::int AS "quotesFormal", enforce
      FROM procurement_config WHERE org_id=$1`, [orgId]
   );
-  return row ?? { ...PROC_DEFAULTS };
+  if (row) return row;
+  // No saved config yet — seed defaults but use the org's own base currency, not a fixed one.
+  const base = (await one<{ b: string }>(`SELECT base_currency AS b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+  return { ...PROC_DEFAULTS, currency: base };
 }
 
 export async function upsertProcurementConfig(orgId: string, c: ProcurementConfig): Promise<void> {

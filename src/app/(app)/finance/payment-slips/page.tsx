@@ -17,7 +17,7 @@ export default async function PaymentSlipsPage({ searchParams }: { searchParams:
   const sp = await searchParams;
   const slips = await listSlips(orgId);
   const projects = await q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY code`, [orgId]);
-  const baseCcy = (await q<{ c: string }>(`SELECT COALESCE(base_currency,'UGX') c FROM organization WHERE id=$1`, [orgId]))[0]?.c ?? "UGX";
+  const baseCcy = (await q<{ c: string }>(`SELECT COALESCE(base_currency,'USD') c FROM organization WHERE id=$1`, [orgId]))[0]?.c ?? "USD";
 
   return (
     <div className="max-w-5xl">

@@ -42,7 +42,7 @@ export async function institutionalSnapshot(orgId: string) {
 
   // Cash-forecast shortfalls: project the active forecasts (bounded) and flag negatives.
   const activeForecasts = forecastRows.filter((f) => f.status === "active").slice(0, 10);
-  let shortfallForecasts = 0; let worstLowest: number | null = null; let worstCurrency = baseRow?.base ?? "UGX";
+  let shortfallForecasts = 0; let worstLowest: number | null = null; let worstCurrency = baseRow?.base ?? "USD";
   for (const f of activeForecasts) {
     const detail = await getForecast(orgId, f.id);
     if (!detail) continue;
@@ -56,7 +56,7 @@ export async function institutionalSnapshot(orgId: string) {
   if (surveyAgg?.latestId) latestSurveyScore = (await surveyResults(orgId, surveyAgg.latestId)).engagementScore;
 
   return {
-    baseCurrency: baseRow?.base ?? "UGX",
+    baseCurrency: baseRow?.base ?? "USD",
     projects: {
       total: projAgg?.total ?? 0, active: projAgg?.active ?? 0,
       overdueActivities: overdueAct?.c ?? 0, openFlags: flags?.open ?? 0, criticalFlags: flags?.critical ?? 0,

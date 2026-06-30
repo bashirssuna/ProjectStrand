@@ -18,6 +18,7 @@ export default async function PerdiemPage({ searchParams }: { searchParams: Prom
      FROM perdiem_claim WHERE org_id=$1 ORDER BY created_at DESC LIMIT 60`, [orgId]
   );
   const projects = await q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY created_at DESC`, [orgId]);
+  const baseCcy = (await q<{ c: string }>(`SELECT COALESCE(base_currency,'USD') c FROM organization WHERE id=$1`, [orgId]))[0]?.c ?? "USD";
   const employees = await q<{ id: string; name: string }>(`SELECT id, (first_name || ' ' || last_name) AS name FROM employee WHERE org_id=$1 ORDER BY last_name`, [orgId]);
   const pending = claims.filter((c) => c.status === "draft" || c.status === "approved").length;
 
@@ -69,7 +70,7 @@ export default async function PerdiemPage({ searchParams }: { searchParams: Prom
           <datalist id="emp-names">{employees.map((e) => <option key={e.id} value={e.name} />)}</datalist>
         </Field></div>
         <Field label="Project (optional)"><select name="projectId" className="select"><option value="">— none —</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.code}</option>)}</select></Field>
-        <Field label="Currency"><input name="currency" defaultValue={rates[0]?.currency ?? "UGX"} className="input" /></Field>
+        <Field label="Currency"><input name="currency" defaultValue={rates[0]?.currency ?? baseCcy} className="input" /></Field>
         <div className="sm:col-span-2"><Field label="Purpose"><input name="purpose" className="input" placeholder="e.g. Field data collection in Mayuge" /></Field></div>
         <Field label="Destination"><input name="destination" className="input" /></Field>
         <div />
@@ -104,7 +105,7 @@ export default async function PerdiemPage({ searchParams }: { searchParams: Prom
       <form action={addPerdiemRateAction} className="card p-4 grid sm:grid-cols-4 gap-3 items-end">
         <Field label="Category"><input name="category" required className="input" placeholder="e.g. Senior staff" /></Field>
         <Field label="Daily rate"><input type="number" step="0.01" name="dailyRate" className="input" /></Field>
-        <Field label="Currency"><input name="currency" defaultValue="UGX" className="input" /></Field>
+        <Field label="Currency"><input name="currency" defaultValue={baseCcy} className="input" /></Field>
         <div className="flex justify-end"><button className="btn btn-primary" type="submit">Add rate</button></div>
       </form>
     </div>

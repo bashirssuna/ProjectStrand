@@ -651,7 +651,7 @@ CREATE TABLE IF NOT EXISTS exchange_rate (
   id text PRIMARY KEY,
   org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
   currency text NOT NULL,              -- e.g. 'USD', 'EUR'
-  base_currency text NOT NULL,         -- the org's reporting currency, e.g. 'UGX'
+  base_currency text NOT NULL,         -- the org's reporting currency, set per-org (e.g. USD, KES, NGN, EUR)
   rate numeric(18,6) NOT NULL,         -- multiply foreign amount by this to get base
   as_of date NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -1295,7 +1295,7 @@ CREATE TABLE IF NOT EXISTS petty_cash_account (
   custodian text,
   custodian_employee_id text REFERENCES employee(id) ON DELETE SET NULL,
   project_id text REFERENCES project(id) ON DELETE SET NULL,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   float_limit numeric(16,2) NOT NULL DEFAULT 0,
   status text NOT NULL DEFAULT 'active',
   opened_date date,
@@ -1337,7 +1337,7 @@ CREATE TABLE IF NOT EXISTS funding_agreement (
   title text NOT NULL,
   reference text,
   project_id text REFERENCES project(id) ON DELETE SET NULL,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   total_amount numeric(18,2) NOT NULL DEFAULT 0,
   signed_date date, start_date date, end_date date,
   status text NOT NULL DEFAULT 'active',
@@ -1385,7 +1385,7 @@ CREATE TABLE IF NOT EXISTS reserve_fund (
   name text NOT NULL,
   type text NOT NULL DEFAULT 'general',
   purpose text,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   target_amount numeric(18,2),
   status text NOT NULL DEFAULT 'active',
   opened_date date,
@@ -1416,7 +1416,7 @@ CREATE TABLE IF NOT EXISTS investment (
   name text NOT NULL,
   institution text,
   instrument_type text NOT NULL DEFAULT 'fixed_deposit',
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   principal numeric(18,2) NOT NULL DEFAULT 0,
   interest_rate numeric(7,3),
   placement_date date, maturity_date date,
@@ -1448,7 +1448,7 @@ CREATE TABLE IF NOT EXISTS cash_forecast (
   id text PRIMARY KEY,
   org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
   name text NOT NULL,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   opening_balance numeric(18,2) NOT NULL DEFAULT 0,
   start_date date NOT NULL,
   months integer NOT NULL DEFAULT 6,
@@ -1952,7 +1952,7 @@ CREATE TABLE IF NOT EXISTS statutory_remittance (
   period text NOT NULL,                -- the pay period, e.g. '2026-05'
   tax_type text NOT NULL,              -- paye | nssf | lst | wht
   amount numeric(18,2) NOT NULL DEFAULT 0,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   due_date date NOT NULL,              -- statutory deadline (15th of following month)
   paid_on date,                        -- when remitted (null = outstanding)
   reference text,                      -- URA/NSSF receipt or transaction reference
@@ -1976,7 +1976,7 @@ CREATE TABLE IF NOT EXISTS pr_quotation (
   vendor_id text REFERENCES vendor(id),
   vendor_name text NOT NULL,
   amount numeric(18,2) NOT NULL DEFAULT 0,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   lead_time_days integer,
   notes text,
   selected boolean NOT NULL DEFAULT false,
@@ -1988,7 +1988,7 @@ CREATE INDEX IF NOT EXISTS idx_quotation_request ON pr_quotation(request_id);
 -- policy: ≤1,000,000 → 1 quote; ≤5,000,000 → 3 quotes; above → formal bids (3).
 CREATE TABLE IF NOT EXISTS procurement_config (
   org_id text PRIMARY KEY REFERENCES organization(id) ON DELETE CASCADE,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   direct_max numeric(18,2) NOT NULL DEFAULT 1000000,
   micro_max numeric(18,2) NOT NULL DEFAULT 5000000,
   quotes_direct integer NOT NULL DEFAULT 1,
@@ -2030,7 +2030,7 @@ CREATE TABLE IF NOT EXISTS perdiem_rate (
   org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
   category text NOT NULL,         -- e.g. 'In-country', 'Senior staff', 'Driver'
   daily_rate numeric(18,2) NOT NULL DEFAULT 0,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   note text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -2045,7 +2045,7 @@ CREATE TABLE IF NOT EXISTS perdiem_claim (
   start_date date, end_date date,
   days numeric(8,2) NOT NULL DEFAULT 0,
   daily_rate numeric(18,2) NOT NULL DEFAULT 0,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   total numeric(18,2) NOT NULL DEFAULT 0,
   status text NOT NULL DEFAULT 'draft',  -- draft | approved | paid | rejected
   activity_report text,
@@ -2076,7 +2076,7 @@ CREATE TABLE IF NOT EXISTS procurement_plan_item (
   quantity numeric(18,2) NOT NULL DEFAULT 1,
   est_unit_cost numeric(18,2) NOT NULL DEFAULT 0,
   est_total numeric(18,2) NOT NULL DEFAULT 0,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   needed_by date,
   department text,
   status text NOT NULL DEFAULT 'planned',  -- planned | requested | procured | cancelled
@@ -2109,7 +2109,7 @@ CREATE TABLE IF NOT EXISTS gift_log (
   supplier_name text,
   description text NOT NULL,
   est_value numeric(18,2),
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   received_on date NOT NULL,
   action_taken text,      -- e.g. 'declined', 'surrendered to project'
   note text,
@@ -2310,7 +2310,7 @@ CREATE TABLE IF NOT EXISTS payment_slip (
   title text NOT NULL,
   category text,
   slip_date date NOT NULL,
-  currency text NOT NULL DEFAULT 'UGX',
+  currency text NOT NULL DEFAULT 'USD',
   status text NOT NULL DEFAULT 'draft',
   note text,
   prepared_by text REFERENCES app_user(id) ON DELETE SET NULL,

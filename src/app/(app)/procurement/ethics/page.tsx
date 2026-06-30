@@ -18,6 +18,7 @@ export default async function EthicsPage({ searchParams }: { searchParams: Promi
             currency, received_on AS "receivedOn", action_taken AS "actionTaken"
      FROM gift_log WHERE org_id=$1 ORDER BY received_on DESC`, [orgId]
   );
+  const baseCcy = (await q<{ c: string }>(`SELECT COALESCE(base_currency,'USD') c FROM organization WHERE id=$1`, [orgId]))[0]?.c ?? "USD";
 
   return (
     <div className="max-w-5xl">
@@ -87,7 +88,7 @@ export default async function EthicsPage({ searchParams }: { searchParams: Promi
         <Field label="Received on"><input type="date" name="receivedOn" defaultValue={new Date().toISOString().slice(0, 10)} className="input" /></Field>
         <div className="sm:col-span-2"><Field label="Description"><input name="description" required className="input" placeholder="e.g. branded hamper" /></Field></div>
         <Field label="Est. value"><input type="number" step="0.01" name="estValue" className="input" /></Field>
-        <Field label="Currency"><input name="currency" defaultValue="UGX" className="input" /></Field>
+        <Field label="Currency"><input name="currency" defaultValue={baseCcy} className="input" /></Field>
         <div className="sm:col-span-2"><Field label="Action taken"><input name="actionTaken" className="input" placeholder="e.g. declined / surrendered to project" /></Field></div>
         <div className="flex justify-end"><button className="btn btn-primary" type="submit">Log gift</button></div>
       </form>

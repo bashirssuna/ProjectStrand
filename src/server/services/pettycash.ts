@@ -32,7 +32,7 @@ export async function accountStats(orgId: string): Promise<{ onHand: CcyMap; lim
   for (const r of rows) {
     if (r.status !== "active") continue;
     active++;
-    const c = r.currency || "UGX";
+    const c = r.currency;
     onHand[c] = (onHand[c] ?? 0) + r.bal;
     limit[c] = (limit[c] ?? 0) + r.lim;
     replenishDue[c] = (replenishDue[c] ?? 0) + Math.max(r.lim - r.bal, 0);

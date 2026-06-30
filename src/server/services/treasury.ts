@@ -25,7 +25,7 @@ export async function reserveStats(orgId: string): Promise<{ total: CcyMap; fund
     `SELECT f.currency, COALESCE((SELECT SUM(${RES_SIGNED}) FROM reserve_movement m WHERE m.fund_id=f.id),0)::float8 AS b
      FROM reserve_fund f WHERE f.org_id=$1 AND f.status='active'`, [orgId]);
   const total: CcyMap = {};
-  for (const r of rows) { const c = r.currency || "UGX"; total[c] = (total[c] ?? 0) + r.b; }
+  for (const r of rows) { const c = r.currency; total[c] = (total[c] ?? 0) + r.b; }
   return { total, funds: rows.length };
 }
 export type FundDetail = { id: string; name: string; type: string; purpose: string | null; currency: string; targetAmount: number | null; status: string; openedDate: string | null; notes: string | null; balance: number };
@@ -78,7 +78,7 @@ export async function investmentStats(orgId: string): Promise<{ invested: CcyMap
      FROM investment i WHERE i.org_id=$1 AND i.status='active'`, [orgId]);
   const invested: CcyMap = {}; let maturingSoon = 0, maturedDue = 0;
   for (const r of rows) {
-    const c = r.currency || "UGX";
+    const c = r.currency;
     invested[c] = (invested[c] ?? 0) + r.outstanding;
     if (r.maturing) maturingSoon++;
     if (r.matured) maturedDue++;
@@ -87,7 +87,7 @@ export async function investmentStats(orgId: string): Promise<{ invested: CcyMap
     `SELECT i.currency, SUM(m.amount)::float8 AS interest FROM investment_movement m JOIN investment i ON i.id=m.investment_id
      WHERE i.org_id=$1 AND m.type='interest' GROUP BY i.currency`, [orgId]);
   const interestEarned: CcyMap = {};
-  for (const r of intRows) interestEarned[r.currency || "UGX"] = r.interest;
+  for (const r of intRows) interestEarned[r.currency] = r.interest;
   return { invested, interestEarned, maturingSoon, maturedDue, active: rows.length };
 }
 export type InvDetail = {

@@ -21,20 +21,24 @@ export async function listAccounts(orgId: string): Promise<AccountRow[]> {
      FROM petty_cash_account a LEFT JOIN project p ON p.id=a.project_id WHERE a.org_id=$1 ORDER BY a.status, a.name`, [orgId]);
 }
 
-export async function accountStats(orgId: string): Promise<{ totalLimit: number; onHand: number; replenishDue: number; lowCount: number; active: number }> {
-  const r = await one<{ totalLimit: number; onHand: number; replenishDue: number; lowCount: number; active: number }>(
-    `WITH bal AS (
-       SELECT a.id, a.float_limit, a.status,
-              COALESCE((SELECT SUM(${SIGNED}) FROM petty_cash_txn t WHERE t.account_id=a.id),0) AS b
-       FROM petty_cash_account a WHERE a.org_id=$1
-     )
-     SELECT COALESCE(SUM(float_limit) FILTER (WHERE status='active'),0)::float8 AS "totalLimit",
-            COALESCE(SUM(b) FILTER (WHERE status='active'),0)::float8 AS "onHand",
-            COALESCE(SUM(GREATEST(float_limit-b,0)) FILTER (WHERE status='active'),0)::float8 AS "replenishDue",
-            COUNT(*) FILTER (WHERE status='active' AND float_limit>0 AND b < float_limit*0.2)::int AS "lowCount",
-            COUNT(*) FILTER (WHERE status='active')::int AS active
-     FROM bal`, [orgId]);
-  return { totalLimit: r?.totalLimit ?? 0, onHand: r?.onHand ?? 0, replenishDue: r?.replenishDue ?? 0, lowCount: r?.lowCount ?? 0, active: r?.active ?? 0 };
+export type CcyMap = Record<string, number>;
+export async function accountStats(orgId: string): Promise<{ onHand: CcyMap; limit: CcyMap; replenishDue: CcyMap; lowCount: number; active: number }> {
+  const rows = await q<{ currency: string; lim: number; bal: number; status: string }>(
+    `SELECT a.currency, a.float_limit::float8 AS lim, a.status,
+            COALESCE((SELECT SUM(${SIGNED}) FROM petty_cash_txn t WHERE t.account_id=a.id),0)::float8 AS bal
+     FROM petty_cash_account a WHERE a.org_id=$1`, [orgId]);
+  const onHand: CcyMap = {}, limit: CcyMap = {}, replenishDue: CcyMap = {};
+  let lowCount = 0, active = 0;
+  for (const r of rows) {
+    if (r.status !== "active") continue;
+    active++;
+    const c = r.currency || "UGX";
+    onHand[c] = (onHand[c] ?? 0) + r.bal;
+    limit[c] = (limit[c] ?? 0) + r.lim;
+    replenishDue[c] = (replenishDue[c] ?? 0) + Math.max(r.lim - r.bal, 0);
+    if (r.lim > 0 && r.bal < r.lim * 0.2) lowCount++;
+  }
+  return { onHand, limit, replenishDue, lowCount, active };
 }
 
 export type AccountDetail = {

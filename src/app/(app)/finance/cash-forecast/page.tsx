@@ -4,7 +4,7 @@ import { q } from "@/server/db";
 import { listForecasts } from "@/server/services/cashflow";
 import { accountStats } from "@/server/services/pettycash";
 import { PageHeader, SectionTitle, Field, StatusBadge, Empty } from "@/components/ui";
-import { money, fmtDate } from "@/lib/format";
+import { money, fmtDate, ccyTotal } from "@/lib/format";
 import { currencyOptions } from "@/lib/currencies";
 import { createForecastAction } from "@/app/actions";
 
@@ -50,7 +50,7 @@ export default async function CashForecastPage({ searchParams }: { searchParams:
 
       <div className="card p-4">
         <SectionTitle>New forecast</SectionTitle>
-        <p className="text-xs mt-1 mb-2" style={{ color: "var(--muted)" }}>Tip: petty cash on hand is currently {money(pcStats.onHand, baseCcy)} — add bank balances for your opening cash position.</p>
+        <p className="text-xs mt-1 mb-2" style={{ color: "var(--muted)" }}>Tip: petty cash on hand is currently {ccyTotal(pcStats.onHand, baseCcy).value} — add bank balances for your opening cash position.</p>
         <form action={createForecastAction} className="grid sm:grid-cols-2 gap-3 mt-1">
           <Field label="Name *"><input name="name" required className="input" placeholder="e.g. FY2026 Operating Cash Forecast" /></Field>
           <Field label="Currency"><select name="currency" defaultValue={baseCcy} className="select">{currencyOptions(baseCcy).map((c) => <option key={c} value={c}>{c}</option>)}</select></Field>

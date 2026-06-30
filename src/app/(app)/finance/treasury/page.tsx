@@ -3,7 +3,7 @@ import { requireFinanceOrg } from "../_guard";
 import { q } from "@/server/db";
 import { listFunds, reserveStats, listInvestments, investmentStats, RESERVE_TYPES, INSTRUMENT_TYPES } from "@/server/services/treasury";
 import { PageHeader, SectionTitle, Field, Stat, StatusBadge, Badge, Empty, ProgressBar } from "@/components/ui";
-import { money, fmtDate } from "@/lib/format";
+import { money, fmtDate, ccyTotal } from "@/lib/format";
 import { currencyOptions } from "@/lib/currencies";
 import { label } from "@/lib/enums";
 import { createReserveFundAction, createInvestmentAction } from "@/app/actions";
@@ -16,6 +16,7 @@ export default async function TreasuryPage({ searchParams }: { searchParams: Pro
     q<{ baseCurrency: string }>(`SELECT base_currency AS "baseCurrency" FROM organization WHERE id=$1`, [orgId]),
   ]);
   const baseCcy = org[0]?.baseCurrency || "UGX";
+  const reserves = ccyTotal(rStats.total, baseCcy), invested = ccyTotal(iStats.invested, baseCcy), interest = ccyTotal(iStats.interestEarned, baseCcy);
 
   return (
     <div className="max-w-5xl">
@@ -26,9 +27,9 @@ export default async function TreasuryPage({ searchParams }: { searchParams: Pro
       {/* ---------- Reserves ---------- */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
         <Stat label="Reserve funds" value={String(rStats.funds)} />
-        <Stat label="Total reserves" value={money(rStats.total, baseCcy)} tone={rStats.total ? "ok" : undefined} />
-        <Stat label="Invested (active)" value={money(iStats.invested, baseCcy)} />
-        <Stat label="Interest earned" value={money(iStats.interestEarned, baseCcy)} tone={iStats.interestEarned ? "ok" : undefined} />
+        <Stat label="Total reserves" value={reserves.value} tone={reserves.parts.some(([, v]) => v > 0) ? "ok" : undefined} />
+        <Stat label="Invested (active)" value={invested.value} />
+        <Stat label="Interest earned" value={interest.value} tone={interest.parts.some(([, v]) => v > 0) ? "ok" : undefined} />
       </div>
       <p className="text-xs mb-5" style={{ color: "var(--muted)" }}>Cross-fund totals assume a common base currency; per-item figures use each item&apos;s own currency.</p>
 

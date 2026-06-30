@@ -23,24 +23,27 @@ export async function listAgreements(orgId: string, f: { status?: string; search
      WHERE ${where.join(" AND ")} ORDER BY a.created_at DESC LIMIT 500`, params);
 }
 
-export async function agreementStats(orgId: string): Promise<{ committed: number; received: number; outstanding: number; overdueCount: number; overdueAmount: number; active: number }> {
-  const base = await one<{ committed: number; received: number; active: number }>(
-    `SELECT COALESCE(SUM(total_amount) FILTER (WHERE status='active'),0)::float8 AS committed,
-            COALESCE((SELECT SUM(r.amount) FROM funding_receipt r JOIN funding_agreement a2 ON a2.id=r.agreement_id WHERE a2.org_id=$1 AND a2.status='active'),0)::float8 AS received,
-            COUNT(*) FILTER (WHERE status='active')::int AS active
-     FROM funding_agreement WHERE org_id=$1`, [orgId]);
-  // overdue tranches: expected_date past, with received-against-tranche below the expected amount
-  const od = await one<{ overdueCount: number; overdueAmount: number }>(
-    `WITH tr AS (
-       SELECT t.id, t.amount, t.expected_date,
-              COALESCE((SELECT SUM(r.amount) FROM funding_receipt r WHERE r.tranche_id=t.id),0) AS got
-       FROM funding_tranche t JOIN funding_agreement a ON a.id=t.agreement_id
-       WHERE a.org_id=$1 AND a.status='active' AND t.expected_date IS NOT NULL AND t.expected_date < CURRENT_DATE
-     )
-     SELECT COUNT(*) FILTER (WHERE got < amount)::int AS "overdueCount",
-            COALESCE(SUM(amount - got) FILTER (WHERE got < amount),0)::float8 AS "overdueAmount" FROM tr`, [orgId]);
-  const committed = base?.committed ?? 0, received = base?.received ?? 0;
-  return { committed, received, outstanding: committed - received, overdueCount: od?.overdueCount ?? 0, overdueAmount: od?.overdueAmount ?? 0, active: base?.active ?? 0 };
+export type CcyMap = Record<string, number>;
+export async function agreementStats(orgId: string): Promise<{ committed: CcyMap; received: CcyMap; outstanding: CcyMap; overdueAmount: CcyMap; overdueCount: number; active: number }> {
+  const rows = await q<{ currency: string; committed: number; received: number }>(
+    `SELECT a.currency, a.total_amount::float8 AS committed,
+            COALESCE((SELECT SUM(r.amount) FROM funding_receipt r WHERE r.agreement_id=a.id),0)::float8 AS received
+     FROM funding_agreement a WHERE a.org_id=$1 AND a.status='active'`, [orgId]);
+  const committed: CcyMap = {}, received: CcyMap = {}, outstanding: CcyMap = {};
+  for (const r of rows) {
+    const c = r.currency || "UGX";
+    committed[c] = (committed[c] ?? 0) + r.committed;
+    received[c] = (received[c] ?? 0) + r.received;
+    outstanding[c] = (outstanding[c] ?? 0) + (r.committed - r.received);
+  }
+  const odRows = await q<{ currency: string; short: number }>(
+    `SELECT a.currency, (t.amount - COALESCE((SELECT SUM(r.amount) FROM funding_receipt r WHERE r.tranche_id=t.id),0))::float8 AS short
+     FROM funding_tranche t JOIN funding_agreement a ON a.id=t.agreement_id
+     WHERE a.org_id=$1 AND a.status='active' AND t.expected_date IS NOT NULL AND t.expected_date < CURRENT_DATE
+       AND (t.amount - COALESCE((SELECT SUM(r.amount) FROM funding_receipt r WHERE r.tranche_id=t.id),0)) > 0`, [orgId]);
+  const overdueAmount: CcyMap = {}; let overdueCount = 0;
+  for (const r of odRows) { const c = r.currency || "UGX"; overdueAmount[c] = (overdueAmount[c] ?? 0) + r.short; overdueCount++; }
+  return { committed, received, outstanding, overdueAmount, overdueCount, active: rows.length };
 }
 
 export type AgreementDetail = {

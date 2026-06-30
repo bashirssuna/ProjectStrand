@@ -19,12 +19,14 @@ export async function listFunds(orgId: string): Promise<FundRow[]> {
             (SELECT COUNT(*) FROM reserve_movement m WHERE m.fund_id=f.id)::int AS moves
      FROM reserve_fund f WHERE f.org_id=$1 ORDER BY f.status, f.name`, [orgId]);
 }
-export async function reserveStats(orgId: string): Promise<{ total: number; funds: number }> {
-  const r = await one<{ total: number; funds: number }>(
-    `SELECT COALESCE(SUM(b),0)::float8 AS total, COUNT(*) FILTER (WHERE status='active')::int AS funds FROM (
-       SELECT f.status, COALESCE((SELECT SUM(${RES_SIGNED}) FROM reserve_movement m WHERE m.fund_id=f.id),0) AS b
-       FROM reserve_fund f WHERE f.org_id=$1 AND f.status='active') s`, [orgId]);
-  return { total: r?.total ?? 0, funds: r?.funds ?? 0 };
+export type CcyMap = Record<string, number>;
+export async function reserveStats(orgId: string): Promise<{ total: CcyMap; funds: number }> {
+  const rows = await q<{ currency: string; b: number }>(
+    `SELECT f.currency, COALESCE((SELECT SUM(${RES_SIGNED}) FROM reserve_movement m WHERE m.fund_id=f.id),0)::float8 AS b
+     FROM reserve_fund f WHERE f.org_id=$1 AND f.status='active'`, [orgId]);
+  const total: CcyMap = {};
+  for (const r of rows) { const c = r.currency || "UGX"; total[c] = (total[c] ?? 0) + r.b; }
+  return { total, funds: rows.length };
 }
 export type FundDetail = { id: string; name: string; type: string; purpose: string | null; currency: string; targetAmount: number | null; status: string; openedDate: string | null; notes: string | null; balance: number };
 export async function getFund(orgId: string, id: string): Promise<FundDetail | null> {
@@ -67,20 +69,26 @@ export async function listInvestments(orgId: string): Promise<InvRow[]> {
                  ELSE NULL END AS "maturityFlag"
      FROM investment i WHERE i.org_id=$1 ORDER BY i.status, i.maturity_date NULLS LAST, i.name`, [orgId]);
 }
-export async function investmentStats(orgId: string): Promise<{ invested: number; interestEarned: number; maturingSoon: number; maturedDue: number; active: number }> {
-  const r = await one<{ invested: number; interestEarned: number; maturingSoon: number; maturedDue: number; active: number }>(
-    `WITH inv AS (
-       SELECT i.id, i.status, i.maturity_date,
-              (i.principal + COALESCE((SELECT SUM(${INV_SIGNED}) FROM investment_movement m WHERE m.investment_id=i.id),0)) AS outstanding
-       FROM investment i WHERE i.org_id=$1
-     )
-     SELECT COALESCE(SUM(outstanding) FILTER (WHERE status='active'),0)::float8 AS invested,
-            COALESCE((SELECT SUM(amount) FROM investment_movement m JOIN investment i2 ON i2.id=m.investment_id WHERE i2.org_id=$1 AND m.type='interest'),0)::float8 AS "interestEarned",
-            COUNT(*) FILTER (WHERE status='active' AND maturity_date IS NOT NULL AND maturity_date >= CURRENT_DATE AND maturity_date <= CURRENT_DATE + INTERVAL '30 days')::int AS "maturingSoon",
-            COUNT(*) FILTER (WHERE status='active' AND maturity_date IS NOT NULL AND maturity_date < CURRENT_DATE)::int AS "maturedDue",
-            COUNT(*) FILTER (WHERE status='active')::int AS active
-     FROM inv`, [orgId]);
-  return { invested: r?.invested ?? 0, interestEarned: r?.interestEarned ?? 0, maturingSoon: r?.maturingSoon ?? 0, maturedDue: r?.maturedDue ?? 0, active: r?.active ?? 0 };
+export async function investmentStats(orgId: string): Promise<{ invested: CcyMap; interestEarned: CcyMap; maturingSoon: number; maturedDue: number; active: number }> {
+  const rows = await q<{ currency: string; status: string; outstanding: number; maturing: boolean; matured: boolean }>(
+    `SELECT i.currency, i.status,
+            (i.principal + COALESCE((SELECT SUM(${INV_SIGNED}) FROM investment_movement m WHERE m.investment_id=i.id),0))::float8 AS outstanding,
+            (i.maturity_date IS NOT NULL AND i.maturity_date >= CURRENT_DATE AND i.maturity_date <= CURRENT_DATE + INTERVAL '30 days') AS maturing,
+            (i.maturity_date IS NOT NULL AND i.maturity_date < CURRENT_DATE) AS matured
+     FROM investment i WHERE i.org_id=$1 AND i.status='active'`, [orgId]);
+  const invested: CcyMap = {}; let maturingSoon = 0, maturedDue = 0;
+  for (const r of rows) {
+    const c = r.currency || "UGX";
+    invested[c] = (invested[c] ?? 0) + r.outstanding;
+    if (r.maturing) maturingSoon++;
+    if (r.matured) maturedDue++;
+  }
+  const intRows = await q<{ currency: string; interest: number }>(
+    `SELECT i.currency, SUM(m.amount)::float8 AS interest FROM investment_movement m JOIN investment i ON i.id=m.investment_id
+     WHERE i.org_id=$1 AND m.type='interest' GROUP BY i.currency`, [orgId]);
+  const interestEarned: CcyMap = {};
+  for (const r of intRows) interestEarned[r.currency || "UGX"] = r.interest;
+  return { invested, interestEarned, maturingSoon, maturedDue, active: rows.length };
 }
 export type InvDetail = {
   id: string; name: string; institution: string | null; instrumentType: string; currency: string; principal: number;

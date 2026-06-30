@@ -3,7 +3,7 @@ import { requireFinanceOrg } from "../_guard";
 import { q } from "@/server/db";
 import { listAccounts, accountStats } from "@/server/services/pettycash";
 import { PageHeader, SectionTitle, Field, Stat, Badge, Empty, ProgressBar } from "@/components/ui";
-import { money } from "@/lib/format";
+import { money, ccyTotal } from "@/lib/format";
 import { currencyOptions } from "@/lib/currencies";
 import { createPettyCashAccountAction } from "@/app/actions";
 
@@ -18,6 +18,8 @@ export default async function PettyCashPage({ searchParams }: { searchParams: Pr
     q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY code`, [orgId]),
   ]);
   const baseCcy = org[0]?.baseCurrency || "UGX";
+  const onHand = ccyTotal(stats.onHand, baseCcy), limit = ccyTotal(stats.limit, baseCcy), replenish = ccyTotal(stats.replenishDue, baseCcy);
+  const replenishPositive = replenish.parts.some(([, v]) => v > 0);
 
   return (
     <div className="max-w-5xl">
@@ -26,8 +28,8 @@ export default async function PettyCashPage({ searchParams }: { searchParams: Pr
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
         <Stat label="Active floats" value={String(stats.active)} />
-        <Stat label="Cash on hand" value={money(stats.onHand, baseCcy)} sub={`of ${money(stats.totalLimit, baseCcy)} limit`} />
-        <Stat label="Replenishment due" value={money(stats.replenishDue, baseCcy)} tone={stats.replenishDue ? "warn" : undefined} />
+        <Stat label="Cash on hand" value={onHand.value} sub={limit.empty ? undefined : `of ${limit.value} limit`} />
+        <Stat label="Replenishment due" value={replenish.empty ? money(0, baseCcy) : replenish.value} tone={replenishPositive ? "warn" : undefined} />
         <Stat label="Low floats" value={String(stats.lowCount)} tone={stats.lowCount ? "danger" : undefined} />
       </div>
       <p className="text-xs mb-4" style={{ color: "var(--muted)" }}>Cross-float totals assume a common base currency; per-float figures use each float&apos;s own currency.</p>

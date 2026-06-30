@@ -3,7 +3,7 @@ import { requireFinanceOrg } from "../_guard";
 import { q } from "@/server/db";
 import { listAgreements, agreementStats } from "@/server/services/funding";
 import { PageHeader, SectionTitle, Field, Stat, StatusBadge, Badge, Empty, ProgressBar } from "@/components/ui";
-import { money, fmtDate } from "@/lib/format";
+import { money, fmtDate, ccyTotal } from "@/lib/format";
 import { currencyOptions } from "@/lib/currencies";
 import { createAgreementAction } from "@/app/actions";
 
@@ -17,6 +17,7 @@ export default async function FundingPage({ searchParams }: { searchParams: Prom
     q<{ baseCurrency: string }>(`SELECT base_currency AS "baseCurrency" FROM organization WHERE id=$1`, [orgId]),
   ]);
   const baseCcy = org[0]?.baseCurrency || "UGX";
+  const committed = ccyTotal(stats.committed, baseCcy), received = ccyTotal(stats.received, baseCcy), outstanding = ccyTotal(stats.outstanding, baseCcy), overdue = ccyTotal(stats.overdueAmount, baseCcy);
 
   return (
     <div className="max-w-5xl">
@@ -24,10 +25,10 @@ export default async function FundingPage({ searchParams }: { searchParams: Prom
       {sp.err === "req" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Donor and title are required.</div>}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
-        <Stat label="Committed (active)" value={money(stats.committed, baseCcy)} />
-        <Stat label="Received" value={money(stats.received, baseCcy)} tone={stats.received ? "ok" : undefined} />
-        <Stat label="Outstanding" value={money(stats.outstanding, baseCcy)} tone={stats.outstanding ? "warn" : undefined} />
-        <Stat label="Overdue tranches" value={stats.overdueCount ? `${stats.overdueCount} · ${money(stats.overdueAmount, baseCcy)}` : "0"} tone={stats.overdueCount ? "danger" : undefined} />
+        <Stat label="Committed (active)" value={committed.value} />
+        <Stat label="Received" value={received.value} tone={received.parts.some(([, v]) => v > 0) ? "ok" : undefined} />
+        <Stat label="Outstanding" value={outstanding.value} tone={outstanding.parts.some(([, v]) => v > 0) ? "warn" : undefined} />
+        <Stat label="Overdue tranches" value={stats.overdueCount ? `${stats.overdueCount} · ${overdue.value}` : "0"} tone={stats.overdueCount ? "danger" : undefined} />
       </div>
       <p className="text-xs mb-4" style={{ color: "var(--muted)" }}>Cross-agreement totals assume a common base currency; per-agreement figures use each agreement&apos;s own currency.</p>
 

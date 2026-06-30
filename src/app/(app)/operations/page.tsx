@@ -4,7 +4,7 @@ import { requireUser } from "@/server/auth";
 import { getUserOrg } from "@/server/services/accounts";
 import { institutionalSnapshot } from "@/server/services/dashboard";
 import { PageHeader, SectionTitle, Stat, Badge, Empty } from "@/components/ui";
-import { money } from "@/lib/format";
+import { money, ccyTotal } from "@/lib/format";
 
 const toneRank: Record<string, number> = { danger: 0, warn: 1, info: 2 };
 
@@ -45,7 +45,7 @@ export default async function OperationsPage() {
         <Stat label="Active projects" value={String(s.projects.active)} sub={`${s.projects.total} total`} />
         <Stat label="Staff" value={String(s.hr.employees)} />
         <Stat label="Items needing attention" value={String(attention.length)} tone={attention.some((a) => a.tone === "danger") ? "danger" : attention.length ? "warn" : "ok"} />
-        <Stat label="Petty cash on hand" value={money(s.finance.pettyCash.onHand, ccy)} sub={`${s.finance.pettyCash.active} float${s.finance.pettyCash.active === 1 ? "" : "s"}`} />
+        <Stat label="Petty cash on hand" value={ccyTotal(s.finance.pettyCash.onHand, ccy).value} sub={`${s.finance.pettyCash.active} float${s.finance.pettyCash.active === 1 ? "" : "s"}`} />
       </div>
 
       {/* Needs attention */}
@@ -68,9 +68,9 @@ export default async function OperationsPage() {
       {/* Finance */}
       <SectionTitle>Finance position</SectionTitle>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-2 mb-6">
-        <Stat label="Funding outstanding" value={money(s.finance.funding.outstanding, ccy)} sub={s.finance.funding.overdueCount ? `${s.finance.funding.overdueCount} overdue` : `${s.finance.funding.active} active`} tone={s.finance.funding.overdueCount ? "warn" : undefined} />
-        <Stat label="Reserves held" value={money(s.finance.reserves.total, ccy)} sub={`${s.finance.reserves.funds} fund${s.finance.reserves.funds === 1 ? "" : "s"}`} />
-        <Stat label="Invested" value={money(s.finance.investments.invested, ccy)} sub={s.finance.investments.maturingSoon ? `${s.finance.investments.maturingSoon} maturing soon` : `${s.finance.investments.active} active`} />
+        <Stat label="Funding outstanding" value={ccyTotal(s.finance.funding.outstanding, ccy).value} sub={s.finance.funding.overdueCount ? `${s.finance.funding.overdueCount} overdue` : `${s.finance.funding.active} active`} tone={s.finance.funding.overdueCount ? "warn" : undefined} />
+        <Stat label="Reserves held" value={ccyTotal(s.finance.reserves.total, ccy).value} sub={`${s.finance.reserves.funds} fund${s.finance.reserves.funds === 1 ? "" : "s"}`} />
+        <Stat label="Invested" value={ccyTotal(s.finance.investments.invested, ccy).value} sub={s.finance.investments.maturingSoon ? `${s.finance.investments.maturingSoon} maturing soon` : `${s.finance.investments.active} active`} />
         <Stat label="Lowest projected cash" value={s.finance.cashForecast.worstLowest != null ? money(s.finance.cashForecast.worstLowest, s.finance.cashForecast.worstCurrency) : "—"} sub={s.finance.cashForecast.active ? `${s.finance.cashForecast.active} forecast${s.finance.cashForecast.active === 1 ? "" : "s"}` : "no forecast"} tone={s.finance.cashForecast.worstLowest != null && s.finance.cashForecast.worstLowest < 0 ? "danger" : undefined} />
       </div>
 

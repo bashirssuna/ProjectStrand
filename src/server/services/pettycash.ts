@@ -62,13 +62,15 @@ export type Txn = {
   id: string; txnDate: string; type: string; amount: number; signed: number; balanceAfter: number;
   description: string | null; payee: string | null; category: string | null; reference: string | null;
   projectTitle: string | null; fileKey: string | null; fileName: string | null; approvedBy: string | null; recordedByName: string | null;
+  expenditureId: string | null; budgetLineCode: string | null;
 };
 export async function listTxns(orgId: string, accountId: string): Promise<Txn[]> {
   const rows = await q<Omit<Txn, "balanceAfter">>(
     `SELECT t.id, t.txn_date AS "txnDate", t.type, t.amount::float8 AS amount,
             (CASE WHEN t.type='expense' THEN -t.amount ELSE t.amount END)::float8 AS signed,
             t.description, t.payee, t.category, t.reference, p.title AS "projectTitle",
-            t.file_key AS "fileKey", t.file_name AS "fileName", t.approved_by AS "approvedBy", t.recorded_by_name AS "recordedByName"
+            t.file_key AS "fileKey", t.file_name AS "fileName", t.approved_by AS "approvedBy", t.recorded_by_name AS "recordedByName",
+            t.expenditure_id AS "expenditureId", (SELECT code FROM budget_line WHERE id=t.budget_line_id) AS "budgetLineCode"
      FROM petty_cash_txn t LEFT JOIN project p ON p.id=t.project_id
      WHERE t.account_id=$1 AND t.org_id=$2 ORDER BY t.txn_date ASC, t.created_at ASC`, [accountId, orgId]);
   let running = 0;

@@ -6147,7 +6147,30 @@ export async function recordPettyCashExpenseAction(formData: FormData) {
     [txnId, orgId, aid, _rstr(formData, "txnDate") ?? new Date().toISOString().slice(0, 10), amount, _rstr(formData, "description"),
      _rstr(formData, "payee"), _rstr(formData, "category"), _rstr(formData, "reference"), _rstr(formData, "projectId"), fileKey, fileName,
      approved ? userName : null, approved ? new Date().toISOString() : null, userId, userName]);
-  await writeAudit({ orgId, userId, action: "create", entity: "petty_cash_txn", entityId: txnId, after: { type: "expense", amount } });
+
+  // If the float is linked to a project and a budget line was chosen, mirror this
+  // disbursement into the project budget (an expenditure → hits budget actuals and
+  // the spending tracker) and post it to the general ledger (→ financial statements).
+  const budgetLineId = _rstr(formData, "budgetLineId");
+  let posted: Record<string, unknown> = {};
+  const acct = await one<{ projectId: string | null }>(`SELECT project_id AS "projectId" FROM petty_cash_account WHERE id=$1 AND org_id=$2`, [aid, orgId]);
+  if (acct?.projectId && budgetLineId) {
+    const bl = await one<{ id: string }>(`SELECT bl.id FROM budget_line bl JOIN budget b ON b.id=bl.budget_id WHERE bl.id=$1 AND b.project_id=$2`, [budgetLineId, acct.projectId]);
+    if (bl) {
+      const expId = id("exp");
+      const dateStr = _rstr(formData, "txnDate") ?? new Date().toISOString().slice(0, 10);
+      const desc = `Petty cash — ${_rstr(formData, "description") ?? _rstr(formData, "payee") ?? "disbursement"}`;
+      await q(`INSERT INTO expenditure (id, project_id, budget_line_id, amount, date, reference, payee, note, approved, created_by_id)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9)`,
+        [expId, acct.projectId, budgetLineId, amount, dateStr, _rstr(formData, "reference"), _rstr(formData, "payee"), desc, userId]);
+      await q(`UPDATE petty_cash_txn SET budget_line_id=$2, expenditure_id=$3, project_id=COALESCE(project_id,$4) WHERE id=$1`, [txnId, budgetLineId, expId, acct.projectId]);
+      try {
+        await postExpenditureToLedger({ orgId, projectId: acct.projectId, expenditureId: expId, amount, date: dateStr, reference: _rstr(formData, "reference"), payee: _rstr(formData, "payee"), postedBy: userId, postedByName: userName });
+      } catch { /* ledger not configured — expenditure still recorded against the budget */ }
+      posted = { expenditureId: expId, budgetLineId, projectId: acct.projectId };
+    }
+  }
+  await writeAudit({ orgId, userId, action: "create", entity: "petty_cash_txn", entityId: txnId, after: { type: "expense", amount, ...posted } });
   redirect(`/finance/petty-cash/${aid}`);
 }
 

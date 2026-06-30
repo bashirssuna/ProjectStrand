@@ -22,7 +22,7 @@ export default async function EngagementDetailPage({ params, searchParams }: { p
 
   return (
     <div className="max-w-5xl">
-      <PageHeader title={e.title} subtitle={`${label(e.type)} · ${orgName}`} actions={<Link href="/finance/audits" className="btn btn-sm">← Engagements</Link>} />
+      <PageHeader title={e.title} subtitle={`${label(e.type)} · ${orgName}`} actions={<><a href={`/print/audit-engagement/${e.id}`} target="_blank" className="btn btn-sm">Print report ↗</a><Link href="/finance/audits" className="btn btn-sm">← Engagements</Link></>} />
       {sp.err === "ftitle" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>A finding title is required.</div>}
 
       <div className="flex flex-wrap items-center gap-3 mb-4">

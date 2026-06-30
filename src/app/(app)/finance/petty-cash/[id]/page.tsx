@@ -16,9 +16,12 @@ export default async function PettyCashAccountPage({ params, searchParams }: { p
   const sp = await searchParams;
   const a = await getAccount(orgId, id);
   if (!a) notFound();
-  const [txns, projects] = await Promise.all([
+  const [txns, projects, budgetLines] = await Promise.all([
     listTxns(orgId, id),
     q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY code`, [orgId]),
+    a.projectId
+      ? q<{ id: string; code: string; description: string }>(`SELECT bl.id, bl.code, bl.description FROM budget_line bl JOIN budget b ON b.id=bl.budget_id WHERE b.project_id=$1 ORDER BY bl.code`, [a.projectId])
+      : Promise.resolve([] as { id: string; code: string; description: string }[]),
   ]);
   const ccy = a.currency;
   const closed = a.status === "closed";
@@ -26,7 +29,7 @@ export default async function PettyCashAccountPage({ params, searchParams }: { p
 
   return (
     <div className="max-w-4xl">
-      <PageHeader title={a.name} subtitle={`Petty cash · ${orgName}`} actions={<Link href="/finance/petty-cash" className="btn btn-sm">← Petty cash</Link>} />
+      <PageHeader title={a.name} subtitle={`Petty cash · ${orgName}`} actions={<><a href={`/print/petty-cash/${a.id}`} target="_blank" className="btn btn-sm">Print statement ↗</a><Link href="/finance/petty-cash" className="btn btn-sm">← Petty cash</Link></>} />
       {sp.err === "insufficient" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Disbursement exceeds the cash on hand. Replenish the float first.</div>}
       {sp.err === "amount" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Enter a valid amount.</div>}
       {sp.reconciled && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Reconciliation recorded.</div>}
@@ -64,6 +67,7 @@ export default async function PettyCashAccountPage({ params, searchParams }: { p
                       <div>{t.payee || t.description || (t.type === "top_up" ? "Replenishment" : "—")}</div>
                       <div className="text-xs" style={{ color: "var(--muted)" }}>{[t.category, t.projectTitle, t.reference ? `Ref ${t.reference}` : null].filter(Boolean).join(" · ")}</div>
                       {t.payee && t.description && <div className="text-xs" style={{ color: "var(--muted)" }}>{t.description}</div>}
+                      {t.expenditureId && <span className="inline-block mt-1"><Badge tone="ok">→ Posted to budget{t.budgetLineCode ? ` · ${t.budgetLineCode}` : ""}</Badge></span>}
                     </td>
                     <td className="td text-right whitespace-nowrap" style={{ color: t.signed < 0 ? "var(--danger)" : "var(--ok)" }}>{t.signed < 0 ? "−" : "+"}{money(Math.abs(t.signed), ccy)}</td>
                     <td className="td text-right whitespace-nowrap">{money(t.balanceAfter, ccy)}</td>
@@ -88,7 +92,15 @@ export default async function PettyCashAccountPage({ params, searchParams }: { p
               <Field label="Category"><select name="category" className="select select-sm"><option value="">—</option>{EXPENSE_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}</select></Field>
               <div className="sm:col-span-2"><Field label="Description"><input name="description" className="input input-sm" /></Field></div>
               <Field label="Reference / voucher"><input name="reference" className="input input-sm" /></Field>
-              <Field label="Project (optional)"><select name="projectId" className="select select-sm"><option value="">—</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.title}</option>)}</select></Field>
+              {a.projectId ? (
+                budgetLines.length > 0 ? (
+                  <Field label={`Budget line — posts to ${a.projectTitle}`}><select name="budgetLineId" className="select select-sm"><option value="">— record in petty cash only</option>{budgetLines.map((b) => <option key={b.id} value={b.id}>{b.code} — {b.description}</option>)}</select></Field>
+                ) : (
+                  <div className="self-end text-xs" style={{ color: "var(--muted)" }}>No budget lines in this project — disbursement is recorded in petty cash only.</div>
+                )
+              ) : (
+                <Field label="Project (optional)"><select name="projectId" className="select select-sm"><option value="">—</option>{projects.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.title}</option>)}</select></Field>
+              )}
               <Field label="Receipt"><input name="file" type="file" className="input input-sm" /></Field>
               <label className="flex items-center gap-2 text-sm self-end"><input type="checkbox" name="approved" /> Approved</label>
               <div className="sm:col-span-2"><button className="btn btn-sm btn-primary" type="submit">Record disbursement</button></div>

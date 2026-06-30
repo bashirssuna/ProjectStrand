@@ -24,7 +24,7 @@ export default async function AgreementDetailPage({ params, searchParams }: { pa
 
   return (
     <div className="max-w-4xl">
-      <PageHeader title={a.donor} subtitle={`${a.title} · ${orgName}`} actions={<Link href="/finance/funding" className="btn btn-sm">← Agreements</Link>} />
+      <PageHeader title={a.donor} subtitle={`${a.title} · ${orgName}`} actions={<><a href={`/print/funding-agreement/${a.id}`} target="_blank" className="btn btn-sm">Print statement ↗</a><Link href="/finance/funding" className="btn btn-sm">← Agreements</Link></>} />
       {sp.err === "amount" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Enter a valid amount.</div>}
       {sp.err === "label" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>A tranche label is required.</div>}
 

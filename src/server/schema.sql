@@ -1340,6 +1340,8 @@ CREATE TABLE IF NOT EXISTS petty_cash_txn (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_petty_cash_txn_account ON petty_cash_txn(account_id);
+ALTER TABLE petty_cash_txn ADD COLUMN IF NOT EXISTS budget_line_id text;
+ALTER TABLE petty_cash_txn ADD COLUMN IF NOT EXISTS expenditure_id text;
 
 -- ===================== Grant Agreements / Income Register =====================
 -- A signed donor/funding agreement: total committed, with a tranche schedule

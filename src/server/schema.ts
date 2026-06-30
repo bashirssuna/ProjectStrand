@@ -1318,12 +1318,16 @@ CREATE TABLE IF NOT EXISTS petty_cash_txn (
   category text,
   reference text,
   project_id text REFERENCES project(id) ON DELETE SET NULL,
+  budget_line_id text,
+  expenditure_id text,
   file_key text, file_name text,
   approved_by text, approved_at timestamptz,
   recorded_by_id text, recorded_by_name text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_petty_cash_txn_account ON petty_cash_txn(account_id);
+ALTER TABLE petty_cash_txn ADD COLUMN IF NOT EXISTS budget_line_id text;
+ALTER TABLE petty_cash_txn ADD COLUMN IF NOT EXISTS expenditure_id text;
 
 -- ===================== Grant Agreements / Income Register =====================
 CREATE TABLE IF NOT EXISTS funding_agreement (

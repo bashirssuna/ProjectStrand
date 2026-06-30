@@ -2,10 +2,10 @@ import Link from "next/link";
 import { requireFinanceOrg } from "../_guard";
 import { q, one } from "@/server/db";
 import { PageHeader, SectionTitle, Field, Empty } from "@/components/ui";
-import { fmtDate } from "@/lib/format";
-import { setBaseCurrencyAction, addExchangeRateAction } from "@/app/actions";
+import { dateInput } from "@/lib/format";
+import { setBaseCurrencyAction, addExchangeRateAction, updateExchangeRateAction, deleteExchangeRateAction } from "@/app/actions";
 
-export default async function CurrencyPage({ searchParams }: { searchParams: Promise<{ saved?: string; added?: string; err?: string }> }) {
+export default async function CurrencyPage({ searchParams }: { searchParams: Promise<{ saved?: string; added?: string; err?: string; updated?: string; deleted?: string }> }) {
   const { orgId } = await requireFinanceOrg();
   const sp = await searchParams;
   const base = (await one<{ b: string }>(`SELECT base_currency b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
@@ -18,6 +18,8 @@ export default async function CurrencyPage({ searchParams }: { searchParams: Pro
       <PageHeader title="Currency & exchange rates" subtitle="Base currency and conversion rates for multi-currency posting" actions={<Link href="/finance" className="btn btn-sm">← Finance</Link>} />
       {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Base currency updated.</div>}
       {sp.added && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Exchange rate added.</div>}
+      {sp.updated && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Exchange rate updated.</div>}
+      {sp.deleted && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Exchange rate deleted.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Enter a currency different from the base and a positive rate.</div>}
 
       <SectionTitle>Base (reporting) currency</SectionTitle>
@@ -29,19 +31,23 @@ export default async function CurrencyPage({ searchParams }: { searchParams: Pro
 
       <SectionTitle>Exchange rates</SectionTitle>
       {rates.length === 0 ? <Empty title="No exchange rates yet" hint={`Add a rate to convert foreign-currency invoices, receipts and assets into ${base}.`} /> : (
-        <div className="card overflow-x-auto mb-6">
-          <table className="w-full text-sm">
-            <thead><tr><th className="th text-left">Currency</th><th className="th text-right">Rate</th><th className="th text-left">As of</th></tr></thead>
-            <tbody>
-              {rates.map((r) => (
-                <tr key={r.id}>
-                  <td className="td">1 {r.currency} =</td>
-                  <td className="td text-right tabular-nums">{r.rate.toLocaleString()} {r.baseCurrency}</td>
-                  <td className="td">{fmtDate(r.asOf)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="card divide-y mb-6" style={{ borderColor: "var(--border)" }}>
+          {rates.map((r) => (
+            <div key={r.id} className="flex flex-wrap items-center gap-2 p-3">
+              <span className="text-sm font-medium" style={{ minWidth: 64 }}>1 {r.currency} =</span>
+              <form action={updateExchangeRateAction} className="flex flex-wrap items-center gap-2">
+                <input type="hidden" name="rateId" value={r.id} />
+                <input type="number" step="0.000001" min="0" name="rate" defaultValue={String(r.rate)} className="input input-sm" style={{ width: 140 }} required />
+                <span className="text-xs" style={{ color: "var(--muted)" }}>{r.baseCurrency} &middot; as of</span>
+                <input type="date" name="asOf" defaultValue={dateInput(r.asOf)} className="input input-sm" required />
+                <button className="btn btn-sm" type="submit">Save</button>
+              </form>
+              <form action={deleteExchangeRateAction} className="ml-auto">
+                <input type="hidden" name="rateId" value={r.id} />
+                <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)" }}>Delete</button>
+              </form>
+            </div>
+          ))}
         </div>
       )}
 

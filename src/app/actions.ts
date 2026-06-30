@@ -6861,3 +6861,21 @@ export async function postFxRevaluationAction(formData: FormData) {
     redirect(`/finance/fx-revaluation?err=${encodeURIComponent(e instanceof Error ? e.message : "revaluation failed")}&asof=${asOf}`);
   }
 }
+
+/* ---- Edit / delete exchange rates ---- */
+export async function updateExchangeRateAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const rateId = _rstr(formData, "rateId");
+  const rate = _rnum(formData, "rate");
+  const asOf = String(formData.get("asOf") || "").trim();
+  if (!rateId || !rate || rate <= 0 || !asOf) redirect("/finance/currency?err=1");
+  await q(`UPDATE exchange_rate SET rate=$3, as_of=$4 WHERE id=$1 AND org_id=$2`, [rateId, orgId, rate, asOf]);
+  redirect("/finance/currency?updated=1");
+}
+
+export async function deleteExchangeRateAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const rateId = _rstr(formData, "rateId");
+  if (rateId) await q(`DELETE FROM exchange_rate WHERE id=$1 AND org_id=$2`, [rateId, orgId]);
+  redirect("/finance/currency?deleted=1");
+}

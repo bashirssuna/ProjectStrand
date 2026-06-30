@@ -106,7 +106,7 @@ export default async function DashboardPage() {
       <PageHeader
         title={`Welcome back, ${user.name.split(" ")[0]}`}
         subtitle="Your portfolio at a glance — schedule, spend, and anything that needs a signature."
-        actions={<Link href="/projects/new" className="btn btn-primary">+ New project</Link>}
+        actions={<>{org?.isOrgAdmin && <Link href="/operations" className="btn btn-sm">Institutional overview →</Link>}<Link href="/projects/new" className="btn btn-primary">+ New project</Link></>}
       />
 
       {canSeeBilling && subDaysLeft !== null && (

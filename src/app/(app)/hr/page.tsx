@@ -12,7 +12,7 @@ export default async function HrHome() {
   const expiring = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM employee WHERE org_id=$1 AND status<>'terminated' AND end_date IS NOT NULL AND end_date <= (CURRENT_DATE + INTERVAL '60 days')`, [orgId]))?.c ?? 0;
   return (
     <div>
-      <PageHeader title="Human Resources" subtitle={`Staff, leave, timesheets & payroll for ${orgName}`} />
+      <PageHeader title="Human Resources" subtitle={`Staff, leave, timesheets & payroll for ${orgName}`} actions={<Link href="/operations" className="btn btn-sm">Institutional overview →</Link>} />
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
         <Stat label="Active employees" value={String(emp)} />
         <Stat label="Leave requests pending" value={String(pendingLeave)} tone={pendingLeave ? "warn" : undefined} />

@@ -32,7 +32,7 @@ export default async function FinanceHome() {
 
   return (
     <div>
-      <PageHeader title="Institution Finance" subtitle={`General ledger & financial statements for ${orgName}`} />
+      <PageHeader title="Institution Finance" subtitle={`General ledger & financial statements for ${orgName}`} actions={<Link href="/operations" className="btn btn-sm">Institutional overview →</Link>} />
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
         <Stat label="Total income" value={money(fs.incomeStatement.totalIncome, c)} sub="all projects" />
         <Stat label="Total expense" value={money(fs.incomeStatement.totalExpense, c)} sub="all projects" />

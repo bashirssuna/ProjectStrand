@@ -1564,6 +1564,57 @@ CREATE TABLE IF NOT EXISTS audit_finding_update (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_audit_finding_update_finding ON audit_finding_update(finding_id);
+
+-- ===================== Staff Satisfaction / Engagement Surveys =====================
+CREATE TABLE IF NOT EXISTS survey (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  token text UNIQUE NOT NULL,
+  title text NOT NULL,
+  description text,
+  intro text,
+  thank_you text,
+  anonymous boolean NOT NULL DEFAULT true,
+  status text NOT NULL DEFAULT 'draft',
+  created_by_id text, created_by_name text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  opened_at timestamptz, closed_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_survey_org ON survey(org_id);
+CREATE INDEX IF NOT EXISTS idx_survey_token ON survey(token);
+
+CREATE TABLE IF NOT EXISTS survey_question (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  survey_id text NOT NULL REFERENCES survey(id) ON DELETE CASCADE,
+  prompt text NOT NULL,
+  type text NOT NULL DEFAULT 'scale',
+  options text,
+  required boolean NOT NULL DEFAULT true,
+  sort_order integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_survey_question_survey ON survey_question(survey_id);
+
+CREATE TABLE IF NOT EXISTS survey_response (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  survey_id text NOT NULL REFERENCES survey(id) ON DELETE CASCADE,
+  respondent_name text, department text,
+  submitted_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_survey_response_survey ON survey_response(survey_id);
+
+CREATE TABLE IF NOT EXISTS survey_answer (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  response_id text NOT NULL REFERENCES survey_response(id) ON DELETE CASCADE,
+  question_id text NOT NULL REFERENCES survey_question(id) ON DELETE CASCADE,
+  value_num double precision,
+  value_text text
+);
+CREATE INDEX IF NOT EXISTS idx_survey_answer_response ON survey_answer(response_id);
+CREATE INDEX IF NOT EXISTS idx_survey_answer_question ON survey_answer(question_id);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

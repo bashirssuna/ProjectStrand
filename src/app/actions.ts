@@ -6751,3 +6751,70 @@ export async function submitSurveyResponseAction(formData: FormData) {
   }
   redirect(`/survey/${token}/submitted`);
 }
+
+/* ---- Survey targeted distribution ---- */
+import { employeesByDepartment, employeesByProject, employeesByIds } from "@/server/services/surveys";
+
+export async function addSurveyRecipientsAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const sid = String(formData.get("surveyId") || "");
+  const mode = String(formData.get("mode") || "individuals");
+  let candidates: { employeeId: string; name: string; email: string | null; department: string | null }[] = [];
+  let projectId: string | null = null;
+  if (mode === "department") candidates = await employeesByDepartment(orgId, String(formData.get("department") || ""));
+  else if (mode === "project") { projectId = _rstr(formData, "projectId"); if (projectId) candidates = await employeesByProject(orgId, projectId); }
+  else candidates = await employeesByIds(orgId, formData.getAll("employeeIds").map((x) => String(x)));
+
+  const existing = new Set(
+    (await q<{ eid: string }>(`SELECT employee_id AS eid FROM survey_recipient WHERE survey_id=$1 AND employee_id IS NOT NULL`, [sid])).map((r) => r.eid));
+  let added = 0;
+  for (const c of candidates) {
+    if (existing.has(c.employeeId)) continue;
+    const token = (globalThis.crypto?.randomUUID?.() ?? id("rt")).replace(/-/g, "").slice(0, 16).toLowerCase();
+    await q(`INSERT INTO survey_recipient (id, org_id, survey_id, employee_id, name, email, department, project_id, source, token)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [id("srp"), orgId, sid, c.employeeId, c.name, c.email, c.department, projectId, mode, token]);
+    existing.add(c.employeeId); added += 1;
+  }
+  redirect(`/hr/surveys/${sid}?added=${added}`);
+}
+export async function removeSurveyRecipientAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const sid = String(formData.get("surveyId") || "");
+  await q(`DELETE FROM survey_recipient WHERE id=$1 AND org_id=$2`, [String(formData.get("recipientId") || ""), orgId]);
+  redirect(`/hr/surveys/${sid}`);
+}
+export async function markSurveyRecipientsSentAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const sid = String(formData.get("surveyId") || "");
+  await q(`UPDATE survey_recipient SET sent=true, sent_at=COALESCE(sent_at, now()) WHERE survey_id=$1 AND org_id=$2 AND sent=false`, [sid, orgId]);
+  redirect(`/hr/surveys/${sid}`);
+}
+
+// PUBLIC — submit via a recipient's unique invite token. Marks the recipient as
+// responded (for response-rate tracking) but stores the answers anonymously.
+export async function submitRecipientSurveyAction(formData: FormData) {
+  const token = String(formData.get("rtoken") || "").trim();
+  const rc = await one<{ id: string; surveyId: string; orgId: string; responded: boolean; status: string }>(
+    `SELECT rc.id, rc.survey_id AS "surveyId", rc.org_id AS "orgId", rc.responded, s.status
+     FROM survey_recipient rc JOIN survey s ON s.id=rc.survey_id WHERE rc.token=$1`, [token]);
+  if (!rc) redirect(`/survey/r/${token}?err=invalid`);
+  if (rc.status !== "open") redirect(`/survey/r/${token}?err=closed`);
+  if (rc.responded) redirect(`/survey/r/${token}`); // already done — no double-count
+  const rid = id("sr");
+  await q(`INSERT INTO survey_response (id, org_id, survey_id) VALUES ($1,$2,$3)`, [rid, rc.orgId, rc.surveyId]);
+  const questions = await q<{ id: string; type: string }>(`SELECT id, type FROM survey_question WHERE survey_id=$1`, [rc.surveyId]);
+  for (const ques of questions) {
+    const raw = formData.get(`q_${ques.id}`);
+    if (raw == null || String(raw).trim() === "") continue;
+    const v = String(raw);
+    let valueNum: number | null = null, valueText: string | null = null;
+    if (ques.type === "scale" || ques.type === "rating" || ques.type === "yes_no") valueNum = Number(v);
+    else valueText = v.slice(0, 4000);
+    if (valueNum != null && Number.isNaN(valueNum)) continue;
+    await q(`INSERT INTO survey_answer (id, org_id, response_id, question_id, value_num, value_text) VALUES ($1,$2,$3,$4,$5,$6)`,
+      [id("sa"), rc.orgId, rid, ques.id, valueNum, valueText]);
+  }
+  await q(`UPDATE survey_recipient SET responded=true, responded_at=now() WHERE id=$1`, [rc.id]);
+  redirect(`/survey/r/${token}`);
+}

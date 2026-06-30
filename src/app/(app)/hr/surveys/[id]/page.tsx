@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireHrOrg } from "../../_guard";
-import { getSurvey, listQuestions, surveyResults, parseOptions, QUESTION_TYPES, typeLabel, SCALE_LABELS } from "@/server/services/surveys";
-import { PageHeader, SectionTitle, Field, Stat, Badge, StatusBadge, Empty } from "@/components/ui";
+import { getSurvey, listQuestions, surveyResults, parseOptions, QUESTION_TYPES, typeLabel, SCALE_LABELS, listRecipients, recipientStats } from "@/server/services/surveys";
+import { q } from "@/server/db";
+import { PageHeader, SectionTitle, Field, Stat, Badge, StatusBadge, Empty, ProgressBar } from "@/components/ui";
 import { label } from "@/lib/enums";
-import { updateSurveyAction, setSurveyStatusAction, deleteSurveyAction, addSurveyQuestionAction, deleteSurveyQuestionAction, moveSurveyQuestionAction } from "@/app/actions";
+import { updateSurveyAction, setSurveyStatusAction, deleteSurveyAction, addSurveyQuestionAction, deleteSurveyQuestionAction, moveSurveyQuestionAction, addSurveyRecipientsAction, removeSurveyRecipientAction, markSurveyRecipientsSentAction } from "@/app/actions";
 
 const STATUSES = ["draft", "open", "closed"];
 
@@ -26,13 +27,18 @@ function DistBars({ dist, accent }: { dist: { label: string; count: number }[]; 
   );
 }
 
-export default async function SurveyDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ err?: string }> }) {
+export default async function SurveyDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ err?: string; added?: string }> }) {
   const { orgId, orgName } = await requireHrOrg();
   const { id } = await params;
   const sp = await searchParams;
   const s = await getSurvey(orgId, id);
   if (!s) notFound();
-  const [questions, results] = await Promise.all([listQuestions(orgId, id), surveyResults(orgId, id)]);
+  const [questions, results, recipients, recStats, departments, projects, employees] = await Promise.all([
+    listQuestions(orgId, id), surveyResults(orgId, id), listRecipients(orgId, id), recipientStats(orgId, id),
+    q<{ name: string }>(`SELECT name FROM department WHERE org_id=$1 ORDER BY name`, [orgId]),
+    q<{ id: string; code: string; title: string }>(`SELECT id, code, title FROM project WHERE org_id=$1 ORDER BY code`, [orgId]),
+    q<{ id: string; name: string; department: string | null }>(`SELECT id, (first_name || ' ' || last_name) AS name, department FROM employee WHERE org_id=$1 AND status <> 'terminated' ORDER BY first_name, last_name`, [orgId]),
+  ]);
   const publicPath = `/survey/${s.token}`;
   const draft = s.status === "draft";
 
@@ -106,6 +112,71 @@ export default async function SurveyDetailPage({ params, searchParams }: { param
           </form>
         </div>
       )}
+
+      {/* Distribution */}
+      <SectionTitle>Distribution</SectionTitle>
+      {sp.added && <div className="card p-3 my-2 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Added {sp.added} recipient{sp.added === "1" ? "" : "s"}.</div>}
+      <p className="text-xs mt-1 mb-3" style={{ color: "var(--muted)" }}>
+        Send the survey to specific staff — by department, project team, or named individuals. Each person gets a private link; {s.anonymous ? "their answers stay anonymous, only whether they've responded is tracked" : "responses may be linked to them"}.
+        The app can&apos;t send email itself — add recipients, then <strong>export the list</strong> or copy each link to send through your own email.
+      </p>
+
+      {recStats.total > 0 && (
+        <div className="card p-3 mb-3">
+          <div className="flex justify-between text-xs mb-1"><span style={{ color: "var(--muted)" }}>Response rate</span><span>{recStats.responded} of {recStats.total} responded · {recStats.rate}%</span></div>
+          <ProgressBar value={recStats.rate} />
+        </div>
+      )}
+
+      <div className="grid sm:grid-cols-3 gap-3 mb-3">
+        <form action={addSurveyRecipientsAction} className="card p-3 flex flex-col gap-2">
+          <input type="hidden" name="surveyId" value={s.id} /><input type="hidden" name="mode" value="department" />
+          <div className="text-xs font-medium">By department</div>
+          <select name="department" className="select select-sm" required disabled={departments.length === 0}>{departments.length === 0 ? <option value="">No departments</option> : departments.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}</select>
+          <button className="btn btn-sm" type="submit" disabled={departments.length === 0}>Add department</button>
+        </form>
+        <form action={addSurveyRecipientsAction} className="card p-3 flex flex-col gap-2">
+          <input type="hidden" name="surveyId" value={s.id} /><input type="hidden" name="mode" value="project" />
+          <div className="text-xs font-medium">By project team</div>
+          <select name="projectId" className="select select-sm" required disabled={projects.length === 0}>{projects.length === 0 ? <option value="">No projects</option> : projects.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.title}</option>)}</select>
+          <button className="btn btn-sm" type="submit" disabled={projects.length === 0}>Add team</button>
+        </form>
+        <form action={addSurveyRecipientsAction} className="card p-3 flex flex-col gap-2">
+          <input type="hidden" name="surveyId" value={s.id} /><input type="hidden" name="mode" value="individuals" />
+          <div className="text-xs font-medium">Individuals <span style={{ color: "var(--muted)" }}>(ctrl/⌘-click)</span></div>
+          <select name="employeeIds" multiple className="select select-sm" style={{ minHeight: 90 }} disabled={employees.length === 0}>{employees.map((e) => <option key={e.id} value={e.id}>{e.name}{e.department ? ` · ${e.department}` : ""}</option>)}</select>
+          <button className="btn btn-sm" type="submit" disabled={employees.length === 0}>Add selected</button>
+        </form>
+      </div>
+
+      <div className="mb-6">
+        {recipients.length === 0 ? <Empty title="No recipients yet" hint="Add staff above, or just share the open link when the survey is live." /> : (
+          <>
+            <div className="flex items-center gap-2 mb-2">
+              <form action={markSurveyRecipientsSentAction}><input type="hidden" name="surveyId" value={s.id} /><button className="btn btn-sm" type="submit">Mark all as sent</button></form>
+              <a href={`/api/survey-recipients/${s.id}`} className="btn btn-sm">Export links (CSV)</a>
+              <span className="text-xs" style={{ color: "var(--muted)" }}>{recipients.length} recipient{recipients.length === 1 ? "" : "s"}</span>
+            </div>
+            <div className="card overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead><tr><th className="th text-left">Name</th><th className="th text-left">Dept / email</th><th className="th text-left">Source</th><th className="th text-left">Status</th><th className="th text-left">Invite link</th><th className="th" /></tr></thead>
+                <tbody>
+                  {recipients.map((r) => (
+                    <tr key={r.id}>
+                      <td className="td font-medium">{r.name ?? "—"}</td>
+                      <td className="td">{[r.department, r.email].filter(Boolean).join(" · ") || "—"}</td>
+                      <td className="td">{r.source ? label(r.source) : "—"}</td>
+                      <td className="td">{r.responded ? <Badge tone="ok">Responded</Badge> : r.sent ? <Badge tone="info">Sent</Badge> : <Badge tone="muted">Pending</Badge>}</td>
+                      <td className="td"><a href={`/survey/r/${r.token}`} target="_blank" className="hover:underline" style={{ color: "var(--brand)" }}>/survey/r/{r.token.slice(0, 8)}… ↗</a></td>
+                      <td className="td text-right"><form action={removeSurveyRecipientAction}><input type="hidden" name="surveyId" value={s.id} /><input type="hidden" name="recipientId" value={r.id} /><button className="btn btn-sm" type="submit" title="Remove">✕</button></form></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
 
       {/* Results */}
       <SectionTitle>Results</SectionTitle>

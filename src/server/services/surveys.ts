@@ -94,3 +94,49 @@ export async function surveyResults(orgId: string, surveyId: string): Promise<Su
   const engagementScore = scaleN > 0 ? Math.round(((scaleSum / scaleN) / 5) * 1000) / 10 : null;
   return { responses, engagementScore, scaleQuestions: scaleQ, questions: out };
 }
+
+// ---- Targeted distribution / recipients ----
+export type Recipient = {
+  id: string; name: string | null; email: string | null; department: string | null; source: string | null;
+  token: string; sent: boolean; responded: boolean; respondedAt: string | null;
+};
+export async function listRecipients(orgId: string, surveyId: string): Promise<Recipient[]> {
+  return q<Recipient>(
+    `SELECT id, name, email, department, source, token, sent, responded, responded_at AS "respondedAt"
+     FROM survey_recipient WHERE survey_id=$1 AND org_id=$2 ORDER BY responded DESC, name`, [surveyId, orgId]);
+}
+export async function recipientStats(orgId: string, surveyId: string): Promise<{ total: number; sent: number; responded: number; rate: number }> {
+  const r = await one<{ total: number; sent: number; responded: number }>(
+    `SELECT COUNT(*)::int total, COUNT(*) FILTER (WHERE sent)::int sent, COUNT(*) FILTER (WHERE responded)::int responded
+     FROM survey_recipient WHERE survey_id=$1 AND org_id=$2`, [surveyId, orgId]);
+  const total = r?.total ?? 0, responded = r?.responded ?? 0;
+  return { total, sent: r?.sent ?? 0, responded, rate: total > 0 ? Math.round((responded / total) * 1000) / 10 : 0 };
+}
+// Public: resolve a recipient by their unique invite token (survey must be open).
+export async function getRecipientByToken(token: string): Promise<
+  { recipientId: string; surveyId: string; orgId: string; responded: boolean; title: string; intro: string | null; anonymous: boolean; status: string; orgName: string } | null> {
+  return one(
+    `SELECT rc.id AS "recipientId", rc.survey_id AS "surveyId", rc.org_id AS "orgId", rc.responded,
+            s.title, s.intro, s.anonymous, s.status, o.name AS "orgName"
+     FROM survey_recipient rc JOIN survey s ON s.id=rc.survey_id JOIN organization o ON o.id=s.org_id WHERE rc.token=$1`, [token]);
+}
+
+// Candidate employees for the three targeting modes (active staff only).
+export type Candidate = { employeeId: string; name: string; email: string | null; department: string | null };
+export async function employeesByDepartment(orgId: string, department: string): Promise<Candidate[]> {
+  return q<Candidate>(
+    `SELECT id AS "employeeId", (first_name || ' ' || last_name) AS name, email, department
+     FROM employee WHERE org_id=$1 AND status <> 'terminated' AND department=$2 ORDER BY first_name, last_name`, [orgId, department]);
+}
+export async function employeesByProject(orgId: string, projectId: string): Promise<Candidate[]> {
+  return q<Candidate>(
+    `SELECT DISTINCT e.id AS "employeeId", (e.first_name || ' ' || e.last_name) AS name, e.email, e.department
+     FROM employee e JOIN project_member pm ON pm.user_id=e.user_id
+     WHERE e.org_id=$1 AND e.status <> 'terminated' AND pm.project_id=$2 ORDER BY name`, [orgId, projectId]);
+}
+export async function employeesByIds(orgId: string, ids: string[]): Promise<Candidate[]> {
+  if (ids.length === 0) return [];
+  return q<Candidate>(
+    `SELECT id AS "employeeId", (first_name || ' ' || last_name) AS name, email, department
+     FROM employee WHERE org_id=$1 AND status <> 'terminated' AND id = ANY($2::text[]) ORDER BY first_name, last_name`, [orgId, ids]);
+}

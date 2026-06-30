@@ -1645,6 +1645,29 @@ CREATE TABLE IF NOT EXISTS survey_answer (
 );
 CREATE INDEX IF NOT EXISTS idx_survey_answer_response ON survey_answer(response_id);
 CREATE INDEX IF NOT EXISTS idx_survey_answer_question ON survey_answer(question_id);
+
+-- Targeted distribution: a recipient gets a unique invite token. Completion is
+-- tracked (responded) but the response itself is NEVER linked to the recipient,
+-- so answers stay anonymous while response rates are visible.
+CREATE TABLE IF NOT EXISTS survey_recipient (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  survey_id text NOT NULL REFERENCES survey(id) ON DELETE CASCADE,
+  employee_id text REFERENCES employee(id) ON DELETE SET NULL,
+  name text,
+  email text,
+  department text,
+  project_id text REFERENCES project(id) ON DELETE SET NULL,
+  source text,                              -- department | project | individual
+  token text UNIQUE NOT NULL,
+  sent boolean NOT NULL DEFAULT false,
+  sent_at timestamptz,
+  responded boolean NOT NULL DEFAULT false,
+  responded_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_survey_recipient_survey ON survey_recipient(survey_id);
+CREATE INDEX IF NOT EXISTS idx_survey_recipient_token ON survey_recipient(token);
 -- link employee -> department (replaces the free-text department column for scoping)
 ALTER TABLE employee ADD COLUMN IF NOT EXISTS department_id text;
 

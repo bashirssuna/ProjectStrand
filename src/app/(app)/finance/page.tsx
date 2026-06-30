@@ -114,6 +114,10 @@ export default async function FinanceHome() {
           <div className="font-display font-semibold">Currency &amp; FX rates</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Set the base currency and exchange rates for conversion.</div>
         </Link>
+        <Link href="/finance/fx-revaluation" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
+          <div className="font-display font-semibold">FX revaluation</div>
+          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Record foreign entries at the day&apos;s rate and post period-end FX gain/loss.</div>
+        </Link>
         <Link href="/finance/years" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
           <div className="font-display font-semibold">Financial years</div>
           <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Define accounting periods and see spend &amp; disbursements per year.</div>

@@ -6825,3 +6825,39 @@ export async function submitRecipientSurveyAction(formData: FormData) {
   await q(`UPDATE survey_recipient SET responded=true, responded_at=now() WHERE id=$1`, [rc.id]);
   redirect(`/survey/r/${token}`);
 }
+
+/* ---- Foreign-currency entries & FX revaluation ---- */
+import { postForeignEntry, postRevaluation } from "@/server/services/fxreval";
+
+export async function postForeignEntryAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const debitAccountId = _rstr(formData, "debitAccountId");
+  const creditAccountId = _rstr(formData, "creditAccountId");
+  const currency = String(formData.get("currency") || "").trim().toUpperCase().slice(0, 3);
+  const foreignAmount = _rnum(formData, "foreignAmount");
+  const date = String(formData.get("date") || "").trim() || new Date().toISOString().slice(0, 10);
+  if (!debitAccountId || !creditAccountId || debitAccountId === creditAccountId || !currency || !foreignAmount || foreignAmount <= 0)
+    redirect("/finance/fx-revaluation?err=fields");
+  try {
+    await postForeignEntry({
+      orgId, date, debitAccountId: debitAccountId!, creditAccountId: creditAccountId!, currency, foreignAmount: foreignAmount!,
+      rate: _rnum(formData, "rate"), memo: _rstr(formData, "memo") ?? undefined, reference: _rstr(formData, "reference"),
+      projectId: _rstr(formData, "projectId"), postedBy: userId, postedByName: userName,
+    });
+  } catch (e) {
+    redirect(`/finance/fx-revaluation?err=${encodeURIComponent(e instanceof Error ? e.message : "post failed")}`);
+  }
+  redirect("/finance/fx-revaluation?posted=1");
+}
+
+export async function postFxRevaluationAction(formData: FormData) {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const asOf = String(formData.get("asOf") || "").trim() || new Date().toISOString().slice(0, 10);
+  try {
+    const res = await postRevaluation(orgId, asOf, userId, userName);
+    redirect(`/finance/fx-revaluation?revalued=${res.entryNo}`);
+  } catch (e) {
+    if (e && typeof e === "object" && "digest" in e) throw e; // re-throw Next redirect
+    redirect(`/finance/fx-revaluation?err=${encodeURIComponent(e instanceof Error ? e.message : "revaluation failed")}&asof=${asOf}`);
+  }
+}

@@ -628,6 +628,10 @@ CREATE TABLE IF NOT EXISTS journal_line (
 );
 CREATE INDEX IF NOT EXISTS idx_journal_line_entry ON journal_line(entry_id);
 CREATE INDEX IF NOT EXISTS idx_journal_line_account ON journal_line(account_id);
+ALTER TABLE journal_line ADD COLUMN IF NOT EXISTS currency text;
+ALTER TABLE journal_line ADD COLUMN IF NOT EXISTS fx_amount numeric(18,2);
+ALTER TABLE journal_line ADD COLUMN IF NOT EXISTS fx_rate numeric(18,6);
+CREATE INDEX IF NOT EXISTS idx_journal_line_ccy ON journal_line(currency);
 
 -- Maps project expenditure/voucher postings to the right ledger accounts.
 -- When set, expenditures debit the expense account and credit cash/payables.

@@ -15,6 +15,9 @@ export type JournalLineInput = {
   credit?: number;
   description?: string;
   projectId?: string | null;
+  currency?: string | null;     // original currency (NULL = base)
+  fxAmount?: number | null;     // original foreign magnitude on this line's side
+  fxRate?: number | null;       // rate used (base per foreign unit)
 };
 
 const round2 = (n: number | string) => { const x = Number(n) || 0; return Math.round((x + Number.EPSILON) * 100) / 100; };
@@ -25,7 +28,7 @@ export async function postJournal(input: {
   entryDate: string;            // YYYY-MM-DD
   memo?: string;
   reference?: string | null;    // source document reference (voucher/invoice/receipt no.)
-  sourceType?: "manual" | "expenditure" | "voucher" | "reversal";
+  sourceType?: "manual" | "expenditure" | "voucher" | "reversal" | "fx_revaluation";
   sourceId?: string | null;
   projectId?: string | null;
   reversesEntryId?: string | null;
@@ -63,10 +66,11 @@ export async function postJournal(input: {
   );
   for (const l of lines) {
     await q(
-      `INSERT INTO journal_line (id, entry_id, account_id, project_id, debit, credit, description)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      `INSERT INTO journal_line (id, entry_id, account_id, project_id, debit, credit, description, currency, fx_amount, fx_rate)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [id("jl"), entryId, l.accountId, l.projectId ?? input.projectId ?? null,
-       round2(l.debit ?? 0), round2(l.credit ?? 0), l.description ?? null]
+       round2(l.debit ?? 0), round2(l.credit ?? 0), l.description ?? null,
+       l.currency ?? null, l.fxAmount != null ? round2(l.fxAmount) : null, l.fxRate ?? null]
     );
   }
   return { entryId, entryNo };

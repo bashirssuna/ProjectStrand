@@ -88,3 +88,16 @@ export async function reDenominateProject(
 
   return { oldCurrency, newCurrency: target, rate, counts };
 }
+
+// Latest exchange rate per currency (relative to the org's current base currency),
+// for consolidating multi-currency dashboard figures into a chosen reporting currency.
+import type { RateMap } from "@/lib/fx";
+export async function latestRates(orgId: string): Promise<{ base: string; rates: RateMap }> {
+  const base = (await one<{ b: string }>(`SELECT base_currency AS b FROM organization WHERE id=$1`, [orgId]))?.b ?? "USD";
+  const rows = await q<{ currency: string; rate: number; asOf: string }>(
+    `SELECT DISTINCT ON (currency) currency, rate::float8 AS rate, as_of AS "asOf"
+     FROM exchange_rate WHERE org_id=$1 AND base_currency=$2 ORDER BY currency, as_of DESC`, [orgId, base]);
+  const rates: RateMap = {};
+  for (const r of rows) rates[r.currency] = { rate: r.rate, asOf: typeof r.asOf === "string" ? r.asOf : new Date(r.asOf).toISOString().slice(0, 10) };
+  return { base, rates };
+}

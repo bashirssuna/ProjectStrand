@@ -2,6 +2,7 @@ import "server-only";
 import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
 import { writeAudit, notify } from "@/server/services/audit";
+import { postVendorBillToLedger } from "@/server/services/ledger";
 
 const round2 = (n: number | string) => { const x = Number(n) || 0; return Math.round((x + Number.EPSILON) * 100) / 100; };
 
@@ -292,6 +293,8 @@ export async function createBillFromPO(orgId: string, poId: string, by: { id: st
      opts?.billDate ?? new Date().toISOString().slice(0, 10), opts?.dueDate ?? null,
      po.currency, round2(po.total), opts?.expenseAccountId ?? null, by.id, by.name]);
   await q(`UPDATE purchase_order SET status='billed' WHERE id=$1`, [poId]);
-  // FINANCE HOOK (deferred): post debit expense / credit accounts payable here.
+  // Recognise the payable in the general ledger: DR expense / CR accounts payable
+  // (no-op if the org hasn't enabled its chart of accounts yet).
+  await postVendorBillToLedger({ orgId, billId, postedBy: by.id, postedByName: by.name });
   return billId;
 }

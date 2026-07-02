@@ -1,6 +1,8 @@
 "use server";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { headers } from "next/headers";
+import { loginBlockedSeconds, recordLoginFailure, clearLoginFailures } from "@/lib/rate-limit";
 import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
 import { PROJECT_STATUS, PROJECT_ROLES, PERMISSIONS, ROLE_PERMISSIONS, type Permission, type ProjectRole } from "@/lib/enums";
@@ -28,16 +30,93 @@ import { createImport, applyImport, cancelImport, importEntity } from "@/server/
 import { newSignToken, linkExpired } from "@/server/services/payment-slips";
 import { writeAudit, notify } from "@/server/services/audit";
 
+/* ---------------- Tenant-isolation ownership guards ----------------
+ * These assert that a client-supplied record id actually belongs to the
+ * project/org the caller was already authorized against. Without them an
+ * attacker could authorize on THEIR project/org and then pass another
+ * tenant's record id (cross-tenant IDOR). They throw the same "FORBIDDEN"
+ * that requirePermission throws, so an unauthorized attempt is blocked. */
+async function assertReqInProject(reqId: string, projectId: string): Promise<void> {
+  const ok = await one(`SELECT 1 AS ok FROM requisition WHERE id=$1 AND project_id=$2`, [reqId, projectId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+async function assertLineInProject(lineId: string, projectId: string): Promise<void> {
+  const ok = await one(`SELECT 1 AS ok FROM budget_line bl JOIN budget b ON b.id=bl.budget_id WHERE bl.id=$1 AND b.project_id=$2`, [lineId, projectId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+async function assertBudgetInProject(budgetId: string, projectId: string): Promise<void> {
+  const ok = await one(`SELECT 1 AS ok FROM budget WHERE id=$1 AND project_id=$2`, [budgetId, projectId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+async function assertJobInProject(jobId: string, projectId: string): Promise<void> {
+  const ok = await one(`SELECT 1 AS ok FROM extraction_job WHERE id=$1 AND project_id=$2`, [jobId, projectId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+async function assertOrgOwnsInvoice(invoiceId: string, orgId: string): Promise<void> {
+  const ok = await one(`SELECT 1 AS ok FROM invoice WHERE id=$1 AND org_id=$2`, [invoiceId, orgId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+async function assertOrgOwnsAsset(assetId: string, orgId: string): Promise<void> {
+  const ok = await one(`SELECT 1 AS ok FROM fixed_asset WHERE id=$1 AND org_id=$2`, [assetId, orgId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+async function assertEmployeeInOrg(employeeId: string, orgId: string): Promise<void> {
+  const ok = await one(`SELECT 1 AS ok FROM employee WHERE id=$1 AND org_id=$2`, [employeeId, orgId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+async function assertCollaboratorInOrg(collaboratorId: string, orgId: string): Promise<void> {
+  const ok = await one(`SELECT 1 AS ok FROM collaborator WHERE id=$1 AND org_id=$2`, [collaboratorId, orgId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+async function assertObjectiveInProject(objectiveId: string, projectId: string): Promise<void> {
+  const ok = await one(`SELECT 1 AS ok FROM objective WHERE id=$1 AND project_id=$2`, [objectiveId, projectId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+async function assertIndicatorInProject(indicatorId: string, projectId: string): Promise<void> {
+  const ok = await one(
+    `SELECT 1 AS ok FROM indicator i
+       LEFT JOIN objective o ON o.id = i.objective_id
+       LEFT JOIN output ou ON ou.id = i.output_id
+      WHERE i.id=$1 AND (o.project_id=$2 OR ou.project_id=$2)`, [indicatorId, projectId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+async function assertSowSectionInProject(sectionId: string, projectId: string): Promise<void> {
+  const ok = await one(`SELECT 1 AS ok FROM sow_section s JOIN sow ON sow.id=s.sow_id WHERE s.id=$1 AND sow.project_id=$2`, [sectionId, projectId]);
+  if (!ok) throw new Error("FORBIDDEN");
+}
+// Resolve a client-supplied projectId against the caller's org: returns the id if
+// it belongs to the org, otherwise null. Prevents stamping a record (invoice,
+// asset, slip, timesheet, …) with a foreign project reference or deriving a
+// foreign project's currency.
+async function projectInOrgOrNull(projectId: string | null | undefined, orgId: string): Promise<string | null> {
+  if (!projectId) return null;
+  const ok = await one(`SELECT 1 AS ok FROM project WHERE id=$1 AND org_id=$2`, [projectId, orgId]);
+  return ok ? projectId : null;
+}
+
 /* ---------------- Auth ---------------- */
 export async function signIn(formData: FormData) {
   const email = String(formData.get("email") || "").trim().toLowerCase();
   const password = String(formData.get("password") || "");
+  const now = Date.now();
+  // Rate-limit by both the target email and the source IP so neither a single
+  // account nor a single attacker can be brute-forced / credential-stuffed.
+  const ip = ((await headers()).get("x-forwarded-for") || "").split(",")[0].trim() || "unknown";
+  const emailKey = `email:${email}`;
+  const ipKey = `ip:${ip}`;
+  if (loginBlockedSeconds(emailKey, now) > 0 || loginBlockedSeconds(ipKey, now) > 0) {
+    redirect("/login?error=locked");
+  }
   const user = await one<{ id: string; passwordHash: string | null }>(
     `SELECT id, password_hash AS "passwordHash" FROM app_user WHERE email=$1 AND status='active'`, [email]
   );
   if (!user || !verifyPassword(password, user.passwordHash)) {
+    recordLoginFailure(emailKey, now);
+    recordLoginFailure(ipKey, now);
     redirect("/login?error=1");
   }
+  clearLoginFailures(emailKey);
+  clearLoginFailures(ipKey);
   await createSession(user!.id);
   redirect("/dashboard");
 }
@@ -116,6 +195,7 @@ export async function applySuggestionsAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const jobId = String(formData.get("jobId"));
   await requirePermission(projectId, "project.edit");
+  await assertJobInProject(jobId, projectId);
   const acceptIds = formData.getAll("accept").map(String);
   // Creating budget lines (whatever document they were extracted from) is a
   // senior-only action, same as clearing or importing a budget.
@@ -212,9 +292,16 @@ export async function addBudgetLineAction(formData: FormData) {
   await assertBudgetEditable(projectId);
   let budgetId = String(formData.get("budgetId") || "");
   if (!budgetId) {
-    budgetId = id("bud");
-    await q(`INSERT INTO budget (id, project_id, name) VALUES ($1,$2,'Project budget')`, [budgetId, projectId]);
-    await ensureStandardCategories(budgetId); // a fresh budget gets the standard sections
+    // Reuse the project's existing budget (created with the project) rather than
+    // making a second one; only create if this project truly has none yet.
+    budgetId = (await one<{ id: string }>(`SELECT id FROM budget WHERE project_id=$1 ORDER BY version LIMIT 1`, [projectId]))?.id ?? "";
+    if (!budgetId) {
+      budgetId = id("bud");
+      await q(`INSERT INTO budget (id, project_id, name) VALUES ($1,$2,'Project budget')`, [budgetId, projectId]);
+      await ensureStandardCategories(budgetId); // a fresh budget gets the standard sections
+    }
+  } else {
+    await assertBudgetInProject(budgetId, projectId);
   }
   const unitCost = Number(formData.get("unitCost") || 0);
   const quantity = Number(formData.get("quantity") || 1);
@@ -238,8 +325,13 @@ export async function setupBudgetSectionsAction(formData: FormData) {
   await requirePermission(projectId, "budget.manage");
   let budgetId = String(formData.get("budgetId") || "");
   if (!budgetId) {
-    budgetId = id("bud");
-    await q(`INSERT INTO budget (id, project_id, name) VALUES ($1,$2,'Project budget')`, [budgetId, projectId]);
+    budgetId = (await one<{ id: string }>(`SELECT id FROM budget WHERE project_id=$1 ORDER BY version LIMIT 1`, [projectId]))?.id ?? "";
+    if (!budgetId) {
+      budgetId = id("bud");
+      await q(`INSERT INTO budget (id, project_id, name) VALUES ($1,$2,'Project budget')`, [budgetId, projectId]);
+    }
+  } else {
+    await assertBudgetInProject(budgetId, projectId);
   }
   await ensureStandardCategories(budgetId);
   await writeAudit({ userId: user.id, action: "setup_sections", entity: "budget", entityId: budgetId });
@@ -252,6 +344,7 @@ export async function updateBudgetLineAction(formData: FormData) {
   await requirePermission(projectId, "budget.manage");
   await assertBudgetEditable(projectId);
   const lineId = String(formData.get("lineId"));
+  await assertLineInProject(lineId, projectId);
   const unitCost = Number(formData.get("unitCost") || 0);
   const quantity = Number(formData.get("quantity") || 1);
   const frequency = Number(formData.get("frequency") || 1) || 1;
@@ -280,6 +373,7 @@ export async function deleteBudgetLineAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "budget.manage");
   const lineId = String(formData.get("lineId"));
+  await assertLineInProject(lineId, projectId);
   // preserve the final state in history before removing the line
   await assertBudgetEditable(projectId);
   const prev = await one<{ code: string; description: string; unitCost: number; quantity: number; planned: number }>(
@@ -321,6 +415,8 @@ export async function addExpenditureAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "budget.manage");
+  const budgetLineId = String(formData.get("budgetLineId") || "") || null;
+  if (budgetLineId) await assertLineInProject(budgetLineId, projectId);
   const amount = Number(formData.get("amount") || 0);
   const expId = id("exp");
   const expDate = String(formData.get("date") || new Date().toISOString());
@@ -328,7 +424,7 @@ export async function addExpenditureAction(formData: FormData) {
   const expPayee = String(formData.get("payee") || "");
   await q(`INSERT INTO expenditure (id, project_id, budget_line_id, amount, date, reference, payee, approved, created_by_id)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-    [expId, projectId, String(formData.get("budgetLineId")), amount,
+    [expId, projectId, budgetLineId, amount,
      expDate, expRef, expPayee, formData.get("approved") === "on", user.id]);
   await writeAudit({ userId: user.id, action: "create", entity: "expenditure", entityId: projectId, after: { amount } });
   // Post to the general ledger (no-op if the org hasn't enabled it yet).
@@ -384,6 +480,7 @@ export async function submitRequisitionAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const reqId = String(formData.get("reqId"));
   await requirePermission(projectId, "requisitions.create");
+  await assertReqInProject(reqId, projectId);
   // Accountability gate (Finance Policy §13.2): no new advance while >25% of the
   // requester's previous disbursement is still unaccounted for.
   const req = await one<{ requesterId: string | null }>(`SELECT requested_by_id AS "requesterId" FROM requisition WHERE id=$1`, [reqId]);
@@ -401,6 +498,7 @@ export async function decideRequisitionAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const reqId = String(formData.get("reqId"));
   await requirePermission(projectId, "requisitions.approve");
+  await assertReqInProject(reqId, projectId);
   const decision = String(formData.get("decision")) === "approved" ? "approved" : "rejected";
   // attach the approver's signature if they have one (signing the requisition)
   const sig = await one<{ id: string }>(`SELECT id FROM signature_asset WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, [user.id]);
@@ -418,6 +516,7 @@ export async function disburseAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const reqId = String(formData.get("reqId"));
   await requirePermission(projectId, "budget.manage");
+  await assertReqInProject(reqId, projectId);
   await disburse(reqId, user.id, Number(formData.get("amount") || 0), String(formData.get("ref") || ""));
   revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
 }
@@ -427,6 +526,7 @@ export async function recordReqExpenditureAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const reqId = String(formData.get("reqId"));
   await requirePermission(projectId, "budget.manage");
+  await assertReqInProject(reqId, projectId);
   await recordExpenditureForRequisition({
     reqId, userId: user.id, amount: Number(formData.get("amount") || 0),
     reference: String(formData.get("reference") || ""), payee: String(formData.get("payee") || "") || undefined,
@@ -455,7 +555,8 @@ export async function emailReportAction(formData: FormData) {
   await requirePermission(projectId, "reports.manage");
   const reportId = String(formData.get("reportId"));
   const members = await q<{ userId: string }>(`SELECT user_id AS "userId" FROM project_member WHERE project_id=$1`, [projectId]);
-  const rep = await one<{ title: string }>(`SELECT title FROM report WHERE id=$1`, [reportId]);
+  const rep = await one<{ title: string }>(`SELECT title FROM report WHERE id=$1 AND project_id=$2`, [reportId, projectId]);
+  if (!rep) throw new Error("FORBIDDEN");
   for (const m of members) {
     await notify({ userId: m.userId, type: "report", title: `Report shared: ${rep?.title ?? "Report"}`,
       body: "A project report has been shared with you.", link: `/projects/${projectId}/reports?r=${reportId}`, email: true });
@@ -654,6 +755,7 @@ export async function updateSowSectionAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "project.edit");
   const sectionId = String(formData.get("sectionId"));
+  await assertSowSectionInProject(sectionId, projectId);
   await q(`UPDATE sow_section SET title=$2, content=$3 WHERE id=$1`,
     [sectionId, String(formData.get("title") || "Section"), String(formData.get("content") || "")]);
   await writeAudit({ userId: user.id, action: "update", entity: "sow_section", entityId: sectionId });
@@ -1082,6 +1184,7 @@ export async function deleteObjectiveAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const objectiveId = String(formData.get("objectiveId"));
   await requirePermission(projectId, "project.edit");
+  await assertObjectiveInProject(objectiveId, projectId);
   await q(`DELETE FROM indicator WHERE output_id IN (SELECT id FROM output WHERE objective_id=$1)`, [objectiveId]);
   await q(`DELETE FROM output WHERE objective_id=$1`, [objectiveId]);
   await q(`DELETE FROM objective WHERE id=$1 AND project_id=$2`, [objectiveId, projectId]); // cascades its indicators + actuals
@@ -1093,6 +1196,7 @@ export async function addIndicatorAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "project.edit");
+  await assertObjectiveInProject(String(formData.get("objectiveId")), projectId);
   await q(`INSERT INTO indicator (id, objective_id, name, unit, baseline, target, means_of_verification)
            VALUES ($1,$2,$3,$4,$5,$6,$7)`,
     [id("ind"), String(formData.get("objectiveId")), String(formData.get("name") || "Indicator"),
@@ -1106,6 +1210,7 @@ export async function deleteIndicatorAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "project.edit");
+  await assertIndicatorInProject(String(formData.get("indicatorId")), projectId);
   await q(`DELETE FROM indicator WHERE id=$1`, [String(formData.get("indicatorId"))]); // actuals cascade
   await writeAudit({ userId: user.id, action: "delete", entity: "indicator", entityId: String(formData.get("indicatorId")) });
   revalidatePath(`/projects/${projectId}/logframe`);
@@ -1136,6 +1241,7 @@ export async function updateIndicatorAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "project.edit");
   const indicatorId = String(formData.get("indicatorId"));
+  await assertIndicatorInProject(indicatorId, projectId);
   await q(`UPDATE indicator SET name=$1, unit=$2, baseline=$3, target=$4, means_of_verification=$5, assumptions=$6 WHERE id=$7`,
     [String(formData.get("name") || "Indicator"), String(formData.get("unit") || ""),
      Number(formData.get("baseline") || 0), Number(formData.get("target") || 0),
@@ -1151,6 +1257,7 @@ export async function recordIndicatorActualAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "project.edit");
   const indicatorId = String(formData.get("indicatorId"));
+  await assertIndicatorInProject(indicatorId, projectId);
   const period = String(formData.get("period") || "").trim() || new Date().toISOString().slice(0, 10);
   const value = Number(formData.get("value") || 0);
   const note = String(formData.get("note") || "").trim() || null;
@@ -1164,7 +1271,11 @@ export async function deleteIndicatorActualAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   await requirePermission(projectId, "project.edit");
-  await q(`DELETE FROM indicator_actual WHERE id=$1`, [String(formData.get("actualId"))]);
+  await q(`DELETE FROM indicator_actual WHERE id=$1 AND indicator_id IN (
+             SELECT i.id FROM indicator i
+               LEFT JOIN objective o ON o.id = i.objective_id
+               LEFT JOIN output ou ON ou.id = i.output_id
+              WHERE o.project_id=$2 OR ou.project_id=$2)`, [String(formData.get("actualId")), projectId]);
   await writeAudit({ userId: user.id, action: "delete", entity: "indicator_actual", entityId: String(formData.get("actualId")) });
   revalidatePath(`/projects/${projectId}/logframe`);
 }
@@ -1177,7 +1288,9 @@ export async function linkActivityToOutputAction(formData: FormData) {
   await requirePermission(projectId, "project.edit");
   const activityId = String(formData.get("activityId"));
   if (!activityId) { revalidatePath(`/projects/${projectId}/logframe`); return; }
-  const outputId = String(formData.get("outputId") || "") || null;
+  let outputId = String(formData.get("outputId") || "") || null;
+  // Only link to an output that belongs to this project (no foreign-FK injection).
+  if (outputId && !(await one(`SELECT 1 AS ok FROM output WHERE id=$1 AND project_id=$2`, [outputId, projectId]))) outputId = null;
   await q(`UPDATE activity SET output_id=$2, updated_at=now() WHERE id=$1 AND project_id=$3`, [activityId, outputId, projectId]);
   await writeAudit({ userId: user.id, action: "update", entity: "activity", entityId: activityId, after: { output_id: outputId } });
   revalidatePath(`/projects/${projectId}/logframe`);
@@ -1234,6 +1347,7 @@ export async function addRequisitionAttachmentAction(formData: FormData) {
   const access = await getProjectAccess(projectId);
   if (!access.permissions.has("requisitions.create") && !access.permissions.has("requisitions.approve"))
     throw new Error("FORBIDDEN");
+  await assertReqInProject(reqId, projectId);
   const file = formData.get("file") as File | null;
   if (!file || file.size === 0) redirect(`/projects/${projectId}/requisitions/${reqId}`);
   const buf = Buffer.from(await file.arrayBuffer());
@@ -1250,6 +1364,7 @@ export async function createVoucherAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const reqId = String(formData.get("requisitionId"));
   await requirePermission(projectId, "budget.manage");
+  if (reqId) await assertReqInProject(reqId, projectId);
   const amount = Number(formData.get("amount") || 0);
   const payee = String(formData.get("payee") || "").trim();
   if (!payee || amount <= 0) redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=invalid`);
@@ -1292,6 +1407,8 @@ export async function createStandaloneVoucherAction(formData: FormData) {
        WHERE bl.id=$1 AND p.org_id=$2`, [budgetLineId, orgId]);
     if (line) projectId = projectId ?? line.projectId;
   }
+  // Never tag a voucher/ledger entry with a project from another org.
+  if (projectId && !(await one(`SELECT 1 AS ok FROM project WHERE id=$1 AND org_id=$2`, [projectId, orgId]))) projectId = null;
   const num = await nextNum(orgId, "payment_voucher", "PV");
   const vid = id("pv");
   // Recorded as PREPARED and checked by Finance. It does NOT post to the ledger or
@@ -1520,7 +1637,7 @@ export async function createPaymentSlipAction(formData: FormData) {
   if (!title) redirect("/finance/payment-slips?err=title");
   const category = String(formData.get("category") || "").trim() || null;
   const slipDate = String(formData.get("slipDate") || new Date().toISOString().slice(0, 10));
-  const projectId = String(formData.get("projectId") || "") || null;
+  const projectId = await projectInOrgOrNull(String(formData.get("projectId") || "") || null, orgId);
   let currency = String(formData.get("currency") || "").trim().toUpperCase();
   if (!currency) currency = projectId
     ? ((await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [projectId]))?.currency ?? "USD")
@@ -1799,6 +1916,7 @@ export async function approveVoucherAction(formData: FormData) {
   const access = await getProjectAccess(projectId);
   if (!access.permissions.has("requisitions.sign") && !access.permissions.has("requisitions.approve"))
     throw new Error("FORBIDDEN — only an authorised signatory can approve a payment voucher");
+  if (reqId) await assertReqInProject(reqId, projectId);
   const v = await one<{ status: string; checkedBy: string | null }>(
     `SELECT status, checked_by AS "checkedBy" FROM payment_voucher WHERE id=$1 AND project_id=$2`, [vid, projectId]
   );
@@ -1965,6 +2083,7 @@ export async function retractRequisitionAction(formData: FormData) {
 import {
   ensureChartOfAccounts, postJournal, reverseJournal,
   institutionalStatements, accountBalances, postExpenditureToLedger,
+  postCashPayment, postCashReceipt, postFundsTransfer,
 } from "@/server/services/ledger";
 
 // Institution-level finance is restricted to organisation admins. Returns the
@@ -2099,9 +2218,10 @@ export async function createInvoiceAction(formData: FormData) {
   if (total <= 0) redirect("/finance/invoices?err=amount");
   const num = await nextNum(orgId, "invoice", "INV");
   const invId = id("inv");
+  const invProject = await projectInOrgOrNull(String(formData.get("projectId") || "") || null, orgId);
   await q(`INSERT INTO invoice (id, org_id, project_id, customer_id, number, invoice_date, due_date, currency, income_account_id, description, total, award_number, awardee, signatory_name, signatory_title, created_by, created_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-    [invId, orgId, String(formData.get("projectId") || "") || null, String(formData.get("customerId") || "") || null,
+    [invId, orgId, invProject, String(formData.get("customerId") || "") || null,
      num, String(formData.get("invoiceDate") || new Date().toISOString().slice(0, 10)),
      String(formData.get("dueDate") || "") || null, String(formData.get("currency") || "USD"),
      String(formData.get("incomeAccountId") || "") || null, desc || "Invoice", total,
@@ -2123,7 +2243,7 @@ export async function updateInvoiceAction(formData: FormData) {
   if (inv.status !== "draft") redirect(`/finance/invoices/${invId}?err=locked`);
   await q(`UPDATE invoice SET customer_id=$2, project_id=$3, invoice_date=$4, due_date=$5, currency=$6, income_account_id=$7,
              description=$8, award_number=$9, awardee=$10, signatory_name=$11, signatory_title=$12 WHERE id=$1 AND org_id=$13`,
-    [invId, String(formData.get("customerId") || "") || null, String(formData.get("projectId") || "") || null,
+    [invId, String(formData.get("customerId") || "") || null, await projectInOrgOrNull(String(formData.get("projectId") || "") || null, orgId),
      String(formData.get("invoiceDate") || new Date().toISOString().slice(0, 10)), String(formData.get("dueDate") || "") || null,
      String(formData.get("currency") || "USD"), String(formData.get("incomeAccountId") || "") || null,
      String(formData.get("description") || "") || "Invoice", String(formData.get("awardNumber") || "") || null,
@@ -2168,6 +2288,7 @@ export async function deleteInvoiceLineAction(formData: FormData) {
 export async function issueInvoiceAction(formData: FormData) {
   const { orgId, userId, userName } = await requireInstitutionFinance();
   const invId = String(formData.get("invoiceId"));
+  await assertOrgOwnsInvoice(invId, orgId);
   try { await issueInvoice(invId, { id: userId, name: userName }); }
   catch (e) { redirect(`/finance/invoices?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
   revalidatePath("/finance/invoices");
@@ -2185,6 +2306,7 @@ export async function recheckOrgComplianceAction() {
 export async function voidInvoiceAction(formData: FormData) {
   const { orgId, userId, userName } = await requireInstitutionFinance();
   const invId = String(formData.get("invoiceId"));
+  await assertOrgOwnsInvoice(invId, orgId);
   try { await voidInvoice(invId, { id: userId, name: userName }); }
   catch (e) { redirect(`/finance/invoices?err=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
   revalidatePath("/finance/invoices");
@@ -2227,13 +2349,15 @@ export async function createReceiptAction(formData: FormData) {
   const num = await nextNum(orgId, "receipt", "RCT");
   const rid = id("rct");
   const invoiceId = String(formData.get("invoiceId") || "") || null;
+  if (invoiceId) await assertOrgOwnsInvoice(invoiceId, orgId);
   // derive project + customer from the invoice if one was chosen
   let projectId = String(formData.get("projectId") || "") || null;
   let customerId = String(formData.get("customerId") || "") || null;
   if (invoiceId) {
-    const inv = await one<{ p: string | null; c: string | null }>(`SELECT project_id p, customer_id c FROM invoice WHERE id=$1`, [invoiceId]);
+    const inv = await one<{ p: string | null; c: string | null }>(`SELECT project_id p, customer_id c FROM invoice WHERE id=$1 AND org_id=$2`, [invoiceId, orgId]);
     if (inv) { projectId = projectId ?? inv.p; customerId = customerId ?? inv.c; }
   }
+  projectId = await projectInOrgOrNull(projectId, orgId);
   await q(`INSERT INTO receipt (id, org_id, project_id, invoice_id, customer_id, number, receipt_date, amount, currency, method, reference, note, deposit_account_id, income_account_id, created_by, created_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
     [rid, orgId, projectId, invoiceId, customerId, num,
@@ -2284,12 +2408,14 @@ export async function editReceiptAction(formData: FormData) {
   await undoReceiptInvoiceEffect(rid, cur.journalEntryId, cur.invoiceId);
   if (cur.journalEntryId) await q(`DELETE FROM journal_entry WHERE id=$1`, [cur.journalEntryId]); // cascades its lines
   const invoiceId = String(formData.get("invoiceId") || "") || null;
+  if (invoiceId) await assertOrgOwnsInvoice(invoiceId, orgId);
   let projectId = String(formData.get("projectId") || "") || null;
   let customerId = String(formData.get("customerId") || "") || null;
   if (invoiceId) {
-    const inv = await one<{ p: string | null; c: string | null }>(`SELECT project_id p, customer_id c FROM invoice WHERE id=$1`, [invoiceId]);
+    const inv = await one<{ p: string | null; c: string | null }>(`SELECT project_id p, customer_id c FROM invoice WHERE id=$1 AND org_id=$2`, [invoiceId, orgId]);
     if (inv) { projectId = projectId ?? inv.p; customerId = customerId ?? inv.c; }
   }
+  projectId = await projectInOrgOrNull(projectId, orgId);
   await q(`UPDATE receipt SET invoice_id=$2, customer_id=$3, project_id=$4, receipt_date=$5, amount=$6, currency=$7, method=$8,
            reference=$9, note=$10, deposit_account_id=$11, income_account_id=$12, journal_entry_id=NULL WHERE id=$1`,
     [rid, invoiceId, customerId, projectId, String(formData.get("receiptDate") || new Date().toISOString().slice(0, 10)),
@@ -2327,7 +2453,7 @@ export async function createAssetAction(formData: FormData) {
   const aid = id("fa");
   await q(`INSERT INTO fixed_asset (id, org_id, project_id, tag, name, category, acquired_on, cost, currency, useful_life_months, salvage_value, location, custodian, note, condition)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-    [aid, orgId, String(formData.get("projectId") || "") || null, String(formData.get("tag") || "") || null, name,
+    [aid, orgId, await projectInOrgOrNull(String(formData.get("projectId") || "") || null, orgId), String(formData.get("tag") || "") || null, name,
      String(formData.get("category") || "") || null, String(formData.get("acquiredOn") || new Date().toISOString().slice(0, 10)),
      cost, String(formData.get("currency") || "USD"), Number(formData.get("usefulLifeMonths") || 36),
      Number(formData.get("salvageValue") || 0), String(formData.get("location") || "") || null,
@@ -2340,6 +2466,7 @@ export async function createAssetAction(formData: FormData) {
 export async function depreciateAssetAction(formData: FormData) {
   const { orgId, userId, userName } = await requireInstitutionFinance();
   const aid = String(formData.get("assetId"));
+  await assertOrgOwnsAsset(aid, orgId);
   const period = String(formData.get("period") || new Date().toISOString().slice(0, 7));
   const res = await runDepreciation(aid, period, { id: userId, name: userName });
   revalidatePath("/finance/assets");
@@ -2589,9 +2716,10 @@ export async function addTimesheetAction(formData: FormData) {
   const empId = String(formData.get("employeeId"));
   const hours = Number(formData.get("hours") || 0);
   if (!empId || hours <= 0) redirect("/hr/timesheets?err=1");
+  await assertEmployeeInOrg(empId, orgId);
   await q(`INSERT INTO timesheet (id, org_id, employee_id, project_id, work_date, hours, description)
            VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [id("ts"), orgId, empId, String(formData.get("projectId") || "") || null,
+    [id("ts"), orgId, empId, await projectInOrgOrNull(String(formData.get("projectId") || "") || null, orgId),
      String(formData.get("workDate") || new Date().toISOString().slice(0, 10)), hours, String(formData.get("description") || "") || null]);
   redirect("/hr/timesheets?added=1");
 }
@@ -2613,9 +2741,9 @@ export async function buildPayrollAction(formData: FormData) {
   redirect(`/hr/payroll?run=${period}`);
 }
 export async function finalisePayrollAction(formData: FormData) {
-  const { orgId } = await requireInstitutionFinance();
+  const { orgId, userId, userName } = await requireInstitutionFinance();
   const runId = String(formData.get("runId"));
-  await finalisePayrollRun(orgId, runId);
+  await finalisePayrollRun(orgId, runId, { id: userId, name: userName });
   revalidatePath("/hr/payroll");
   redirect("/hr/payroll?finalised=1");
 }
@@ -2647,7 +2775,7 @@ export async function createPurchaseRequestAction(formData: FormData) {
   // A budget line, when chosen, charges this request to a specific project. The
   // line uniquely determines its project, so we derive project_id from it to
   // keep the two consistent (the line's project wins over the project select).
-  let projectId = String(formData.get("projectId") || "") || null;
+  let projectId = await projectInOrgOrNull(String(formData.get("projectId") || "") || null, orgId);
   const budgetLineId = String(formData.get("budgetLineId") || "") || null;
   if (budgetLineId) {
     const ln = await one<{ projectId: string }>(
@@ -2805,6 +2933,7 @@ export async function assignEmployeeDepartmentAction(formData: FormData) {
 export async function createEmployeeLoginAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
   const empId = String(formData.get("employeeId"));
+  await assertEmployeeInOrg(empId, orgId);
   let res;
   try { res = await createEmployeeLogin(empId); }
   catch (e) { redirect(`/hr/employees/${empId}?loginerr=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
@@ -2873,7 +3002,7 @@ export async function myAddTimesheetAction(formData: FormData) {
   if (hours <= 0) redirect("/portal/timesheets?err=1");
   await q(`INSERT INTO timesheet (id, org_id, employee_id, project_id, work_date, hours, description)
            VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [id("ts"), orgId, employeeId, String(formData.get("projectId") || "") || null,
+    [id("ts"), orgId, employeeId, await projectInOrgOrNull(String(formData.get("projectId") || "") || null, orgId),
      String(formData.get("workDate") || new Date().toISOString().slice(0, 10)), hours, String(formData.get("description") || "") || null]);
   redirect("/portal/timesheets?added=1");
 }
@@ -2889,7 +3018,7 @@ export async function myCreatePurchaseRequestAction(formData: FormData) {
   const amount = Math.round((qty * unitCost + Number.EPSILON) * 100) / 100;
   await q(`INSERT INTO purchase_request (id, org_id, project_id, number, title, justification, needed_by, currency, estimated_total, status, requested_by, requested_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'submitted',$10,$11)`,
-    [prId, orgId, String(formData.get("projectId") || "") || null, number, title,
+    [prId, orgId, await projectInOrgOrNull(String(formData.get("projectId") || "") || null, orgId), number, title,
      String(formData.get("justification") || "") || null, String(formData.get("neededBy") || "") || null,
      String(formData.get("currency") || "USD"), amount, userId, userName]);
   await q(`INSERT INTO purchase_request_item (id, request_id, description, quantity, unit, estimated_unit_cost, amount)
@@ -2952,8 +3081,9 @@ export async function updateEmployeeProfileAction(formData: FormData) {
 }
 
 export async function addEmployeeEducationAction(formData: FormData) {
-  await requireInstitutionFinance();
+  const { orgId } = await requireInstitutionFinance();
   const eid = String(formData.get("employeeId"));
+  await assertEmployeeInOrg(eid, orgId);
   const qual = String(formData.get("qualification") || "").trim();
   if (!qual) redirect(`/hr/employees/${eid}?err=edu`);
   await q(`INSERT INTO employee_education (id, employee_id, kind, qualification, institution, year_obtained, note)
@@ -2964,14 +3094,16 @@ export async function addEmployeeEducationAction(formData: FormData) {
   revalidatePath(`/hr/employees/${eid}`);
 }
 export async function deleteEmployeeEducationAction(formData: FormData) {
-  await requireInstitutionFinance();
+  const { orgId } = await requireInstitutionFinance();
   const eid = String(formData.get("employeeId"));
-  await q(`DELETE FROM employee_education WHERE id=$1`, [String(formData.get("educationId"))]);
+  await q(`DELETE FROM employee_education WHERE id=$1 AND employee_id IN (SELECT id FROM employee WHERE org_id=$2)`,
+    [String(formData.get("educationId")), orgId]);
   revalidatePath(`/hr/employees/${eid}`);
 }
 export async function addEmployeePolicyAction(formData: FormData) {
-  await requireInstitutionFinance();
+  const { orgId } = await requireInstitutionFinance();
   const eid = String(formData.get("employeeId"));
+  await assertEmployeeInOrg(eid, orgId);
   const lbl = String(formData.get("label") || "").trim();
   const val = String(formData.get("value") || "").trim();
   if (!lbl || !val) redirect(`/hr/employees/${eid}?err=policy`);
@@ -2980,9 +3112,10 @@ export async function addEmployeePolicyAction(formData: FormData) {
   revalidatePath(`/hr/employees/${eid}`);
 }
 export async function deleteEmployeePolicyAction(formData: FormData) {
-  await requireInstitutionFinance();
+  const { orgId } = await requireInstitutionFinance();
   const eid = String(formData.get("employeeId"));
-  await q(`DELETE FROM employee_policy_number WHERE id=$1`, [String(formData.get("policyId"))]);
+  await q(`DELETE FROM employee_policy_number WHERE id=$1 AND employee_id IN (SELECT id FROM employee WHERE org_id=$2)`,
+    [String(formData.get("policyId")), orgId]);
   revalidatePath(`/hr/employees/${eid}`);
 }
 
@@ -3043,6 +3176,8 @@ export async function linkCollaboratorToProjectAction(formData: FormData) {
   const cid = String(formData.get("collaboratorId"));
   const projectId = String(formData.get("projectId"));
   if (!projectId) redirect(`/collaborations/${cid}?err=project`);
+  await assertCollaboratorInOrg(cid, orgId);
+  if (!(await one(`SELECT 1 AS ok FROM project WHERE id=$1 AND org_id=$2`, [projectId, orgId]))) throw new Error("FORBIDDEN");
   await q(`INSERT INTO project_collaborator (id, project_id, collaborator_id, role, responsibilities)
            VALUES ($1,$2,$3,$4,$5) ON CONFLICT (project_id, collaborator_id) DO UPDATE SET role=$4, responsibilities=$5`,
     [id("pcol"), projectId, cid, String(formData.get("role") || "collaborator"), String(formData.get("responsibilities") || "") || null]);
@@ -3050,9 +3185,10 @@ export async function linkCollaboratorToProjectAction(formData: FormData) {
   redirect(`/collaborations/${cid}?linked=1`);
 }
 export async function unlinkCollaboratorFromProjectAction(formData: FormData) {
-  await requireInstitutionFinance();
+  const { orgId } = await requireInstitutionFinance();
   const cid = String(formData.get("collaboratorId"));
-  await q(`DELETE FROM project_collaborator WHERE id=$1`, [String(formData.get("linkId"))]);
+  await q(`DELETE FROM project_collaborator WHERE id=$1 AND collaborator_id IN (SELECT id FROM collaborator WHERE org_id=$2)`,
+    [String(formData.get("linkId")), orgId]);
   revalidatePath(`/collaborations/${cid}`);
 }
 
@@ -3124,8 +3260,9 @@ export async function changeAdminPasswordAction(formData: FormData) {
 import { createCollaboratorLogin } from "@/server/services/collab";
 
 export async function createCollaboratorLoginAction(formData: FormData) {
-  await requireInstitutionFinance();
+  const { orgId } = await requireInstitutionFinance();
   const cid = String(formData.get("collaboratorId"));
+  await assertCollaboratorInOrg(cid, orgId);
   let res;
   try { res = await createCollaboratorLogin(cid); }
   catch (e) { redirect(`/collaborations/${cid}?loginerr=${encodeURIComponent((e as Error).message).slice(0, 120)}`); }
@@ -3165,6 +3302,7 @@ export async function saveCompConfigAction(formData: FormData) {
 export async function upsertEmployeeCompAction(formData: FormData) {
   const { orgId, userId } = await requireInstitutionFinance();
   const employeeId = String(formData.get("employeeId"));
+  await assertEmployeeInOrg(employeeId, orgId);
   const employmentType = (String(formData.get("employmentType") || "staff") === "consultant" ? "consultant" : "staff") as "staff" | "consultant";
   // Other fringe benefits arrive as parallel benefitLabel[] / benefitAmount[] arrays.
   const lbls = formData.getAll("benefitLabel").map((v) => String(v));
@@ -3181,7 +3319,7 @@ export async function upsertEmployeeCompAction(formData: FormData) {
     kind: (validKinds.includes(dKinds[i]) ? dKinds[i] : "pct_deduction") as "pct_deduction" | "pct_saving" | "flat_deduction" | "flat_saving",
   })).filter((d) => d.label);
   await upsertEmployeeComp(orgId, employeeId, {
-    projectId: String(formData.get("projectId") || "") || null,
+    projectId: await projectInOrgOrNull(String(formData.get("projectId") || "") || null, orgId),
     employmentType,
     currency: String(formData.get("currency") || "USD").trim() || "USD",
     grossSalary: parseNum(formData.get("grossSalary")),
@@ -3376,11 +3514,19 @@ export async function deleteSubawardAction(formData: FormData) {
 export async function addSubawardPaymentAction(formData: FormData) {
   const { orgId, userId } = await requireInstitutionFinance();
   const sid = String(formData.get("subawardId"));
-  const owner = await one<{ id: string }>(`SELECT id FROM subaward WHERE id=$1 AND org_id=$2`, [sid, orgId]);
+  const owner = await one<{ id: string; projectId: string | null; currency: string }>(
+    `SELECT id, project_id AS "projectId", currency FROM subaward WHERE id=$1 AND org_id=$2`, [sid, orgId]);
   if (!owner) redirect("/subawards");
+  const payId = id("subpay");
+  const paidOn = String(formData.get("paidOn") || "") || new Date().toISOString().slice(0, 10);
+  const payAmount = Number(formData.get("amount") || 0);
+  const payRef = String(formData.get("reference") || "") || null;
   await q(`INSERT INTO subaward_payment (id, subaward_id, paid_on, amount, reference, note) VALUES ($1,$2,$3,$4,$5,$6)`,
-    [id("subpay"), sid, String(formData.get("paidOn") || "") || new Date().toISOString().slice(0, 10),
-     Number(formData.get("amount") || 0), String(formData.get("reference") || "") || null, String(formData.get("note") || "") || null]);
+    [payId, sid, paidOn, payAmount, payRef, String(formData.get("note") || "") || null]);
+  // Post the disbursement to the general ledger, charged to the funding project.
+  await postCashPayment({ orgId, date: paidOn, amount: payAmount, currency: owner.currency, expenseCode: "5900",
+    projectId: owner.projectId, memo: "Sub-award disbursement", reference: payRef,
+    sourceType: "subaward", sourceId: payId, postedBy: userId });
   await writeAudit({ orgId, userId, action: "create", entity: "subaward_payment", entityId: sid });
   redirect(`/subawards/${sid}?saved=1`);
 }
@@ -3615,10 +3761,18 @@ export async function rejectPerdiemAction(formData: FormData) {
   redirect(`/finance/perdiem/${cid}?saved=1`);
 }
 export async function markPerdiemPaidAction(formData: FormData) {
-  const { orgId } = await requireInstitutionFinance();
+  const { orgId, userId } = await requireInstitutionFinance();
   const cid = String(formData.get("claimId"));
+  const paidOn = String(formData.get("paidOn") || "") || new Date().toISOString().slice(0, 10);
+  const ref = String(formData.get("paymentRef") || "") || null;
   await q(`UPDATE perdiem_claim SET status='paid', paid_on=$3, payment_ref=$4 WHERE id=$1 AND org_id=$2 AND status='approved'`,
-    [cid, orgId, String(formData.get("paidOn") || "") || new Date().toISOString().slice(0, 10), String(formData.get("paymentRef") || "") || null]);
+    [cid, orgId, paidOn, ref]);
+  // Post the paid per-diem as a travel cost to the general ledger, charged to the
+  // claim's project (only fires for a claim we just moved to 'paid').
+  const claim = await one<{ projectId: string | null; total: number; currency: string }>(
+    `SELECT project_id AS "projectId", total::float AS total, currency FROM perdiem_claim WHERE id=$1 AND org_id=$2 AND status='paid'`, [cid, orgId]);
+  if (claim) await postCashPayment({ orgId, date: paidOn, amount: claim.total, currency: claim.currency, expenseCode: "5100",
+    projectId: claim.projectId, memo: "Per-diem / travel", reference: ref, sourceType: "perdiem", sourceId: cid, postedBy: userId });
   redirect(`/finance/perdiem/${cid}?saved=1`);
 }
 export async function deletePerdiemClaimAction(formData: FormData) {
@@ -6186,9 +6340,14 @@ export async function replenishPettyCashAction(formData: FormData) {
   const aid = String(formData.get("accountId") || "");
   const amount = _rnum(formData, "amount") ?? 0;
   if (amount <= 0) redirect(`/finance/petty-cash/${aid}?err=amount`);
+  const pctId = id("pct");
+  const pctDate = _rstr(formData, "txnDate") ?? new Date().toISOString().slice(0, 10);
   await q(`INSERT INTO petty_cash_txn (id, org_id, account_id, txn_date, type, amount, description, reference, approved_by, approved_at, recorded_by_id, recorded_by_name)
            VALUES ($1,$2,$3,$4,'top_up',$5,'Replenishment',$6,$7,$8,$9,$10)`,
-    [id("pct"), orgId, aid, _rstr(formData, "txnDate") ?? new Date().toISOString().slice(0, 10), amount, _rstr(formData, "reference"), userName, new Date().toISOString(), userId, userName]);
+    [pctId, orgId, aid, pctDate, amount, _rstr(formData, "reference"), userName, new Date().toISOString(), userId, userName]);
+  // Replenishing the imprest moves cash from the bank into petty cash on hand.
+  await postFundsTransfer({ orgId, date: pctDate, amount, fromCode: "1000", toCode: "1010",
+    memo: "Petty cash replenishment", sourceType: "petty_cash", sourceId: pctId, postedBy: userId, postedByName: userName });
   await writeAudit({ orgId, userId, action: "replenish", entity: "petty_cash_account", entityId: aid, after: { amount } });
   redirect(`/finance/petty-cash/${aid}`);
 }
@@ -6276,6 +6435,13 @@ export async function recordReceiptAction(formData: FormData) {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
     [rid, orgId, aid, _rstr(formData, "trancheId"), _rstr(formData, "receiptDate") ?? new Date().toISOString().slice(0, 10), amount,
      _rstr(formData, "reference"), _rstr(formData, "method"), fileKey, fileName, _rstr(formData, "notes"), userId, userName]);
+  // Recognise the grant inflow in the general ledger: DR cash, CR grant income,
+  // tagged to the agreement's project.
+  const ag = await one<{ projectId: string | null; currency: string }>(
+    `SELECT project_id AS "projectId", currency FROM funding_agreement WHERE id=$1 AND org_id=$2`, [aid, orgId]);
+  await postCashReceipt({ orgId, date: _rstr(formData, "receiptDate") ?? new Date().toISOString().slice(0, 10), amount,
+    currency: ag?.currency, incomeCode: "4000", projectId: ag?.projectId ?? null, memo: "Grant receipt",
+    reference: _rstr(formData, "reference"), sourceType: "funding", sourceId: rid, postedBy: userId });
   await writeAudit({ orgId, userId, action: "create", entity: "funding_receipt", entityId: rid, after: { agreementId: aid, amount } });
   redirect(`/finance/funding/${aid}`);
 }
@@ -6362,12 +6528,18 @@ export async function createInvestmentAction(formData: FormData) {
   const name = String(formData.get("name") || "").trim();
   if (!name) redirect("/finance/treasury?err=invname");
   const iid = id("inv");
+  const invCcy = await _orgCcy(formData, orgId);
+  const principal = _rnum(formData, "principal") ?? 0;
+  const placementDate = _rstr(formData, "placementDate") ?? new Date().toISOString().slice(0, 10);
   await q(`INSERT INTO investment (id, org_id, name, institution, instrument_type, currency, principal, interest_rate, placement_date, maturity_date, expected_value, reference, notes, created_by_id, created_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-    [iid, orgId, name, _rstr(formData, "institution"), String(formData.get("instrumentType") || "fixed_deposit"), await _orgCcy(formData, orgId),
-     _rnum(formData, "principal") ?? 0, _rnum(formData, "interestRate"), _rstr(formData, "placementDate"), _rstr(formData, "maturityDate"),
+    [iid, orgId, name, _rstr(formData, "institution"), String(formData.get("instrumentType") || "fixed_deposit"), invCcy,
+     principal, _rnum(formData, "interestRate"), placementDate, _rstr(formData, "maturityDate"),
      _rnum(formData, "expectedValue"), _rstr(formData, "reference"), _rstr(formData, "notes"), userId, userName]);
-  await writeAudit({ orgId, userId, action: "create", entity: "investment", entityId: iid, after: { name, principal: _rnum(formData, "principal") } });
+  // Placing funds moves cash from the bank into the short-term investments asset.
+  await postFundsTransfer({ orgId, date: placementDate, amount: principal, currency: invCcy, fromCode: "1000", toCode: "1300",
+    memo: `Investment placement — ${name}`, sourceType: "treasury", sourceId: iid, postedBy: userId, postedByName: userName });
+  await writeAudit({ orgId, userId, action: "create", entity: "investment", entityId: iid, after: { name, principal } });
   redirect(`/finance/treasury/investment/${iid}`);
 }
 
@@ -6378,9 +6550,21 @@ export async function recordInvestmentMovementAction(formData: FormData) {
   const amount = _rnum(formData, "amount") ?? 0;
   if (amount <= 0) redirect(`/finance/treasury/investment/${iid}?err=amount`);
   if ((type === "withdrawal" || type === "maturity") && amount > await _invOut(orgId, iid)) redirect(`/finance/treasury/investment/${iid}?err=insufficient`);
+  const imvId = id("imv");
+  const imvDate = _rstr(formData, "movementDate") ?? new Date().toISOString().slice(0, 10);
   await q(`INSERT INTO investment_movement (id, org_id, investment_id, movement_date, type, amount, description, reference, recorded_by_id, recorded_by_name)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-    [id("imv"), orgId, iid, _rstr(formData, "movementDate") ?? new Date().toISOString().slice(0, 10), type, amount, _rstr(formData, "description"), _rstr(formData, "reference"), userId, userName]);
+    [imvId, orgId, iid, imvDate, type, amount, _rstr(formData, "description"), _rstr(formData, "reference"), userId, userName]);
+  // Post to the ledger: interest is other income (DR cash / CR 4900); a withdrawal
+  // or maturity returns principal from the investment asset back to the bank.
+  const invCcy = (await one<{ c: string }>(`SELECT currency c FROM investment WHERE id=$1 AND org_id=$2`, [iid, orgId]))?.c ?? null;
+  if (type === "interest") {
+    await postCashReceipt({ orgId, date: imvDate, amount, currency: invCcy, incomeCode: "4900", memo: "Investment interest",
+      reference: _rstr(formData, "reference"), sourceType: "treasury", sourceId: imvId, postedBy: userId });
+  } else if (type === "withdrawal" || type === "maturity") {
+    await postFundsTransfer({ orgId, date: imvDate, amount, currency: invCcy, fromCode: "1300", toCode: "1000",
+      memo: "Investment withdrawal/maturity", sourceType: "treasury", sourceId: imvId, postedBy: userId, postedByName: userName });
+  }
   // a maturity movement that clears the principal marks the investment matured
   if (type === "maturity" && await _invOut(orgId, iid) <= 0)
     await q(`UPDATE investment SET status='matured' WHERE id=$1 AND org_id=$2`, [iid, orgId]);

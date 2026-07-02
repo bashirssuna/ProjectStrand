@@ -1,6 +1,7 @@
 import "server-only";
 import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
+import { postPayrollToLedger } from "@/server/services/ledger";
 
 const round2 = (n: number | string) => { const x = Number(n) || 0; return Math.round((x + Number.EPSILON) * 100) / 100; };
 
@@ -122,12 +123,14 @@ export async function buildPayrollRun(orgId: string, periodLabel: string, by: { 
 // Finalising a payroll run marks it locked. (Ledger posting is deferred until
 // the Finance module is closed out — payroll will then debit salary expense,
 // credit payroll liabilities / cash. The hook is here and ready.)
-export async function finalisePayrollRun(orgId: string, runId: string): Promise<void> {
+export async function finalisePayrollRun(orgId: string, runId: string, by?: { id: string; name: string }): Promise<void> {
   const run = await one<{ status: string }>(`SELECT status FROM payroll_run WHERE id=$1 AND org_id=$2`, [runId, orgId]);
   if (!run) throw new Error("Run not found.");
   if (run.status === "finalised") return;
   await q(`UPDATE payroll_run SET status='finalised' WHERE id=$1`, [runId]);
-  // FINANCE HOOK (deferred): post salary expense + statutory liabilities here.
+  // Post salary expense + statutory liabilities + net pay to the general ledger
+  // (no-op if the org hasn't enabled its chart of accounts yet).
+  await postPayrollToLedger({ orgId, runId, postedBy: by?.id ?? null, postedByName: by?.name ?? null });
 }
 
 // ---------------------------------------------------------------------------

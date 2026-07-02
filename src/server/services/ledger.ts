@@ -9,6 +9,14 @@ import { id } from "@/lib/ids";
 // ledger. Entries are immutable; reverseJournal() posts an offsetting entry.
 // ===========================================================================
 
+// Source systems that can post to the ledger. Extending this (over the original
+// manual/expenditure/voucher/reversal/fx set) lets each module's postings be
+// deduplicated and traced back to their originating document in the audit trail.
+export type JournalSource =
+  | "manual" | "expenditure" | "voucher" | "reversal" | "fx_revaluation"
+  | "payroll" | "vendor_bill" | "vendor_payment" | "subaward" | "perdiem"
+  | "petty_cash" | "funding" | "treasury" | "inventory";
+
 export type JournalLineInput = {
   accountId: string;
   debit?: number;
@@ -28,7 +36,7 @@ export async function postJournal(input: {
   entryDate: string;            // YYYY-MM-DD
   memo?: string;
   reference?: string | null;    // source document reference (voucher/invoice/receipt no.)
-  sourceType?: "manual" | "expenditure" | "voucher" | "reversal" | "fx_revaluation";
+  sourceType?: JournalSource;
   sourceId?: string | null;
   projectId?: string | null;
   reversesEntryId?: string | null;
@@ -110,6 +118,7 @@ const STANDARD_COA: { code: string; name: string; type: string; side: string; pa
   { code: "1010", name: "Cash on hand (petty cash)", type: "asset", side: "debit" },
   { code: "1100", name: "Grants receivable", type: "asset", side: "debit" },
   { code: "1200", name: "Staff advances", type: "asset", side: "debit" },
+  { code: "1300", name: "Short-term investments", type: "asset", side: "debit" },
   { code: "1500", name: "Fixed assets — equipment", type: "asset", side: "debit" },
   // Liabilities (2xxx) — normal balance credit
   { code: "2000", name: "Accounts payable", type: "liability", side: "credit" },
@@ -309,6 +318,189 @@ export async function postExpenditureToLedger(input: {
       { accountId: creditAcc, credit: input.amount, description: "Cash/bank", projectId: input.projectId },
     ],
   });
+}
+
+// ===========================================================================
+// Module posting hooks. Each is a no-op until the org has a chart of accounts
+// (ensureChartOfAccounts), and each de-duplicates by (source_type, source_id)
+// so retries/re-saves never double-post. Amounts are converted to the org's
+// base/reporting currency before posting. These implement the finance links
+// that were previously deferred (payroll, vendor bills, sub-awards, per-diem,
+// petty cash, treasury, funding).
+// ===========================================================================
+
+async function acctCode(orgId: string, code: string): Promise<string | null> {
+  return (await one<{ id: string }>(`SELECT id FROM ledger_account WHERE org_id=$1 AND code=$2`, [orgId, code]))?.id ?? null;
+}
+async function ledgerEnabled(orgId: string): Promise<boolean> {
+  const c = await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ledger_account WHERE org_id=$1`, [orgId]);
+  return !!c && c.c > 0;
+}
+async function alreadyPosted(sourceType: JournalSource, sourceId: string): Promise<boolean> {
+  return !!(await one<{ id: string }>(`SELECT id FROM journal_entry WHERE source_type=$1 AND source_id=$2`, [sourceType, sourceId]));
+}
+
+// Generic cash payment: DR an expense account, CR cash/bank. Project-tagged.
+export async function postCashPayment(input: {
+  orgId: string; date: string; amount: number; currency?: string | null;
+  expenseCode?: string; expenseAccountId?: string | null; cashCode?: string;
+  projectId?: string | null; memo?: string; reference?: string | null;
+  sourceType: JournalSource; sourceId: string; postedBy?: string | null; postedByName?: string | null;
+}): Promise<string | null> {
+  if (!(await ledgerEnabled(input.orgId))) return null;
+  if (!(input.amount > 0)) return null;
+  if (await alreadyPosted(input.sourceType, input.sourceId)) return null;
+  const expense = input.expenseAccountId ?? (await acctCode(input.orgId, input.expenseCode ?? "5200"));
+  const cash = await acctCode(input.orgId, input.cashCode ?? "1000");
+  if (!expense || !cash) return null;
+  const conv = await convertToBase(input.orgId, input.amount, input.currency ?? "", input.date.slice(0, 10));
+  const je = await postJournal({
+    orgId: input.orgId, entryDate: input.date.slice(0, 10), memo: input.memo, reference: input.reference ?? null,
+    sourceType: input.sourceType, sourceId: input.sourceId, projectId: input.projectId ?? null,
+    postedBy: input.postedBy, postedByName: input.postedByName,
+    lines: [
+      { accountId: expense, debit: conv.base, description: input.memo ?? "Payment", projectId: input.projectId ?? null },
+      { accountId: cash, credit: conv.base, description: "Cash/bank", projectId: input.projectId ?? null },
+    ],
+  });
+  return je.entryId;
+}
+
+// Generic cash receipt: DR cash/bank, CR an income account. Project-tagged.
+export async function postCashReceipt(input: {
+  orgId: string; date: string; amount: number; currency?: string | null;
+  incomeCode?: string; incomeAccountId?: string | null; cashCode?: string;
+  projectId?: string | null; memo?: string; reference?: string | null;
+  sourceType: JournalSource; sourceId: string; postedBy?: string | null; postedByName?: string | null;
+}): Promise<string | null> {
+  if (!(await ledgerEnabled(input.orgId))) return null;
+  if (!(input.amount > 0)) return null;
+  if (await alreadyPosted(input.sourceType, input.sourceId)) return null;
+  const income = input.incomeAccountId ?? (await acctCode(input.orgId, input.incomeCode ?? "4000"));
+  const cash = await acctCode(input.orgId, input.cashCode ?? "1000");
+  if (!income || !cash) return null;
+  const conv = await convertToBase(input.orgId, input.amount, input.currency ?? "", input.date.slice(0, 10));
+  const je = await postJournal({
+    orgId: input.orgId, entryDate: input.date.slice(0, 10), memo: input.memo, reference: input.reference ?? null,
+    sourceType: input.sourceType, sourceId: input.sourceId, projectId: input.projectId ?? null,
+    postedBy: input.postedBy, postedByName: input.postedByName,
+    lines: [
+      { accountId: cash, debit: conv.base, description: "Cash/bank", projectId: input.projectId ?? null },
+      { accountId: income, credit: conv.base, description: input.memo ?? "Receipt", projectId: input.projectId ?? null },
+    ],
+  });
+  return je.entryId;
+}
+
+// Generic transfer between two asset accounts (e.g. bank 1000 → petty cash 1010).
+export async function postFundsTransfer(input: {
+  orgId: string; date: string; amount: number; currency?: string | null;
+  fromCode: string; toCode: string; memo?: string;
+  sourceType: JournalSource; sourceId: string; postedBy?: string | null; postedByName?: string | null;
+}): Promise<string | null> {
+  if (!(await ledgerEnabled(input.orgId))) return null;
+  if (!(input.amount > 0)) return null;
+  if (await alreadyPosted(input.sourceType, input.sourceId)) return null;
+  const from = await acctCode(input.orgId, input.fromCode);
+  const to = await acctCode(input.orgId, input.toCode);
+  if (!from || !to) return null;
+  const conv = await convertToBase(input.orgId, input.amount, input.currency ?? "", input.date.slice(0, 10));
+  const je = await postJournal({
+    orgId: input.orgId, entryDate: input.date.slice(0, 10), memo: input.memo,
+    sourceType: input.sourceType, sourceId: input.sourceId,
+    postedBy: input.postedBy, postedByName: input.postedByName,
+    lines: [
+      { accountId: to, debit: conv.base, description: input.memo ?? "Transfer in" },
+      { accountId: from, credit: conv.base, description: input.memo ?? "Transfer out" },
+    ],
+  });
+  return je.entryId;
+}
+
+// Payroll run: DR Personnel & salaries (5000)=gross; CR Payroll liabilities
+// (2200)=deductions; CR Cash at bank (1000)=net. If no liability account exists,
+// the whole gross is credited to cash. No-op if the ledger isn't set up or the
+// run has already been posted. Assumption: all deductions are treated as a single
+// statutory/other payroll liability — split further if you track PAYE/NSSF apart.
+export async function postPayrollToLedger(input: {
+  orgId: string; runId: string; postedBy?: string | null; postedByName?: string | null;
+}): Promise<void> {
+  if (!(await ledgerEnabled(input.orgId))) return;
+  const run = await one<{ gross: number; deductions: number; net: number; date: string; period: string | null; je: string | null }>(
+    `SELECT total_gross::float AS gross, total_deductions::float AS deductions, total_net::float AS net,
+            run_date AS date, period_label AS period, journal_entry_id AS je
+       FROM payroll_run WHERE id=$1 AND org_id=$2`, [input.runId, input.orgId]);
+  if (!run || run.je || !(run.gross > 0)) return;
+  const salaries = await acctCode(input.orgId, "5000");
+  const cash = await acctCode(input.orgId, "1000");
+  const payLiab = await acctCode(input.orgId, "2200");
+  if (!salaries || !cash) return;
+  const lines: JournalLineInput[] = [{ accountId: salaries, debit: run.gross, description: "Gross salaries" }];
+  if (run.deductions > 0 && payLiab) {
+    lines.push({ accountId: payLiab, credit: run.deductions, description: "Statutory & other deductions" });
+    lines.push({ accountId: cash, credit: run.net, description: "Net pay" });
+  } else {
+    lines.push({ accountId: cash, credit: run.gross, description: "Net pay" });
+  }
+  const je = await postJournal({
+    orgId: input.orgId, entryDate: run.date, memo: `Payroll ${run.period ?? ""}`.trim(),
+    sourceType: "payroll", sourceId: input.runId,
+    postedBy: input.postedBy, postedByName: input.postedByName, lines,
+  });
+  await q(`UPDATE payroll_run SET journal_entry_id=$2 WHERE id=$1`, [input.runId, je.entryId]);
+}
+
+// Vendor bill (accounts payable recognition): DR expense (the bill's
+// expense_account_id, else Supplies 5200), CR Accounts payable (2000).
+export async function postVendorBillToLedger(input: {
+  orgId: string; billId: string; postedBy?: string | null; postedByName?: string | null;
+}): Promise<void> {
+  if (!(await ledgerEnabled(input.orgId))) return;
+  const bill = await one<{ projectId: string | null; total: number; currency: string; date: string; expenseAcct: string | null; number: string; je: string | null }>(
+    `SELECT project_id AS "projectId", total::float AS total, currency, bill_date AS date,
+            expense_account_id AS "expenseAcct", number, journal_entry_id AS je
+       FROM vendor_bill WHERE id=$1 AND org_id=$2`, [input.billId, input.orgId]);
+  if (!bill || bill.je || !(bill.total > 0)) return;
+  const ap = await acctCode(input.orgId, "2000");
+  const expense = bill.expenseAcct ?? (await acctCode(input.orgId, "5200"));
+  if (!ap || !expense) return;
+  const conv = await convertToBase(input.orgId, bill.total, bill.currency, bill.date);
+  const je = await postJournal({
+    orgId: input.orgId, entryDate: bill.date, memo: `Vendor bill ${bill.number}`, reference: bill.number,
+    sourceType: "vendor_bill", sourceId: input.billId, projectId: bill.projectId,
+    postedBy: input.postedBy, postedByName: input.postedByName,
+    lines: [
+      { accountId: expense, debit: conv.base, description: `Expense — ${bill.number}`, projectId: bill.projectId },
+      { accountId: ap, credit: conv.base, description: `Payable — ${bill.number}` },
+    ],
+  });
+  await q(`UPDATE vendor_bill SET journal_entry_id=$2 WHERE id=$1`, [input.billId, je.entryId]);
+}
+
+// Vendor bill payment: DR Accounts payable (2000), CR cash (1000). Reduces the
+// payable when a bill is settled. Deduped per bill payment id.
+export async function postVendorBillPayment(input: {
+  orgId: string; paymentId: string; billId: string; amount: number; currency?: string | null;
+  date: string; reference?: string | null; postedBy?: string | null; postedByName?: string | null;
+}): Promise<string | null> {
+  if (!(await ledgerEnabled(input.orgId))) return null;
+  if (!(input.amount > 0)) return null;
+  if (await alreadyPosted("vendor_payment", input.paymentId)) return null;
+  const ap = await acctCode(input.orgId, "2000");
+  const cash = await acctCode(input.orgId, "1000");
+  if (!ap || !cash) return null;
+  const bill = await one<{ projectId: string | null }>(`SELECT project_id AS "projectId" FROM vendor_bill WHERE id=$1 AND org_id=$2`, [input.billId, input.orgId]);
+  const conv = await convertToBase(input.orgId, input.amount, input.currency ?? "", input.date.slice(0, 10));
+  const je = await postJournal({
+    orgId: input.orgId, entryDate: input.date.slice(0, 10), memo: "Vendor bill payment", reference: input.reference ?? null,
+    sourceType: "vendor_payment", sourceId: input.paymentId, projectId: bill?.projectId ?? null,
+    postedBy: input.postedBy, postedByName: input.postedByName,
+    lines: [
+      { accountId: ap, debit: conv.base, description: "Settle payable" },
+      { accountId: cash, credit: conv.base, description: "Cash/bank" },
+    ],
+  });
+  return je.entryId;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import "server-only";
 import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
-import { budgetSummary } from "@/server/services/budget";
+import { budgetSummary, ensureStandardCategories } from "@/server/services/budget";
 import { writeAudit } from "@/server/services/audit";
 
 export type ProjectRow = {
@@ -132,6 +132,12 @@ export async function createProject(input: {
      input.startDate ?? null, input.endDate ?? null]
   );
   // status starts as 'draft'
+  // Every project ships with a budget scaffold (the standard donor-style sections)
+  // so the budget → requisition → expenditure → ledger chain exists from day one,
+  // instead of appearing lazily only when someone first opens the budget editor.
+  const budgetId = id("bud");
+  await q(`INSERT INTO budget (id, project_id, name) VALUES ($1,$2,'Project budget')`, [budgetId, pid]);
+  await ensureStandardCategories(budgetId);
   // The creating PI becomes owner. Admins do NOT become members (they oversee
   // all projects but must not hold operational requisition/report powers).
   if (input.addCreatorAsPi !== false) {

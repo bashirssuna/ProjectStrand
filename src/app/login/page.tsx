@@ -121,7 +121,9 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
 
             {error && (
               <div className="mt-4 rounded-lg px-3 py-2 text-sm bg-red-50 text-red-700 border border-red-200">
-                Incorrect email or password.
+                {error === "locked"
+                  ? "Too many sign-in attempts. Please wait a few minutes and try again."
+                  : "Incorrect email or password."}
               </div>
             )}
 

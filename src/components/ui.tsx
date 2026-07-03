@@ -1,6 +1,8 @@
+import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { STATUS_TONE, label } from "@/lib/enums";
 import { pct } from "@/lib/format";
+import { Icon, type IconName } from "@/components/icons";
 
 type Tone = "ok" | "warn" | "danger" | "info" | "muted" | "brand";
 
@@ -78,6 +80,23 @@ export function Empty({ title, hint }: { title: string; hint?: string }) {
       <p className="font-display text-base">{title}</p>
       {hint && <p className="text-sm mt-1" style={{ color: "var(--muted)" }}>{hint}</p>}
     </div>
+  );
+}
+
+// A hub/landing tool card: accent icon tile, title, description, hover arrow.
+// Used across Finance, HR, Procurement, Organisation, Portal and the dashboard.
+export function ToolCard({ href, icon, title, desc }: { href: string; icon: IconName; title: string; desc: string }) {
+  return (
+    <Link href={href} className="tool-card group">
+      <span className="icon-tile"><Icon name={icon} size={20} /></span>
+      <span className="min-w-0 flex-1">
+        <span className="tool-title flex items-center justify-between gap-2">
+          {title}
+          <Icon name="arrow" size={16} className="tool-arrow" />
+        </span>
+        <span className="tool-desc block">{desc}</span>
+      </span>
+    </Link>
   );
 }
 

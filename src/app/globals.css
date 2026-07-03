@@ -3,153 +3,140 @@
 @tailwind utilities;
 
 /* ============================================================
-   Default theme: dark charcoal + gold accent (GrantFlow-style)
+   Project Strand — editorial-institutional design system.
+   Distinctive Fraunces (display) + Hanken Grotesk (body) type,
+   CSS-variable theming, real elevation, accent icon tiles.
+   Fonts are provided by next/font as --font-display / --font-body.
    ============================================================ */
+
 :root {
-  --bg: #0a0a0f;
-  --surface: #16161f;
-  --panel: #111118;
-  --border: rgba(255, 255, 255, 0.10);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --muted: #8e8e9f;
-  --fg: #e8e8ec;
-  --brand: #d4a853;
-  --brand-fg: #0a0a0f;
-  --ok: #2d9e5a;
-  --warn: #c4844b;
-  --danger: #c44b4b;
-  --info: #6b7fa3;
-  --ring: rgba(212, 168, 83, 0.22);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.45);
+  /* Charcoal — deep ink + warm gold (dark, default) */
+  --bg: #0b0b11;
+  --bg-2: #12121b;
+  --surface: #17171f;
+  --panel: #14141c;
+  --panel-2: #1b1b25;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --muted: #9797a6;
+  --fg: #ececf1;
+  --brand: #e0b25c;
+  --brand-strong: #f0c877;
+  --brand-fg: #14100a;
+  --ok: #46b877;
+  --warn: #d69a4e;
+  --danger: #e06868;
+  --info: #7d95c4;
+  --ring: rgba(224, 178, 92, 0.30);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .45), 0 10px 30px -12px rgba(0, 0, 0, .6);
+  --shadow-hover: 0 2px 6px rgba(0, 0, 0, .5), 0 18px 42px -14px rgba(0, 0, 0, .7);
+  --radius: 0.85rem;
 }
 
-/* Light variant (toggle) */
+/* Light — clean paper + bronze accent */
 .light {
-  --bg: #f6f6f8;
-  --surface: #ededf1;
-  --panel: #ffffff;
-  --border: #e4e4ea;
-  --border-strong: #d6d6df;
-  --muted: #6c6c79;
-  --fg: #18181f;
-  --brand: #a87d2e;
-  --brand-fg: #ffffff;
-  --ok: #2d9e5a;
-  --warn: #b5712f;
-  --danger: #c0433f;
-  --info: #4f6b8f;
-  --ring: rgba(168, 125, 46, 0.22);
-  --shadow: 0 1px 2px rgba(20, 20, 30, 0.05), 0 4px 16px rgba(20, 20, 30, 0.07);
+  --bg: #f4f4f7; --bg-2: #ffffff;
+  --surface: #ffffff; --panel: #ffffff; --panel-2: #f7f7fa;
+  --border: #e5e5ec; --border-strong: #d3d3de;
+  --muted: #6a6a77; --fg: #17171e;
+  --brand: #9a6a24; --brand-strong: #7f5518; --brand-fg: #ffffff;
+  --ok: #2f9d5b; --warn: #b5712f; --danger: #c8433f; --info: #4c6a95;
+  --ring: rgba(154, 106, 36, 0.22);
+  --shadow: 0 1px 2px rgba(24, 24, 34, .05), 0 12px 28px -14px rgba(24, 24, 34, .22);
+  --shadow-hover: 0 2px 4px rgba(24, 24, 34, .06), 0 22px 40px -16px rgba(24, 24, 34, .30);
+  --radius: 0.85rem;
 }
 
-/* Sand — warm cream, terracotta accent (light) */
+/* Sand — warm cream + terracotta */
 .sand {
-  --bg: #f5f0e8;
-  --surface: #efe7da;
-  --panel: #fffdf9;
-  --border: #e6dccb;
-  --border-strong: #d8ccb6;
-  --muted: #6f6557;
-  --fg: #2a2218;
-  --brand: #b05f3c;
-  --brand-fg: #ffffff;
-  --ok: #4a8c5a;
-  --warn: #c08036;
-  --danger: #c0433f;
-  --info: #6b7a8f;
-  --ring: rgba(176, 95, 60, 0.22);
-  --shadow: 0 1px 2px rgba(60, 40, 20, 0.05), 0 4px 16px rgba(60, 40, 20, 0.08);
+  --bg: #f3ece1; --bg-2: #fffdf8;
+  --surface: #fffdf9; --panel: #fffdf9; --panel-2: #f7f0e5;
+  --border: #e7dcc9; --border-strong: #d6c8ae;
+  --muted: #6f6553; --fg: #2a2016;
+  --brand: #b0552f; --brand-strong: #954324; --brand-fg: #fffaf4;
+  --ok: #47895a; --warn: #b5762f; --danger: #c0433f; --info: #6a7a8f;
+  --ring: rgba(176, 85, 47, 0.22);
+  --shadow: 0 1px 2px rgba(74, 48, 24, .05), 0 12px 28px -14px rgba(74, 48, 24, .20);
+  --shadow-hover: 0 2px 4px rgba(74, 48, 24, .07), 0 22px 40px -16px rgba(74, 48, 24, .28);
+  --radius: 0.85rem;
 }
 
-/* Ocean — cool light, teal accent */
+/* Ocean — cool light + teal */
 .ocean {
-  --bg: #eef3f5;
-  --surface: #e3edf0;
-  --panel: #ffffff;
-  --border: #d5e2e6;
-  --border-strong: #c2d4da;
-  --muted: #5d6a70;
-  --fg: #16242a;
-  --brand: #1f7a8c;
-  --brand-fg: #ffffff;
-  --ok: #2d9e7a;
-  --warn: #c4844b;
-  --danger: #c0433f;
-  --info: #3d7a8c;
-  --ring: rgba(31, 122, 140, 0.22);
-  --shadow: 0 1px 2px rgba(20, 30, 35, 0.05), 0 4px 16px rgba(20, 30, 35, 0.07);
+  --bg: #ecf2f4; --bg-2: #ffffff;
+  --surface: #ffffff; --panel: #ffffff; --panel-2: #f1f6f7;
+  --border: #d6e2e6; --border-strong: #bfd3d9;
+  --muted: #566268; --fg: #12222a;
+  --brand: #10707f; --brand-strong: #0b5a66; --brand-fg: #ffffff;
+  --ok: #2d9d78; --warn: #bd8140; --danger: #c0433f; --info: #3a7688;
+  --ring: rgba(16, 112, 127, 0.22);
+  --shadow: 0 1px 2px rgba(16, 34, 42, .05), 0 12px 28px -14px rgba(16, 34, 42, .20);
+  --shadow-hover: 0 2px 4px rgba(16, 34, 42, .07), 0 22px 40px -16px rgba(16, 34, 42, .28);
+  --radius: 0.85rem;
 }
 
-/* Forest — sage light, green accent */
+/* Forest — sage paper + deep evergreen (rich, high-contrast) */
 .forest {
-  --bg: #eef3ee;
-  --surface: #e3ebe3;
-  --panel: #ffffff;
-  --border: #d6e0d6;
-  --border-strong: #c4d2c4;
-  --muted: #5e685e;
-  --fg: #1a241a;
-  --brand: #3d7a4e;
-  --brand-fg: #ffffff;
-  --ok: #2d9e5a;
-  --warn: #b5712f;
-  --danger: #c0433f;
-  --info: #4f7b6b;
-  --ring: rgba(61, 122, 78, 0.22);
-  --shadow: 0 1px 2px rgba(20, 35, 20, 0.05), 0 4px 16px rgba(20, 35, 20, 0.07);
+  --bg: #eaf0ea; --bg-2: #ffffff;
+  --surface: #ffffff; --panel: #ffffff; --panel-2: #f1f5f1;
+  --border: #d5e0d5; --border-strong: #bcccbc;
+  --muted: #566356; --fg: #142014;
+  --brand: #2f6b41; --brand-strong: #234f30; --brand-fg: #ffffff;
+  --ok: #2f9d5b; --warn: #b5712f; --danger: #c0433f; --info: #4a7365;
+  --ring: rgba(47, 107, 65, 0.22);
+  --shadow: 0 1px 2px rgba(18, 38, 22, .05), 0 12px 28px -14px rgba(18, 38, 22, .22);
+  --shadow-hover: 0 2px 4px rgba(18, 38, 22, .07), 0 22px 42px -16px rgba(18, 38, 22, .30);
+  --radius: 0.85rem;
 }
 
-/* Midnight — deep navy, sky-blue accent (dark) */
+/* Midnight — deep navy + sky (dark) */
 .midnight {
-  --bg: #0a1020;
-  --surface: #121a2e;
-  --panel: #0e1424;
-  --border: rgba(255, 255, 255, 0.10);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --muted: #8b97b0;
-  --fg: #e6eaf2;
-  --brand: #5a9bd4;
-  --brand-fg: #0a1020;
-  --ok: #2d9e5a;
-  --warn: #c4a04b;
-  --danger: #d45a5a;
-  --info: #6b8fd4;
-  --ring: rgba(90, 155, 212, 0.25);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.45);
+  --bg: #090f1e; --bg-2: #101830;
+  --surface: #121b31; --panel: #0f1728; --panel-2: #16203a;
+  --border: rgba(255, 255, 255, 0.09); --border-strong: rgba(255, 255, 255, 0.16);
+  --muted: #8e9ab5; --fg: #e7ebf4;
+  --brand: #5fa0da; --brand-strong: #7bb4e6; --brand-fg: #08101f;
+  --ok: #46b877; --warn: #d3ad55; --danger: #df6d6d; --info: #6f93da;
+  --ring: rgba(95, 160, 218, 0.30);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .45), 0 10px 30px -12px rgba(0, 0, 0, .6);
+  --shadow-hover: 0 2px 6px rgba(0, 0, 0, .5), 0 18px 42px -14px rgba(0, 0, 0, .72);
+  --radius: 0.85rem;
 }
 
-/* Slate — cool dark gray, violet accent (dark) */
+/* Slate — cool graphite + violet (dark) */
 .slate {
-  --bg: #10131a;
-  --surface: #191d27;
-  --panel: #14171f;
-  --border: rgba(255, 255, 255, 0.10);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --muted: #8b909c;
-  --fg: #e7e8ec;
-  --brand: #8b7fd4;
-  --brand-fg: #0f1018;
-  --ok: #2d9e5a;
-  --warn: #c4a04b;
-  --danger: #d45a5a;
-  --info: #7f8fd4;
-  --ring: rgba(139, 127, 212, 0.25);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.45);
+  --bg: #0f1219; --bg-2: #161a24;
+  --surface: #1a1e29; --panel: #151922; --panel-2: #1e2330;
+  --border: rgba(255, 255, 255, 0.09); --border-strong: rgba(255, 255, 255, 0.16);
+  --muted: #8e93a1; --fg: #e8e9ee;
+  --brand: #9384e0; --brand-strong: #a99cec; --brand-fg: #0f1018;
+  --ok: #46b877; --warn: #d3ad55; --danger: #df6d6d; --info: #8493e0;
+  --ring: rgba(147, 132, 224, 0.30);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .45), 0 10px 30px -12px rgba(0, 0, 0, .6);
+  --shadow-hover: 0 2px 6px rgba(0, 0, 0, .5), 0 18px 42px -14px rgba(0, 0, 0, .72);
+  --radius: 0.85rem;
 }
 
 html, body { background: var(--bg); color: var(--fg); }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-body), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* faint layered depth so panels read against the page */
+  background-image:
+    radial-gradient(120% 80% at 100% 0%, color-mix(in srgb, var(--brand) 6%, transparent), transparent 60%),
+    linear-gradient(180deg, var(--bg-2) 0%, var(--bg) 32%);
+  background-attachment: fixed;
 }
 
-/* Headings: clean sans with tight tracking (premium, not serif) */
+/* Display: Fraunces — characterful institutional serif */
 .font-display {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  letter-spacing: -0.02em;
+  font-family: var(--font-display), ui-serif, Georgia, "Times New Roman", serif;
+  letter-spacing: -0.005em;
   font-weight: 600;
 }
+.tnum { font-variant-numeric: tabular-nums; }
 
 @layer components {
   /* Inline row editors open as a centered overlay so they're never clipped by
@@ -163,27 +150,66 @@ body {
     position: fixed; z-index: 61; top: 50%; left: 50%; transform: translate(-50%,-50%);
     width: 360px; max-width: 92vw; max-height: 88vh; overflow: auto;
   }
+
   .card {
     background: var(--panel);
     border: 1px solid var(--border);
-    border-radius: 0.625rem;
+    border-radius: var(--radius);
     box-shadow: var(--shadow);
   }
 
+  /* Accent icon tile — the recurring square that holds a line icon. */
+  .icon-tile {
+    @apply inline-grid place-items-center shrink-0;
+    width: 2.5rem; height: 2.5rem; border-radius: 0.7rem;
+    color: var(--brand);
+    background: color-mix(in srgb, var(--brand) 12%, var(--panel));
+    border: 1px solid color-mix(in srgb, var(--brand) 22%, transparent);
+    transition: background .18s ease, color .18s ease, transform .18s ease;
+  }
+  .icon-tile-sm { width: 2rem; height: 2rem; border-radius: 0.55rem; }
+
+  /* Tool / module card — icon tile + title + description, used on every hub. */
+  .tool-card {
+    @apply flex items-start gap-3.5 p-4;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+  }
+  .tool-card:hover {
+    border-color: color-mix(in srgb, var(--brand) 55%, var(--border));
+    box-shadow: var(--shadow-hover);
+    transform: translateY(-2px);
+  }
+  .tool-card:hover .icon-tile {
+    background: var(--brand); color: var(--brand-fg);
+    border-color: var(--brand);
+  }
+  .tool-card:hover .tool-arrow { opacity: 1; transform: translateX(0); color: var(--brand); }
+  .tool-title { @apply font-display text-[0.95rem] font-semibold leading-snug; color: var(--fg); }
+  .tool-desc { @apply text-[0.8rem] mt-1 leading-relaxed; color: var(--muted); }
+  .tool-arrow { opacity: 0; transform: translateX(-4px); transition: opacity .18s ease, transform .18s ease, color .18s ease; }
+
   .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-colors;
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-all;
     border: 1px solid var(--border-strong);
     background: var(--surface);
     color: var(--fg);
   }
-  .btn:hover { border-color: var(--brand); color: var(--fg); }
+  .btn:hover { border-color: var(--brand); box-shadow: 0 0 0 3px var(--ring); }
+  .btn:active { transform: translateY(0.5px); }
   .btn-primary { background: var(--brand); color: var(--brand-fg); border-color: var(--brand); }
-  .btn-primary:hover { filter: brightness(1.08); border-color: var(--brand); }
+  .btn-primary:hover { background: var(--brand-strong); border-color: var(--brand-strong); }
   .btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+  .btn-danger:hover { filter: brightness(1.06); }
   .btn-sm { @apply px-2.5 py-1.5 text-xs; }
+  .btn-ghost { background: transparent; border-color: transparent; }
+  .btn-ghost:hover { background: var(--surface); border-color: var(--border); box-shadow: none; }
 
   .input, .select, .textarea {
-    @apply w-full rounded-lg px-3 py-2 text-sm outline-none transition-colors;
+    @apply w-full rounded-lg px-3 py-2 text-sm outline-none transition-all;
     background: var(--surface);
     border: 1px solid var(--border-strong);
     color: var(--fg);
@@ -205,26 +231,30 @@ body {
   .td { @apply px-3 py-2.5 text-sm align-middle; border-top: 1px solid var(--border); }
 
   .navlink {
-    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors;
+    @apply flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-all;
     color: var(--muted);
-    border-left: 2px solid transparent;
   }
-  .navlink:hover { background: var(--surface); color: var(--fg); }
+  .navlink svg { color: var(--muted); transition: color .16s ease; }
+  .navlink:hover { background: color-mix(in srgb, var(--brand) 8%, transparent); color: var(--fg); }
+  .navlink:hover svg { color: var(--brand); }
   .navlink-active {
-    background: color-mix(in srgb, var(--brand) 10%, transparent);
+    background: color-mix(in srgb, var(--brand) 13%, transparent);
     color: var(--fg);
     font-weight: 600;
-    border-left: 2px solid var(--brand);
+    box-shadow: inset 2px 0 0 var(--brand);
   }
+  .navlink-active svg { color: var(--brand); }
+  .nav-section { @apply text-[10px] font-semibold uppercase tracking-[0.14em] px-3 pt-4 pb-1.5; color: var(--muted); }
 
-  .kpi { @apply text-2xl font-semibold tracking-tight font-display; }
+  .kpi { @apply text-2xl font-semibold tracking-tight font-display; font-variant-numeric: tabular-nums; }
 }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted); }
 ::-webkit-scrollbar-track { background: transparent; }
 
 @media print {
   .no-print { display: none !important; }
-  body { background: #fff !important; color: #000 !important; }
+  body { background: #fff !important; color: #000 !important; background-image: none !important; }
 }

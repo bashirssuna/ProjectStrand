@@ -1,8 +1,8 @@
-import Link from "next/link";
 import { requireProcOrg } from "./_guard";
 import { isModuleEnabled } from "@/server/modules";
 import { one } from "@/server/db";
-import { PageHeader, SectionTitle, Stat } from "@/components/ui";
+import { PageHeader, SectionTitle, Stat, ToolCard } from "@/components/ui";
+import type { IconName } from "@/components/icons";
 
 export default async function ProcurementHome() {
   const { orgId, orgName } = await requireProcOrg();
@@ -20,21 +20,18 @@ export default async function ProcurementHome() {
         <Stat label="Module" value="Procurement" sub="institution-level" />
       </div>
       <SectionTitle>Procurement tools</SectionTitle>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          ["/procurement/requests", "Purchase requests", "Raise & approve requests to buy."],
-          ["/procurement/orders", "Purchase orders", "Approved orders placed with vendors."],
-          ["/procurement/bills", "Vendor bills", "Payables raised from orders."],
-          ["/procurement/vendors", "Vendors", "Supplier directory & details."],
-          ["/procurement/config", "Thresholds", "Quotation rules by purchase value."],
-          ["/procurement/plan", "Procurement plan", "Planned purchases by period vs budget."],
-          ["/procurement/ethics", "Ethics register", "Conflict-of-interest & gifts log."],
-          ...(showGov ? [["/procurement/tenders", "Tenders & bids", "Advertise, open, evaluate & award tenders."], ["/procurement/contracts", "Contracts", "Delivery, payments & provider performance."], ["/procurement/committees", "Committees", "Contracts, evaluation, bid opening & disposal committees."], ["/procurement/disposals", "Disposal management", "Board of survey, committee review & disposal."]] : []),
-        ].map(([href, t, d]) => (
-          <Link key={href} href={href} className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-            <div className="font-display font-semibold">{t}</div>
-            <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>{d}</div>
-          </Link>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        {([
+          ["/procurement/requests", "list", "Purchase requests", "Raise & approve requests to buy."],
+          ["/procurement/orders", "procurement", "Purchase orders", "Approved orders placed with vendors."],
+          ["/procurement/bills", "invoice", "Vendor bills", "Payables raised from orders."],
+          ["/procurement/vendors", "building", "Vendors", "Supplier directory & details."],
+          ["/procurement/config", "modules", "Thresholds", "Quotation rules by purchase value."],
+          ["/procurement/plan", "calendar", "Procurement plan", "Planned purchases by period vs budget."],
+          ["/procurement/ethics", "compliance", "Ethics register", "Conflict-of-interest & gifts log."],
+          ...(showGov ? ([["/procurement/tenders", "audit", "Tenders & bids", "Advertise, open, evaluate & award tenders."], ["/procurement/contracts", "grant", "Contracts", "Delivery, payments & provider performance."], ["/procurement/committees", "collab", "Committees", "Contracts, evaluation, bid opening & disposal committees."], ["/procurement/disposals", "inventory", "Disposal management", "Board of survey, committee review & disposal."]] as [string, IconName, string, string][]) : []),
+        ] as [string, IconName, string, string][]).map(([href, icon, t, d]) => (
+          <ToolCard key={href} href={href} icon={icon} title={t} desc={d} />
         ))}
       </div>
     </div>

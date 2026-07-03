@@ -2,7 +2,8 @@ import Link from "next/link";
 import { requirePortalEmployee } from "./_guard";
 import { q, one } from "@/server/db";
 import { leaveBalance } from "@/server/services/hr";
-import { PageHeader, SectionTitle, Stat, Empty } from "@/components/ui";
+import { PageHeader, SectionTitle, Stat, Empty, ToolCard } from "@/components/ui";
+import type { IconName } from "@/components/icons";
 import { fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 
@@ -37,19 +38,16 @@ export default async function PortalHome() {
       </div>
 
       <SectionTitle>Quick actions</SectionTitle>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-7">
-        {[
-          ["/portal/timesheets", "Fill timesheet", "Log your hours."],
-          ["/portal/leave", "Request leave", "Submit a leave request."],
-          ["/portal/appraisals", "My appraisals", "View, complete & sign your reviews."],
-          ["/portal/onboarding", "Onboarding & exit", "Track and tick your checklists."],
-          ["/portal/requests", "Purchase request", "Request something to buy."],
-          ["/portal/profile", "My profile & CV", "Update details & documents."],
-        ].map(([href, t, d]) => (
-          <Link key={href} href={href} className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-            <div className="font-display font-semibold">{t}</div>
-            <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>{d}</div>
-          </Link>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5 mb-7">
+        {([
+          ["/portal/timesheets", "clock", "Fill timesheet", "Log your hours."],
+          ["/portal/leave", "leave", "Request leave", "Submit a leave request."],
+          ["/portal/appraisals", "audit", "My appraisals", "View, complete & sign your reviews."],
+          ["/portal/onboarding", "check", "Onboarding & exit", "Track and tick your checklists."],
+          ["/portal/requests", "procurement", "Purchase request", "Request something to buy."],
+          ["/portal/profile", "id", "My profile & CV", "Update details & documents."],
+        ] as [string, IconName, string, string][]).map(([href, icon, t, d]) => (
+          <ToolCard key={href} href={href} icon={icon} title={t} desc={d} />
         ))}
       </div>
 

@@ -7,6 +7,7 @@ import { getUserOrg } from "@/server/services/accounts";
 import { enabledModules } from "@/server/modules";
 import { q } from "@/server/db";
 import { NavLink } from "@/components/nav";
+import { Icon } from "@/components/icons";
 import { ThemePicker } from "@/components/theme-picker";
 import { signOut } from "@/app/actions";
 
@@ -32,56 +33,59 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <div className="min-h-screen flex">
       {/* Sidebar */}
       <aside className="w-64 shrink-0 hidden md:flex flex-col border-r" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-        <div className="px-5 py-4 border-b" style={{ borderColor: "var(--border)" }}>
-          <Link href="/dashboard" className="block font-display text-lg font-semibold" style={{ color: "var(--brand)" }}>
-            Project Strand
+        <div className="px-4 py-4 border-b" style={{ borderColor: "var(--border)" }}>
+          <Link href="/dashboard" className="flex items-center gap-2.5">
+            <span className="grid place-items-center shrink-0 font-display font-semibold" style={{ width: 34, height: 34, borderRadius: 9, background: "var(--brand)", color: "var(--brand-fg)", fontSize: 17, lineHeight: 1 }}>S</span>
+            <span className="min-w-0">
+              <span className="block font-display text-[1.05rem] font-semibold leading-none" style={{ color: "var(--fg)" }}>Project Strand</span>
+              <span className="block text-[11px] mt-1 truncate" style={{ color: "var(--muted)" }}>{user.isSuperAdmin ? "Platform administrator" : user.isStaff ? "Staff portal" : user.isCollaborator ? "Collaborator access" : (org?.name ?? "")}</span>
+            </span>
           </Link>
-          <div className="text-xs mt-1.5" style={{ color: "var(--muted)" }}>{user.isSuperAdmin ? "Platform administrator" : user.isStaff ? "Staff portal" : user.isCollaborator ? "Collaborator access" : (org?.name ?? "")}</div>
         </div>
 
         {user.isStaff ? (
-          <nav className="p-3 space-y-1">
-            <NavLink href="/portal">▣ Portal home</NavLink>
-            <NavLink href="/portal/timesheets">◷ Timesheets</NavLink>
-            <NavLink href="/portal/leave">☂ Leave</NavLink>
-            <NavLink href="/portal/requests">🛒 Purchase requests</NavLink>
-            <NavLink href="/portal/profile">◔ My profile &amp; CV</NavLink>
+          <nav className="p-3 space-y-0.5">
+            <NavLink href="/portal" icon="home">Portal home</NavLink>
+            <NavLink href="/portal/timesheets" icon="clock">Timesheets</NavLink>
+            <NavLink href="/portal/leave" icon="leave">Leave</NavLink>
+            <NavLink href="/portal/requests" icon="procurement">Purchase requests</NavLink>
+            <NavLink href="/portal/profile" icon="id">My profile &amp; CV</NavLink>
           </nav>
         ) : user.isCollaborator ? (
-          <nav className="p-3 space-y-1">
-            <NavLink href="/projects">❏ My projects</NavLink>
-            <NavLink href="/profile">◔ My Profile</NavLink>
+          <nav className="p-3 space-y-0.5">
+            <NavLink href="/projects" icon="projects">My projects</NavLink>
+            <NavLink href="/profile" icon="user">My Profile</NavLink>
           </nav>
         ) : (
-          <nav className="p-3 space-y-1 overflow-y-auto">
-            <NavLink href="/dashboard">▣ Dashboard</NavLink>
-            <NavLink href="/projects">❏ Projects</NavLink>
-            {modules.has("research") && <NavLink href="/lab">⚗ Laboratory</NavLink>}
-            {modules.has("research") && <NavLink href="/studies">⚕ Clinical trials</NavLink>}
-            {(org?.isOrgAdmin || user.isSuperAdmin) && modules.has("subawards") && <NavLink href="/subawards">⤳ Sub-awards</NavLink>}
-            {(org?.isOrgAdmin || user.isSuperAdmin) && modules.has("collaborations") && <NavLink href="/collaborations">⚘ Collaborations</NavLink>}
+          <nav className="p-3 space-y-0.5 overflow-y-auto">
+            <NavLink href="/dashboard" icon="dashboard">Dashboard</NavLink>
+            <NavLink href="/projects" icon="projects">Projects</NavLink>
+            {modules.has("research") && <NavLink href="/lab" icon="flask">Laboratory</NavLink>}
+            {modules.has("research") && <NavLink href="/studies" icon="trial">Clinical trials</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && modules.has("subawards") && <NavLink href="/subawards" icon="subaward">Sub-awards</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && modules.has("collaborations") && <NavLink href="/collaborations" icon="collab">Collaborations</NavLink>}
 
             {(org?.isOrgAdmin || user.isSuperAdmin) && (
               <>
-                <div className="text-[10px] font-semibold uppercase tracking-wider px-3 pt-4 pb-1" style={{ color: "var(--muted)" }}>Institution</div>
-                <NavLink href="/finance">₿ Finance &amp; Accounting</NavLink>
-                {modules.has("hr") && <NavLink href="/hr">⚇ Human Resources</NavLink>}
-                {modules.has("procurement") && <NavLink href="/procurement">⛁ Procurement</NavLink>}
-                {modules.has("stores") && <NavLink href="/inventory">▦ Inventory &amp; stores</NavLink>}
+                <div className="nav-section">Institution</div>
+                <NavLink href="/finance" icon="finance">Finance &amp; Accounting</NavLink>
+                {modules.has("hr") && <NavLink href="/hr" icon="hr">Human Resources</NavLink>}
+                {modules.has("procurement") && <NavLink href="/procurement" icon="procurement">Procurement</NavLink>}
+                {modules.has("stores") && <NavLink href="/inventory" icon="inventory">Inventory &amp; stores</NavLink>}
               </>
             )}
 
-            <div className="text-[10px] font-semibold uppercase tracking-wider px-3 pt-4 pb-1" style={{ color: "var(--muted)" }}>Account</div>
-            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization">⌂ Organisation</NavLink>}
-            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization/access">⚷ Access &amp; permissions</NavLink>}
-            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization/modules">❒ Modules &amp; sector</NavLink>}
-            {user.isSuperAdmin && <NavLink href="/admin">⚙ Admin Center</NavLink>}
-            <NavLink href="/profile">◔ My Profile</NavLink>
+            <div className="nav-section">Account</div>
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization" icon="building">Organisation</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization/access" icon="access">Access &amp; permissions</NavLink>}
+            {(org?.isOrgAdmin || user.isSuperAdmin) && <NavLink href="/organization/modules" icon="modules">Modules &amp; sector</NavLink>}
+            {user.isSuperAdmin && <NavLink href="/admin" icon="admin">Admin Center</NavLink>}
+            <NavLink href="/profile" icon="user">My Profile</NavLink>
           </nav>
         )}
 
         {!user.isStaff && <div className="px-3 mt-2">
-          <div className="text-xs font-medium uppercase tracking-wide px-3 mb-1" style={{ color: "var(--muted)" }}>Your projects</div>
+          <div className="nav-section">Your projects</div>
           <nav className="space-y-1 max-h-[42vh] overflow-auto">
             {projects.length === 0 && <div className="px-3 py-2 text-xs" style={{ color: "var(--muted)" }}>No projects yet.</div>}
             {projects.map((p) => (
@@ -105,8 +109,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <div className="md:hidden font-display text-lg font-semibold">Strand</div>
           <div className="flex-1" />
           <div className="flex items-center gap-2">
-            <Link href="/notifications" className="btn btn-sm relative" title="Notifications">
-              🔔 {unread[0]?.c ? <span className="ml-1 text-xs rounded-full px-1.5" style={{ background: "var(--brand)", color: "var(--brand-fg)" }}>{unread[0].c}</span> : null}
+            <Link href="/notifications" className="btn btn-sm btn-ghost relative" title="Notifications">
+              <Icon name="bell" size={17} /> {unread[0]?.c ? <span className="ml-0.5 text-xs rounded-full px-1.5 font-semibold" style={{ background: "var(--brand)", color: "var(--brand-fg)" }}>{unread[0].c}</span> : null}
             </Link>
             <ThemePicker />
             <div className="flex items-center gap-2 pl-2 ml-1 border-l" style={{ borderColor: "var(--border)" }}>

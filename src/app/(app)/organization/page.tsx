@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { requireUser } from "@/server/auth";
 import { getUserOrg } from "@/server/services/accounts";
 import { one } from "@/server/db";
-import { PageHeader, SectionTitle, Field } from "@/components/ui";
+import { PageHeader, SectionTitle, Field, ToolCard } from "@/components/ui";
 import { updateOrgProfileAction, uploadOrgLogoAction, removeOrgLogoAction, changeAdminPasswordAction } from "@/app/actions";
 
 export default async function OrganizationPage({ searchParams }: { searchParams: Promise<{ saved?: string; logo?: string; err?: string; pw?: string }> }) {
@@ -26,21 +26,10 @@ export default async function OrganizationPage({ searchParams }: { searchParams:
     <div className="max-w-4xl">
       <PageHeader title="Organisation profile" subtitle="Your institution's details, branding and letterhead" />
 
-      <a href="/organization/access" className="card p-4 mb-5 flex items-center justify-between gap-3 hover:border-[var(--brand)]" style={{ display: "flex" }}>
-        <div>
-          <div className="font-display font-semibold">Access &amp; permissions</div>
-          <div className="text-sm" style={{ color: "var(--muted)" }}>See everyone&apos;s rights and manage roles &amp; fine-grained permissions — by person or by department.</div>
-        </div>
-        <span className="btn btn-sm">Open →</span>
-      </a>
-
-      <a href="/organization/subscription" className="card p-4 mb-5 flex items-center justify-between gap-3 hover:border-[var(--brand)]" style={{ display: "flex" }}>
-        <div>
-          <div className="font-display font-semibold">Subscription &amp; renewals</div>
-          <div className="text-sm" style={{ color: "var(--muted)" }}>See your renewal countdown, request a 1/3/5-year renewal, and upload proof of payment.</div>
-        </div>
-        <span className="btn btn-sm">Open →</span>
-      </a>
+      <div className="grid sm:grid-cols-2 gap-3.5 mb-5">
+        <ToolCard href="/organization/access" icon="access" title="Access & permissions" desc="See everyone's rights and manage roles & fine-grained permissions — by person or by department." />
+        <ToolCard href="/organization/subscription" icon="calendar" title="Subscription & renewals" desc="See your renewal countdown, request a 1/3/5-year renewal, and upload proof of payment." />
+      </div>
       {sp.saved && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Profile saved.</div>}
       {sp.logo === "ok" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Logo updated — it now appears on all printouts.</div>}
       {sp.logo === "removed" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>Logo removed.</div>}

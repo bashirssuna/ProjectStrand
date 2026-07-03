@@ -2,7 +2,7 @@ import Link from "next/link";
 import { requireFinanceOrg } from "./_guard";
 import { one } from "@/server/db";
 import { institutionalStatements } from "@/server/services/ledger";
-import { PageHeader, SectionTitle, Stat, Empty } from "@/components/ui";
+import { PageHeader, SectionTitle, Stat, Empty, ToolCard } from "@/components/ui";
 import { money } from "@/lib/format";
 import { initLedgerAction } from "@/app/actions";
 
@@ -41,91 +41,28 @@ export default async function FinanceHome() {
       </div>
 
       <SectionTitle>Ledger tools</SectionTitle>
-      <div className="grid sm:grid-cols-3 gap-4">
-        <Link href="/finance/accounts" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Chart of accounts</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>The master list of accounts and the rule for posting project expenditures.</div>
-        </Link>
-        <Link href="/finance/journal" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">General journal</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Every posted entry, with manual journals and reversals.</div>
-        </Link>
-        <Link href="/finance/statements" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Financial statements</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Trial balance, income statement, balance sheet &amp; cash flow.</div>
-        </Link>
-        <Link href="/finance/funding" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Grant agreements</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Donor funding pipeline: committed amounts, expected tranches and income received.</div>
-        </Link>
-        <Link href="/finance/revenue" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Institutional revenue</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Overhead recovered per project &amp; other income, with a contribution pie chart.</div>
-        </Link>
-        <Link href="/finance/invoices" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Invoices &amp; income</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Raise invoices to funders; track receivables; print.</div>
-        </Link>
-        <Link href="/finance/receipts" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Receipts</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Record money received; settle invoices; print receipts.</div>
-        </Link>
-        <Link href="/finance/treasury" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Reserves &amp; investments</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Designated reserve funds and placed investments with maturity tracking.</div>
-        </Link>
-        <Link href="/finance/assets" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Asset register</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Fixed assets with straight-line depreciation posting.</div>
-        </Link>
-        <Link href="/finance/audits" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Audit engagements</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>External, donor & statutory audits with findings and remediation tracking.</div>
-        </Link>
-        <Link href="/finance/whistleblower" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Whistleblower reports</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Confidential reporting channel with anonymous intake and case handling.</div>
-        </Link>
-        <Link href="/finance/audit" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Audit &amp; compliance</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Control checks plus the append-only financial audit trail.</div>
-        </Link>
-        <Link href="/finance/vouchers" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Payment vouchers</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Record payments out; posts to the ledger and feeds reconciliation.</div>
-        </Link>
-        <Link href="/finance/payment-slips" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Payment slips</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Bulk or individual payments (airtime, data, transcription) on letterhead — approved &amp; e-signed by each payee.</div>
-        </Link>
-        <Link href="/finance/petty-cash" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Petty cash</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Imprest floats with disbursements, replenishment and cash-count reconciliation.</div>
-        </Link>
-        <Link href="/finance/cash-forecast" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Cash forecast</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Rolling cash-position projection with funding, maturities and planned flows.</div>
-        </Link>
-        <Link href="/finance/reconcile" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Bank reconciliation</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Match the bank statement against the ledger balance.</div>
-        </Link>
-        <Link href="/finance/currency" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Currency &amp; FX rates</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Set the base currency and exchange rates for conversion.</div>
-        </Link>
-        <Link href="/finance/fx-revaluation" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">FX revaluation</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Record foreign entries at the day&apos;s rate and post period-end FX gain/loss.</div>
-        </Link>
-        <Link href="/finance/years" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Financial years</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Define accounting periods and see spend &amp; disbursements per year.</div>
-        </Link>
-        <Link href="/subawards" className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-          <div className="font-display font-semibold">Sub-awards</div>
-          <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>Pass-through grants to partner organisations and their disbursements.</div>
-        </Link>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+        <ToolCard href="/finance/accounts" icon="list" title="Chart of accounts" desc="The master list of accounts and the rule for posting project expenditures." />
+        <ToolCard href="/finance/journal" icon="journal" title="General journal" desc="Every posted entry, with manual journals and reversals." />
+        <ToolCard href="/finance/statements" icon="statements" title="Financial statements" desc="Trial balance, income statement, balance sheet & cash flow." />
+        <ToolCard href="/finance/funding" icon="grant" title="Grant agreements" desc="Donor funding pipeline: committed amounts, expected tranches and income received." />
+        <ToolCard href="/finance/revenue" icon="revenue" title="Institutional revenue" desc="Overhead recovered per project & other income, with a contribution pie chart." />
+        <ToolCard href="/finance/invoices" icon="invoice" title="Invoices & income" desc="Raise invoices to funders; track receivables; print." />
+        <ToolCard href="/finance/receipts" icon="receipt" title="Receipts" desc="Record money received; settle invoices; print receipts." />
+        <ToolCard href="/finance/treasury" icon="reserves" title="Reserves & investments" desc="Designated reserve funds and placed investments with maturity tracking." />
+        <ToolCard href="/finance/assets" icon="asset" title="Asset register" desc="Fixed assets with straight-line depreciation posting." />
+        <ToolCard href="/finance/audits" icon="audit" title="Audit engagements" desc="External, donor & statutory audits with findings and remediation tracking." />
+        <ToolCard href="/finance/whistleblower" icon="whistle" title="Whistleblower reports" desc="Confidential reporting channel with anonymous intake and case handling." />
+        <ToolCard href="/finance/audit" icon="compliance" title="Audit & compliance" desc="Control checks plus the append-only financial audit trail." />
+        <ToolCard href="/finance/vouchers" icon="voucher" title="Payment vouchers" desc="Record payments out; posts to the ledger and feeds reconciliation." />
+        <ToolCard href="/finance/payment-slips" icon="slip" title="Payment slips" desc="Bulk or individual payments (airtime, data, transcription) on letterhead — approved & e-signed by each payee." />
+        <ToolCard href="/finance/petty-cash" icon="petty" title="Petty cash" desc="Imprest floats with disbursements, replenishment and cash-count reconciliation." />
+        <ToolCard href="/finance/cash-forecast" icon="forecast" title="Cash forecast" desc="Rolling cash-position projection with funding, maturities and planned flows." />
+        <ToolCard href="/finance/reconcile" icon="reconcile" title="Bank reconciliation" desc="Match the bank statement against the ledger balance." />
+        <ToolCard href="/finance/currency" icon="currency" title="Currency & FX rates" desc="Set the base currency and exchange rates for conversion." />
+        <ToolCard href="/finance/fx-revaluation" icon="fx" title="FX revaluation" desc="Record foreign entries at the day’s rate and post period-end FX gain/loss." />
+        <ToolCard href="/finance/years" icon="calendar" title="Financial years" desc="Define accounting periods and see spend & disbursements per year." />
+        <ToolCard href="/subawards" icon="subaward" title="Sub-awards" desc="Pass-through grants to partner organisations and their disbursements." />
       </div>
     </div>
   );

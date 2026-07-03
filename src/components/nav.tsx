@@ -2,13 +2,15 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/cn";
+import { Icon, type IconName } from "@/components/icons";
 
-export function NavLink({ href, children, exact = false }: { href: string; children: React.ReactNode; exact?: boolean }) {
+export function NavLink({ href, children, icon, exact = false }: { href: string; children: React.ReactNode; icon?: IconName; exact?: boolean }) {
   const pathname = usePathname();
   const active = exact ? pathname === href : pathname === href || pathname.startsWith(href + "/");
   return (
     <Link href={href} className={cn("navlink", active && "navlink-active")}>
-      {children}
+      {icon && <Icon name={icon} size={18} className="shrink-0" />}
+      <span className="truncate">{children}</span>
     </Link>
   );
 }

@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { requireHrOrg } from "./_guard";
 import { one } from "@/server/db";
-import { PageHeader, SectionTitle, Stat } from "@/components/ui";
+import { PageHeader, SectionTitle, Stat, ToolCard } from "@/components/ui";
+import type { IconName } from "@/components/icons";
 
 export default async function HrHome() {
   const { orgId, orgName } = await requireHrOrg();
@@ -22,24 +23,21 @@ export default async function HrHome() {
         </Link>
       </div>
       <SectionTitle>HR tools</SectionTitle>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          ["/hr/recruitment", "Recruitment", "Job openings, candidates, interviews & offers."],
-          ["/hr/appraisals", "Appraisals", "Review cycles, objectives, ratings & sign-off."],
-          ["/hr/relations", "Employee relations", "Grievances & disciplinary cases with audit trail."],
-          ["/hr/surveys", "Engagement surveys", "Anonymous staff satisfaction surveys & results."],
-          ["/hr/checklists", "Onboarding & exit", "Induction, clearance & handover checklists."],
-          ["/hr/employees", "Employees", "Records, contracts, salary & bank details."],
-          ["/hr/leave", "Leave", "Requests, approvals and balance tracking."],
-          ["/hr/timesheets", "Timesheets", "Log and approve hours, by project."],
-          ["/hr/payroll", "Payroll & compensation", "Pay components, the grant compensation model, runs & payslips."],
-          ["/hr/departments", "Departments", "Units staff are assigned to."],
-          ["/organization/access", "Access management", "Now under Organisation → manage roles & permissions by person or department."],
-        ].map(([href, t, d]) => (
-          <Link key={href} href={href} className="card p-4 hover:border-[var(--brand)]" style={{ display: "block" }}>
-            <div className="font-display font-semibold">{t}</div>
-            <div className="text-sm mt-1" style={{ color: "var(--muted)" }}>{d}</div>
-          </Link>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+        {([
+          ["/hr/recruitment", "id", "Recruitment", "Job openings, candidates, interviews & offers."],
+          ["/hr/appraisals", "audit", "Appraisals", "Review cycles, objectives, ratings & sign-off."],
+          ["/hr/relations", "collab", "Employee relations", "Grievances & disciplinary cases with audit trail."],
+          ["/hr/surveys", "revenue", "Engagement surveys", "Anonymous staff satisfaction surveys & results."],
+          ["/hr/checklists", "check", "Onboarding & exit", "Induction, clearance & handover checklists."],
+          ["/hr/employees", "hr", "Employees", "Records, contracts, salary & bank details."],
+          ["/hr/leave", "leave", "Leave", "Requests, approvals and balance tracking."],
+          ["/hr/timesheets", "clock", "Timesheets", "Log and approve hours, by project."],
+          ["/hr/payroll", "slip", "Payroll & compensation", "Pay components, the grant compensation model, runs & payslips."],
+          ["/hr/departments", "building", "Departments", "Units staff are assigned to."],
+          ["/organization/access", "access", "Access management", "Now under Organisation → manage roles & permissions by person or department."],
+        ] as [string, IconName, string, string][]).map(([href, icon, t, d]) => (
+          <ToolCard key={href} href={href} icon={icon} title={t} desc={d} />
         ))}
       </div>
     </div>

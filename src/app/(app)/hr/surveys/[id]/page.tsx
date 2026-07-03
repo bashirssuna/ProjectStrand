@@ -27,7 +27,7 @@ function DistBars({ dist, accent }: { dist: { label: string; count: number }[]; 
   );
 }
 
-export default async function SurveyDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ err?: string; added?: string }> }) {
+export default async function SurveyDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ err?: string; added?: string; sent?: string; failed?: string; skipped?: string; opened?: string }> }) {
   const { orgId, orgName } = await requireHrOrg();
   const { id } = await params;
   const sp = await searchParams;
@@ -46,6 +46,15 @@ export default async function SurveyDetailPage({ params, searchParams }: { param
     <div className="max-w-4xl">
       <PageHeader title={s.title} subtitle={`Engagement survey · ${orgName}`} actions={<><a href={`/print/survey-results/${s.id}`} target="_blank" className="btn btn-sm">Print results ↗</a><Link href="/hr/surveys" className="btn btn-sm">← Surveys</Link></>} />
       {sp.err === "prompt" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>A question prompt is required.</div>}
+      {sp.sent !== undefined && (
+        <div className="card p-3 mb-3 text-sm" style={{ color: Number(sp.failed) > 0 ? "var(--warn)" : "var(--ok)", borderColor: Number(sp.failed) > 0 ? "var(--warn)" : "var(--ok)" }}>
+          {sp.opened === "1" && "Survey opened. "}
+          Emailed {sp.sent} invitation{sp.sent === "1" ? "" : "s"}
+          {Number(sp.failed) > 0 ? `, ${sp.failed} failed to send` : ""}
+          {Number(sp.skipped) > 0 ? `, ${sp.skipped} recipient${sp.skipped === "1" ? " has" : "s have"} no email` : ""}.
+          {process.env.EMAIL_PROVIDER === "console" && " (Email provider is set to console — invitations are logged, not delivered. Configure SMTP/Resend to send for real.)"}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <StatusBadge status={s.status} />
@@ -69,7 +78,7 @@ export default async function SurveyDetailPage({ params, searchParams }: { param
           <Link href={publicPath} target="_blank" className="btn btn-sm ml-auto">Open survey ↗</Link>
         </div>
       ) : draft ? (
-        <div className="card p-3 mb-5 text-sm" style={{ color: "var(--muted)" }}>Add your questions, then set the status to <strong>Open</strong> to publish the staff link. {questions.length === 0 && "Add at least one question first."}</div>
+        <div className="card p-3 mb-5 text-sm" style={{ color: "var(--muted)" }}>Add your questions and target recipients below, then set the status to <strong>Open</strong> — this publishes the staff link and emails every targeted employee their unique survey link. {questions.length === 0 && "Add at least one question first."}</div>
       ) : (
         <div className="card p-3 mb-5 text-sm" style={{ color: "var(--muted)" }}>This survey is closed. Responses are final; results are below.</div>
       )}
@@ -118,7 +127,7 @@ export default async function SurveyDetailPage({ params, searchParams }: { param
       {sp.added && <div className="card p-3 my-2 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Added {sp.added} recipient{sp.added === "1" ? "" : "s"}.</div>}
       <p className="text-xs mt-1 mb-3" style={{ color: "var(--muted)" }}>
         Send the survey to specific staff — by department, project team, or named individuals. Each person gets a private link; {s.anonymous ? "their answers stay anonymous, only whether they've responded is tracked" : "responses may be linked to them"}.
-        The app can&apos;t send email itself — add recipients, then <strong>export the list</strong> or copy each link to send through your own email.
+        When you <strong>Open</strong> the survey (or click <strong>Email invitations</strong>), each targeted employee is emailed their unique link at the address on their staff record. You can also <strong>export the list</strong> for your own mail-merge.
       </p>
 
       {recStats.total > 0 && (
@@ -153,9 +162,9 @@ export default async function SurveyDetailPage({ params, searchParams }: { param
         {recipients.length === 0 ? <Empty title="No recipients yet" hint="Add staff above, or just share the open link when the survey is live." /> : (
           <>
             <div className="flex items-center gap-2 mb-2">
-              <form action={markSurveyRecipientsSentAction}><input type="hidden" name="surveyId" value={s.id} /><button className="btn btn-sm" type="submit">Mark all as sent</button></form>
+              <form action={markSurveyRecipientsSentAction}><input type="hidden" name="surveyId" value={s.id} /><button className="btn btn-sm btn-primary" type="submit">✉ Email invitations</button></form>
               <a href={`/api/survey-recipients/${s.id}`} className="btn btn-sm">Export links (CSV)</a>
-              <span className="text-xs" style={{ color: "var(--muted)" }}>{recipients.length} recipient{recipients.length === 1 ? "" : "s"}</span>
+              <span className="text-xs" style={{ color: "var(--muted)" }}>{recipients.length} recipient{recipients.length === 1 ? "" : "s"} · each gets a unique link at their email</span>
             </div>
             <div className="card overflow-x-auto">
               <table className="w-full text-sm">

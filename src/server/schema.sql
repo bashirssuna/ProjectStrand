@@ -2982,3 +2982,19 @@ CREATE TABLE IF NOT EXISTS study_monitoring (
   recorded_by_id text, recorded_by_name text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+
+-- ===================== Direct messaging (employee-to-employee chat) =====================
+-- Both parties are app_users within the same organisation. The people-directory
+-- for starting a chat is the active employee list, searchable by name or email.
+CREATE TABLE IF NOT EXISTS message (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  from_user_id text NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  to_user_id text NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  body text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  read_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_message_pair ON message(org_id, from_user_id, to_user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_message_inbox ON message(to_user_id, read_at);

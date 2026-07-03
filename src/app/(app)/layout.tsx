@@ -5,6 +5,7 @@ import { listProjectsForUser } from "@/server/services/projects";
 import { canCreateProjects } from "@/server/policy";
 import { getUserOrg } from "@/server/services/accounts";
 import { enabledModules } from "@/server/modules";
+import { resolveUserOrg, unreadMessageCount } from "@/server/services/messaging";
 import { q } from "@/server/db";
 import { NavLink } from "@/components/nav";
 import { Icon } from "@/components/icons";
@@ -27,6 +28,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const unread = await q<{ c: number }>(
     `SELECT COUNT(*)::int c FROM notification WHERE user_id=$1 AND read=false`, [user.id]
   );
+  const msgOrg = await resolveUserOrg(user.id);
+  const unreadMsgs = msgOrg ? await unreadMessageCount(msgOrg, user.id) : 0;
   const initials = user.name.split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase();
 
   return (
@@ -46,6 +49,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         {user.isStaff ? (
           <nav className="p-3 space-y-0.5">
             <NavLink href="/portal" icon="home">Portal home</NavLink>
+            <NavLink href="/messages" icon="message" badge={unreadMsgs}>Messages</NavLink>
             <NavLink href="/portal/timesheets" icon="clock">Timesheets</NavLink>
             <NavLink href="/portal/leave" icon="leave">Leave</NavLink>
             <NavLink href="/portal/requests" icon="procurement">Purchase requests</NavLink>
@@ -59,6 +63,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         ) : (
           <nav className="p-3 space-y-0.5 overflow-y-auto">
             <NavLink href="/dashboard" icon="dashboard">Dashboard</NavLink>
+            <NavLink href="/messages" icon="message" badge={unreadMsgs}>Messages</NavLink>
             <NavLink href="/projects" icon="projects">Projects</NavLink>
             {modules.has("research") && <NavLink href="/lab" icon="flask">Laboratory</NavLink>}
             {modules.has("research") && <NavLink href="/studies" icon="trial">Clinical trials</NavLink>}

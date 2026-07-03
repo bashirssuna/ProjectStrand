@@ -6873,6 +6873,11 @@ export async function setSurveyStatusAction(formData: FormData) {
              closed_at = CASE WHEN $2='closed' THEN now() ELSE NULL END
            WHERE id=$1 AND org_id=$3`, [sid, status, orgId]);
   await writeAudit({ orgId, userId, action: "status", entity: "survey", entityId: sid, after: { status } });
+  // Opening the survey emails every targeted recipient their unique link.
+  if (status === "open") {
+    const r = await sendSurveyInvites(orgId, sid);
+    redirect(`/hr/surveys/${sid}?opened=1&sent=${r.sent}&failed=${r.failed}`);
+  }
   redirect(`/hr/surveys/${sid}`);
 }
 export async function deleteSurveyAction(formData: FormData) {
@@ -6944,7 +6949,7 @@ export async function submitSurveyResponseAction(formData: FormData) {
 }
 
 /* ---- Survey targeted distribution ---- */
-import { employeesByDepartment, employeesByProject, employeesByIds } from "@/server/services/surveys";
+import { employeesByDepartment, employeesByProject, employeesByIds, sendSurveyInvites } from "@/server/services/surveys";
 
 export async function addSurveyRecipientsAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
@@ -6978,8 +6983,9 @@ export async function removeSurveyRecipientAction(formData: FormData) {
 export async function markSurveyRecipientsSentAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
   const sid = String(formData.get("surveyId") || "");
-  await q(`UPDATE survey_recipient SET sent=true, sent_at=COALESCE(sent_at, now()) WHERE survey_id=$1 AND org_id=$2 AND sent=false`, [sid, orgId]);
-  redirect(`/hr/surveys/${sid}`);
+  // Actually email each not-yet-sent recipient their unique survey link.
+  const r = await sendSurveyInvites(orgId, sid);
+  redirect(`/hr/surveys/${sid}?sent=${r.sent}&failed=${r.failed}&skipped=${r.skipped}`);
 }
 
 // PUBLIC — submit via a recipient's unique invite token. Marks the recipient as
@@ -7062,4 +7068,17 @@ export async function deleteExchangeRateAction(formData: FormData) {
   const rateId = _rstr(formData, "rateId");
   if (rateId) await q(`DELETE FROM exchange_rate WHERE id=$1 AND org_id=$2`, [rateId, orgId]);
   redirect("/finance/currency?deleted=1");
+}
+
+/* ---------------- Messaging (employee-to-employee chat) ---------------- */
+import { resolveUserOrg as _resolveUserOrg, sendMessage as _sendMessage } from "@/server/services/messaging";
+
+export async function sendMessageAction(formData: FormData) {
+  const user = await requireUser();
+  const to = String(formData.get("to") || "");
+  const body = String(formData.get("body") || "");
+  const orgId = await _resolveUserOrg(user.id);
+  if (!orgId || !to) redirect("/messages");
+  await _sendMessage(orgId, user.id, to, body);
+  redirect(`/messages?to=${encodeURIComponent(to)}`);
 }

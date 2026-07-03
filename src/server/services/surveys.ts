@@ -1,5 +1,8 @@
 import "server-only";
 import { q, one } from "@/server/db";
+import { sendEmail } from "@/server/email";
+
+const APP_URL = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || "http://localhost:3000";
 
 export const QUESTION_TYPES = ["scale", "rating", "single_choice", "yes_no", "text"] as const;
 export const SCALE_LABELS = ["Strongly disagree", "Disagree", "Neutral", "Agree", "Strongly agree"];
@@ -139,4 +142,40 @@ export async function employeesByIds(orgId: string, ids: string[]): Promise<Cand
   return q<Candidate>(
     `SELECT id AS "employeeId", (first_name || ' ' || last_name) AS name, email, department
      FROM employee WHERE org_id=$1 AND status <> 'terminated' AND id = ANY($2::text[]) ORDER BY first_name, last_name`, [orgId, ids]);
+}
+
+// ---- Emailing invitations to targeted recipients ----
+// Sends each not-yet-sent recipient (who has an email) their unique survey link,
+// and marks them as sent. Used when HR opens the survey and from "Email invitations".
+// No-op for recipients without an email (their invite link can still be shared/exported).
+export async function sendSurveyInvites(orgId: string, surveyId: string): Promise<{ sent: number; failed: number; skipped: number }> {
+  const survey = await one<{ title: string; intro: string | null; status: string; orgName: string }>(
+    `SELECT s.title, s.intro, s.status, o.name AS "orgName" FROM survey s JOIN organization o ON o.id=s.org_id
+     WHERE s.id=$1 AND s.org_id=$2`, [surveyId, orgId]);
+  if (!survey) return { sent: 0, failed: 0, skipped: 0 };
+
+  const recipients = await q<{ id: string; name: string | null; email: string | null; token: string }>(
+    `SELECT id, name, email, token FROM survey_recipient
+     WHERE survey_id=$1 AND org_id=$2 AND sent=false`, [surveyId, orgId]);
+
+  let sent = 0, failed = 0, skipped = 0;
+  for (const r of recipients) {
+    if (!r.email) { skipped += 1; continue; }
+    const link = `${APP_URL}/survey/r/${r.token}`;
+    const html =
+      `<p>Hi ${r.name ?? "there"},</p>` +
+      `<p>${survey.orgName} would like your input on <strong>${survey.title}</strong>.</p>` +
+      (survey.intro ? `<p>${survey.intro}</p>` : "") +
+      `<p><a href="${link}">Open the survey</a></p>` +
+      `<p>This link is unique to you. Your individual answers are kept confidential.</p>` +
+      `<p style="color:#78716c">— ${survey.orgName}</p>`;
+    const res = await sendEmail({ to: r.email, subject: `You're invited: ${survey.title}`, html });
+    if (res.status === "sent") {
+      await q(`UPDATE survey_recipient SET sent=true, sent_at=COALESCE(sent_at, now()) WHERE id=$1`, [r.id]);
+      sent += 1;
+    } else {
+      failed += 1;
+    }
+  }
+  return { sent, failed, skipped };
 }

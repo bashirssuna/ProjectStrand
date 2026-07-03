@@ -12,7 +12,7 @@ export type IconName =
   | "invoice" | "receipt" | "reserves" | "asset" | "audit" | "whistle"
   | "compliance" | "voucher" | "slip" | "petty" | "forecast" | "reconcile"
   | "currency" | "fx" | "calendar" | "arrow" | "plus" | "sun" | "moon"
-  | "search" | "download" | "check";
+  | "search" | "download" | "check" | "message";
 
 const PATHS: Record<IconName, ReactNode> = {
   dashboard: (<><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></>),
@@ -62,6 +62,7 @@ const PATHS: Record<IconName, ReactNode> = {
   search: (<><circle cx="11" cy="11" r="7" /><path d="m20 20-3.2-3.2" /></>),
   download: (<><path d="M12 3v11M8 10l4 4 4-4" /><path d="M5 20h14" /></>),
   check: (<path d="m5 12.5 4.5 4.5L19 7" />),
+  message: (<><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v9A1.5 1.5 0 0 1 18.5 16H9l-4 4v-4H5.5A1.5 1.5 0 0 1 4 14.5Z" /><path d="M8 9h8M8 12h5" /></>),
 };
 
 export function Icon({

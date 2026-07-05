@@ -97,12 +97,20 @@ export function parseDocument(docType: string, text: string, rows?: (string | nu
     if (bullet && !/\$|budget|total/i.test(bullet[1])) out.push({ kind: "activity", payload: { title: bullet[1].trim() }, confidence: 0.5 });
   }
 
-  // Budget lines: "Description .... 12,500" or "Item | qty | unit cost"
-  for (const l of lines) {
-    const m = l.match(/^(.+?)[\s.|]{2,}\$?\s*([\d,]+(?:\.\d+)?)\s*$/);
-    if (m && /[a-z]/i.test(m[1]) && !/^total/i.test(m[1])) {
-      const amount = parseFloat(m[2].replace(/,/g, ""));
-      if (amount >= 50) out.push({ kind: "budget_line", payload: { description: m[1].trim(), planned: amount }, confidence: 0.6 });
+  // Budget lines from NARRATIVE text ("Description .... 12,500" or "Item | qty | cost").
+  // ONLY when a spreadsheet grid did not already yield budget lines. For a .csv/.xlsx
+  // the structured parser above is authoritative; extractFile() also emits a
+  // space-joined text fallback of every row, so running this matcher over it would
+  // re-extract each line a second time — mangled (whole row → description) and with no
+  // section (→ Uncategorised). That double-extraction is the duplicate-lines bug.
+  const gotStructuredBudget = out.some((s) => s.kind === "budget_line");
+  if (!gotStructuredBudget) {
+    for (const l of lines) {
+      const m = l.match(/^(.+?)[\s.|]{2,}\$?\s*([\d,]+(?:\.\d+)?)\s*$/);
+      if (m && /[a-z]/i.test(m[1]) && !/^total/i.test(m[1])) {
+        const amount = parseFloat(m[2].replace(/,/g, ""));
+        if (amount >= 50) out.push({ kind: "budget_line", payload: { description: m[1].trim(), planned: amount }, confidence: 0.6 });
+      }
     }
   }
 

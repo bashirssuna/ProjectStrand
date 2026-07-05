@@ -6,7 +6,7 @@ import { StatusBadge, SectionTitle, Empty, Field, ProgressBar, progressTone } fr
 import { ACTIVITY_STATUS, label } from "@/lib/enums";
 import { fmtDate, dateInput } from "@/lib/format";
 
-type Row = GanttRow & { parentId: string | null; ownerName: string | null; ownerId: string | null };
+type Row = GanttRow & { parentId: string | null; ownerName: string | null; ownerId: string | null; completedAt: string | null };
 
 export default async function WorkplanPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -47,6 +47,7 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
   const rows = await q<Row>(
     `SELECT a.id, a.code, a.title, a.type, a.status, a.progress,
             a.start_date AS "startDate", a.end_date AS "endDate", a.parent_id AS "parentId",
+            a.completed_at AS "completedAt",
             u.name AS "ownerName", a.owner_id AS "ownerId"
      FROM activity a LEFT JOIN app_user u ON u.id = a.owner_id
      WHERE a.project_id=$1 ORDER BY a."order", a.created_at`, [id]
@@ -99,7 +100,13 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
                     </td>
                     <td className="td" style={{ color: r.ownerName ? undefined : "var(--muted)" }}>{r.ownerName ?? "Unassigned"}</td>
                     <td className="td whitespace-nowrap text-xs" style={{ color: "var(--muted)" }}>
-                      {fmtDate(r.startDate)} → {fmtDate(r.endDate)}
+                      <div>{fmtDate(r.startDate)} → {fmtDate(r.endDate)}</div>
+                      {r.completedAt && (
+                        <div style={{ color: r.endDate && new Date(r.completedAt) > new Date(r.endDate) ? "var(--warn)" : "var(--ok)" }}>
+                          ✓ Completed {fmtDate(r.completedAt)}
+                          {r.endDate && new Date(r.completedAt) > new Date(r.endDate) ? " · late" : ""}
+                        </div>
+                      )}
                     </td>
                     {canEdit ? (
                       <td className="td">

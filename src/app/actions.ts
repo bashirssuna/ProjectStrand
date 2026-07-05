@@ -219,7 +219,12 @@ export async function updateActivityAction(formData: FormData) {
   // marking done/not-started snaps progress so completion is reflected automatically
   if (status === "done") progress = 100;
   else if (status === "not_started") progress = 0;
-  await q(`UPDATE activity SET status=$2, progress=$3, updated_at=now() WHERE id=$1 AND project_id=$4`,
+  // Stamp the completion date when an activity is marked done (preserving the
+  // first completion if it's re-saved), and clear it if it moves out of "done".
+  // This lets the work plan be tracked against the SOW schedule.
+  await q(`UPDATE activity SET status=$2, progress=$3,
+             completed_at = CASE WHEN $2='done' THEN COALESCE(completed_at, now()) ELSE NULL END,
+             updated_at=now() WHERE id=$1 AND project_id=$4`,
     [activityId, status, Math.max(0, Math.min(100, progress)), projectId]);
   await recomputeRollups(projectId);
   await writeAudit({ userId: user.id, action: "update", entity: "activity", entityId: activityId, after: { status, progress } });
@@ -759,6 +764,17 @@ export async function updateSowSectionAction(formData: FormData) {
   await q(`UPDATE sow_section SET title=$2, content=$3 WHERE id=$1`,
     [sectionId, String(formData.get("title") || "Section"), String(formData.get("content") || "")]);
   await writeAudit({ userId: user.id, action: "update", entity: "sow_section", entityId: sectionId });
+  revalidatePath(`/projects/${projectId}/sow`);
+}
+
+export async function deleteSowSectionAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  await requirePermission(projectId, "project.edit");
+  const sectionId = String(formData.get("sectionId"));
+  await assertSowSectionInProject(sectionId, projectId);
+  await q(`DELETE FROM sow_section WHERE id=$1`, [sectionId]);
+  await writeAudit({ userId: user.id, action: "delete", entity: "sow_section", entityId: sectionId });
   revalidatePath(`/projects/${projectId}/sow`);
 }
 

@@ -1,6 +1,6 @@
 import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
-import { ensureSowAction, updateSowSectionAction, approveSowAction, uploadSowAction, saveAbstractAction, uploadDocumentAction } from "@/app/actions";
+import { ensureSowAction, updateSowSectionAction, deleteSowSectionAction, approveSowAction, uploadSowAction, saveAbstractAction, uploadDocumentAction } from "@/app/actions";
 import { SectionTitle, Empty, StatusBadge, Badge, Field } from "@/components/ui";
 import { fmtDate } from "@/lib/format";
 
@@ -125,7 +125,10 @@ export default async function SowPage({ params }: { params: Promise<{ id: string
                 {s.sourceRef === "import" && <Badge tone="info">imported</Badge>}
               </div>
               <textarea name="content" defaultValue={s.content} rows={4} className="textarea" placeholder="Write this section…" />
-              <div className="flex justify-end"><button className="btn btn-sm" type="submit">Save section</button></div>
+              <div className="flex justify-end gap-2">
+                <button className="btn btn-sm" type="submit" formAction={deleteSowSectionAction} style={{ color: "var(--danger)" }} title="Delete this section">Delete</button>
+                <button className="btn btn-sm" type="submit">Save section</button>
+              </div>
             </form>
           ) : (
             <div key={s.id} className="card p-4">

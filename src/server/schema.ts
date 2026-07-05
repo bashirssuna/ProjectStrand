@@ -190,9 +190,11 @@ CREATE TABLE IF NOT EXISTS activity (
   recurrence text,
   "order" integer NOT NULL DEFAULT 0,
   budget_line_id text,
+  completed_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE activity ADD COLUMN IF NOT EXISTS completed_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS task (
   id text PRIMARY KEY,

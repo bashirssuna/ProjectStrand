@@ -3,6 +3,7 @@ import { q, one } from "@/server/db";
 import { updateActivityAction, addActivityAction, uploadWorkplanAction, workplanFromBudgetAction, editActivityDetailsAction, deleteActivityAction, uploadActivityEvidenceAction, assignActivityLeadAction } from "@/app/actions";
 import { type GanttRow } from "@/components/gantt";
 import { StatusBadge, SectionTitle, Empty, Field, ProgressBar, progressTone } from "@/components/ui";
+import { CancelButton } from "@/components/cancel-button";
 import { ACTIVITY_STATUS, label } from "@/lib/enums";
 import { fmtDate, dateInput } from "@/lib/format";
 
@@ -147,7 +148,11 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
                                 <Field label="Start"><input type="date" name="startDate" defaultValue={dateInput(r.startDate)} className="input" /></Field>
                                 <Field label="End"><input type="date" name="endDate" defaultValue={dateInput(r.endDate)} className="input" /></Field>
                               </div>
-                              <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
+                              <Field label="Completion date"><input type="date" name="completedDate" defaultValue={dateInput(r.completedAt)} className="input" /></Field>
+                              <div className="flex gap-2">
+                                <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
+                                <CancelButton className="btn btn-sm">Cancel</CancelButton>
+                              </div>
                             </form>
                             {canAssign && (
                               <form action={assignActivityLeadAction} className="grid gap-2 mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>

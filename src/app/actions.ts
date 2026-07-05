@@ -250,9 +250,11 @@ export async function editActivityDetailsAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const activityId = String(formData.get("activityId"));
   await requirePermission(projectId, "project.edit");
-  await q(`UPDATE activity SET code=$3, title=$4, start_date=$5, end_date=$6, updated_at=now() WHERE id=$1 AND project_id=$2`,
+  // completion date can be set/edited here (e.g. filled in later, after the fact)
+  await q(`UPDATE activity SET code=$3, title=$4, start_date=$5, end_date=$6, completed_at=$7, updated_at=now() WHERE id=$1 AND project_id=$2`,
     [activityId, projectId, String(formData.get("code") || ""), String(formData.get("title") || "Untitled activity"),
-     String(formData.get("startDate") || "") || null, String(formData.get("endDate") || "") || null]);
+     String(formData.get("startDate") || "") || null, String(formData.get("endDate") || "") || null,
+     String(formData.get("completedDate") || "") || null]);
   await recomputeRollups(projectId);
   await writeAudit({ userId: user.id, action: "update", entity: "activity", entityId: activityId });
   revalidatePath(`/projects/${projectId}/workplan`);
@@ -2457,7 +2459,9 @@ export async function deleteReceiptAction(formData: FormData) {
   await q(`DELETE FROM receipt WHERE id=$1 AND org_id=$2`, [rid, orgId]);
   await writeAudit({ orgId, userId, action: "delete", entity: "receipt", entityId: r.number, before: { amount: r.amount } });
   revalidatePath(`/finance/statements`);
-  redirect(`/finance/receipts?deleted=${r.number}`);
+  revalidatePath(`/finance/revenue`);
+  const returnTo = String(formData.get("returnTo") || "");
+  redirect(returnTo ? `${returnTo}?deleted=${r.number}` : `/finance/receipts?deleted=${r.number}`);
 }
 
 // ---- Fixed assets ----

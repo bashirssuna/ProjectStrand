@@ -1,8 +1,10 @@
 import Link from "next/link";
 import { requireFinanceOrg } from "../_guard";
 import { q, one } from "@/server/db";
+import { deleteReceiptAction } from "@/app/actions";
 import { PageHeader, SectionTitle, Stat, Empty, Badge } from "@/components/ui";
 import { money, fmtDate, pct } from "@/lib/format";
+import { label } from "@/lib/enums";
 
 // A muted, distinct palette for the pie slices (bronze/gold family + complements).
 const PALETTE = ["#9a6a2f", "#c79a4b", "#5b8c7b", "#7b6ca8", "#b56b6b", "#6b8cb5", "#8ca86b", "#a8856b", "#6ba8a0", "#a86b95", "#7d8a99", "#caa46a"];
@@ -16,8 +18,9 @@ function slicePath(cx: number, cy: number, r: number, a0: number, a1: number): s
   return `M ${cx} ${cy} L ${x0.toFixed(2)} ${y0.toFixed(2)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)} Z`;
 }
 
-export default async function InstitutionalRevenuePage() {
+export default async function InstitutionalRevenuePage({ searchParams }: { searchParams: Promise<{ deleted?: string }> }) {
   const { orgId, orgName } = await requireFinanceOrg();
+  const sp = await searchParams;
   const ccy = (await one<{ ccy: string }>(`SELECT COALESCE(display_currency, base_currency, 'USD') AS ccy FROM organization WHERE id=$1`, [orgId]))?.ccy ?? "USD";
 
   // Indirect-cost recovery per project = what each project has spent on its
@@ -37,6 +40,12 @@ export default async function InstitutionalRevenuePage() {
   // Other institutional income = money received that is not tied to a specific grant
   // (service income, donations, interest…), recorded as non-project receipts.
   const otherIncome = (await one<{ t: number }>(`SELECT COALESCE(SUM(amount),0)::float t FROM receipt WHERE org_id=$1 AND project_id IS NULL`, [orgId]))?.t ?? 0;
+  // The individual non-project receipts that make up "Other income" — shown so it
+  // is clear where the money came from, and so each can be deleted if entered in error.
+  const otherReceipts = await q<{ id: string; number: string; receiptDate: string; amount: number; currency: string; method: string; reference: string | null; note: string | null; createdByName: string | null }>(
+    `SELECT id, number, receipt_date AS "receiptDate", amount::float AS amount, currency, method, reference, note, created_by_name AS "createdByName"
+     FROM receipt WHERE org_id=$1 AND project_id IS NULL ORDER BY receipt_date DESC, created_at DESC`, [orgId]
+  );
 
   const idcTotal = idcRows.reduce((s, r) => s + r.idc, 0);
   const totalRevenue = idcTotal + otherIncome;
@@ -75,6 +84,7 @@ export default async function InstitutionalRevenuePage() {
   return (
     <div>
       <PageHeader title="Institutional revenue" subtitle={`Indirect-cost recovery and other income for ${orgName}`} actions={<Link href="/finance" className="btn btn-sm">← Finance</Link>} />
+      {sp.deleted && <div className="card p-3 mb-4 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Receipt {sp.deleted} deleted and its ledger entry reversed.</div>}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
         <Stat label="Total revenue" value={money(totalRevenue, ccy)} sub="recovery + other income" />
@@ -125,6 +135,52 @@ export default async function InstitutionalRevenuePage() {
               </table>
             </div>
           </div>
+        </div>
+      )}
+
+      <SectionTitle>Other income (non-project)</SectionTitle>
+      <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
+        Income received that isn&apos;t tied to a specific grant — service fees, donations, interest, etc. Each row is a receipt recorded with no project. Record these from <Link href="/finance/receipts" className="hover:underline" style={{ color: "var(--brand)" }}>Receipts</Link> (leave the project blank).
+      </p>
+      {otherReceipts.length === 0 ? (
+        <Empty title="No other income recorded" hint="When you record a receipt with no project, it appears here and in the revenue pool above." />
+      ) : (
+        <div className="card overflow-x-auto mb-7">
+          <table className="w-full text-sm">
+            <thead><tr>
+              <th className="th text-left">Receipt</th><th className="th text-left">Date</th>
+              <th className="th text-left">Received from / reference</th><th className="th text-left">Method</th>
+              <th className="th text-right">Amount</th><th className="th" />
+            </tr></thead>
+            <tbody>
+              {otherReceipts.map((rc) => (
+                <tr key={rc.id}>
+                  <td className="td font-mono text-xs">{rc.number}</td>
+                  <td className="td whitespace-nowrap">{fmtDate(rc.receiptDate)}</td>
+                  <td className="td">
+                    {rc.reference || rc.note || <span style={{ color: "var(--muted)" }}>—</span>}
+                    {rc.createdByName && <span className="text-xs" style={{ color: "var(--muted)" }}> · recorded by {rc.createdByName}</span>}
+                  </td>
+                  <td className="td">{label(rc.method)}</td>
+                  <td className="td text-right tabular-nums font-medium">{money(rc.amount, rc.currency)}</td>
+                  <td className="td text-right">
+                    <form action={deleteReceiptAction}>
+                      <input type="hidden" name="receiptId" value={rc.id} />
+                      <input type="hidden" name="returnTo" value="/finance/revenue" />
+                      <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)" }} title="Delete this receipt and reverse its ledger entry">Delete</button>
+                    </form>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={{ borderTop: "2px solid var(--border)" }}>
+                <td className="td font-semibold" colSpan={4}>Total other income</td>
+                <td className="td text-right font-semibold tabular-nums">{money(otherIncome, ccy)}</td>
+                <td className="td" />
+              </tr>
+            </tfoot>
+          </table>
         </div>
       )}
 

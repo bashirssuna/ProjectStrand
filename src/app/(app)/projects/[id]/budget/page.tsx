@@ -4,6 +4,7 @@ import { one, q } from "@/server/db";
 import { budgetLineRollups, budgetSummary, STANDARD_BUDGET_CATEGORIES, budgetApprovalHistory, budgetReallocations, type LineRollup } from "@/server/services/budget";
 import { addBudgetLineAction, convertBudgetCurrencyAction, updateBudgetLineAction, deleteBudgetLineAction, clearBudgetLinesAction, setupBudgetSectionsAction, submitBudgetAction, approveBudgetAction, rejectBudgetAction, reopenBudgetAction, reallocateBudgetAction } from "@/app/actions";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { CancelButton } from "@/components/cancel-button";
 import { Stat, SectionTitle, Empty, ProgressBar, Field, Badge, StatusBadge } from "@/components/ui";
 import { money, pct, num, fmtDate, fmtDateTime } from "@/lib/format";
 import { label } from "@/lib/enums";
@@ -42,21 +43,37 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
   const revsByLine = new Map<string, typeof revs>();
   for (const r of revs) { const arr = revsByLine.get(r.budgetLineId) ?? []; arr.push(r); revsByLine.set(r.budgetLineId, arr); }
 
-  // Order sections by the standard template order, custom sections after.
-  const order = STANDARD_BUDGET_CATEGORIES.map((x) => x.name.toLowerCase());
-  const sortedCats = [...cats].sort((a, b) => (order.indexOf(a.name.toLowerCase()) + 1 || 999) - (order.indexOf(b.name.toLowerCase()) + 1 || 999));
   const byCat = new Map<string | null, LineRollup[]>();
   for (const l of lines) { const k = l.categoryId ?? null; const arr = byCat.get(k) ?? []; arr.push(l); byCat.set(k, arr); }
   const uncategorized = byCat.get(null) ?? [];
+  const hasLines = (catId: string) => (byCat.get(catId)?.length ?? 0) > 0;
+
+  // Section order + hygiene:
+  //  • standard template order first, custom sections after, and every INDIRECT
+  //    category always LAST (indirect costs come after all direct costs);
+  //  • empty, non-standard categories are hidden — these are usually leftover
+  //    near-duplicates (e.g. "Personnel Costs" vs the standard "Personnel / Per
+  //    Diem"). Standard sections always show, and any category with lines shows.
+  const stdOrder = STANDARD_BUDGET_CATEGORIES.map((x) => x.name.toLowerCase());
+  const stdSet = new Set(stdOrder);
+  const isIndirectCat = (cat: { name: string; costType: string }) => cat.costType === "indirect" || /indirect|overhead/i.test(cat.name);
+  const catSortKey = (cat: { name: string; costType: string }) => {
+    const base = stdOrder.indexOf(cat.name.toLowerCase());
+    return (isIndirectCat(cat) ? 1000 : 0) + (base >= 0 ? base : 900);
+  };
+  const visibleCats = [...cats]
+    .filter((cat) => stdSet.has(cat.name.toLowerCase()) || hasLines(cat.id))
+    .sort((a, b) => catSortKey(a) - catSortKey(b));
+
   const sectionSum = (ls: LineRollup[]) => ({
     planned: ls.reduce((s, l) => s + l.planned, 0), committed: ls.reduce((s, l) => s + l.committed, 0),
     actual: ls.reduce((s, l) => s + l.actual, 0), remaining: ls.reduce((s, l) => s + l.remaining, 0),
   });
   const colCount = canEdit ? 11 : 10;
 
-  // sections to render: every defined category (even if empty), then Uncategorized.
+  // sections to render: visible categories (indirect last), then Uncategorised.
   const sections: { id: string | null; name: string; costType: string; lines: LineRollup[] }[] = [
-    ...sortedCats.map((cat) => ({ id: cat.id, name: cat.name, costType: cat.costType, lines: byCat.get(cat.id) ?? [] })),
+    ...visibleCats.map((cat) => ({ id: cat.id, name: cat.name, costType: cat.costType, lines: byCat.get(cat.id) ?? [] })),
     ...(uncategorized.length ? [{ id: null, name: "Uncategorised", costType: "direct", lines: uncategorized }] : []),
   ];
 
@@ -70,7 +87,7 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
           <input type="hidden" name="lineId" value={l.id} />
           <Field label="Section"><select name="categoryId" defaultValue={l.categoryId ?? ""} className="select">
             <option value="">— Uncategorised —</option>
-            {cats.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+            {visibleCats.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
           </select></Field>
           <div className="grid grid-cols-2 gap-2">
             <Field label="Code"><input name="code" defaultValue={l.code} className="input" /></Field>
@@ -83,7 +100,10 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
             <Field label="× Days / times"><input name="frequency" type="number" step="any" defaultValue={l.frequency} className="input" /></Field>
           </div>
           <Field label="Justification"><textarea name="justification" rows={2} defaultValue={l.justification ?? ""} className="textarea" placeholder="Why this cost is needed" /></Field>
-          <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
+          <div className="flex gap-2">
+            <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
+            <CancelButton className="btn btn-sm">Cancel</CancelButton>
+          </div>
         </form>
         <form action={deleteBudgetLineAction} className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
           <input type="hidden" name="projectId" value={id} />
@@ -283,9 +303,9 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
             <input type="hidden" name="projectId" value={id} />
             {bud && <input type="hidden" name="budgetId" value={bud.id} />}
             <div className="sm:col-span-2"><Field label="Section">
-              <select name="categoryId" className="select w-full" defaultValue={cats[0]?.id ?? ""}>
+              <select name="categoryId" className="select w-full" defaultValue={visibleCats[0]?.id ?? ""}>
                 <option value="">— Uncategorised —</option>
-                {cats.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+                {visibleCats.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
               </select>
             </Field></div>
             <Field label="Code"><input name="code" className="input" placeholder="BL-011" /></Field>

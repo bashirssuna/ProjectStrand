@@ -1,7 +1,7 @@
 import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
 import { updateActivityAction, addActivityAction, uploadWorkplanAction, workplanFromBudgetAction, editActivityDetailsAction, deleteActivityAction, uploadActivityEvidenceAction, assignActivityLeadAction } from "@/app/actions";
-import { Gantt, type GanttRow } from "@/components/gantt";
+import { type GanttRow } from "@/components/gantt";
 import { StatusBadge, SectionTitle, Empty, Field, ProgressBar, progressTone } from "@/components/ui";
 import { ACTIVITY_STATUS, label } from "@/lib/enums";
 import { fmtDate, dateInput } from "@/lib/format";
@@ -70,11 +70,6 @@ export default async function WorkplanPage({ params }: { params: Promise<{ id: s
 
   return (
     <div className="space-y-7">
-      <div>
-        <SectionTitle>Timeline</SectionTitle>
-        <Gantt rows={rows} />
-      </div>
-
       <div>
         <SectionTitle>Activities</SectionTitle>
         {rows.length === 0 ? (

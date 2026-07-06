@@ -60,3 +60,22 @@ export function dateInput(d: Date | string | null | undefined): string {
   if (isNaN(date.getTime())) return "";
   return date.toISOString().slice(0, 10);
 }
+
+// Whole working days (Mon–Fri) elapsed between a past date and now. Used to gate
+// approval reminders (allowed once something has been waiting ≥ 5 working days).
+export function workingDaysSince(d: Date | string | null | undefined): number {
+  if (!d) return 0;
+  const start = d instanceof Date ? d : new Date(d);
+  if (isNaN(start.getTime())) return 0;
+  const now = new Date();
+  if (start >= now) return 0;
+  let count = 0;
+  const cur = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  while (cur < end) {
+    cur.setDate(cur.getDate() + 1);
+    const day = cur.getDay();
+    if (day !== 0 && day !== 6) count++;
+  }
+  return count;
+}

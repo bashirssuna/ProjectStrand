@@ -3019,8 +3019,11 @@ CREATE TABLE IF NOT EXISTS refund_request (
   finance_decision text, finance_by_id text, finance_by_name text, finance_at timestamptz, finance_comment text,
   paid_at timestamptz, paid_by_id text, paid_by_name text, payment_ref text,
   acknowledged_at timestamptz, acknowledged_note text,
+  last_reminded_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE refund_request ADD COLUMN IF NOT EXISTS last_reminded_at timestamptz;
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS last_reminded_at timestamptz;
 CREATE TABLE IF NOT EXISTS refund_file (
   id text PRIMARY KEY,
   refund_id text NOT NULL REFERENCES refund_request(id) ON DELETE CASCADE,

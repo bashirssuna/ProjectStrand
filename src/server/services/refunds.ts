@@ -11,6 +11,7 @@ export type RefundRow = {
   financeDecision: string | null; financeByName: string | null; financeAt: string | null; financeComment: string | null;
   paidAt: string | null; paidByName: string | null; paymentRef: string | null;
   acknowledgedAt: string | null; acknowledgedNote: string | null;
+  lastRemindedAt: string | null;
   createdAt: string;
 };
 
@@ -22,7 +23,7 @@ const COLS = `r.id, r.number, r.amount, r.reason, r.status,
   r.finance_decision AS "financeDecision", r.finance_by_name AS "financeByName", r.finance_at AS "financeAt", r.finance_comment AS "financeComment",
   r.paid_at AS "paidAt", r.paid_by_name AS "paidByName", r.payment_ref AS "paymentRef",
   r.acknowledged_at AS "acknowledgedAt", r.acknowledged_note AS "acknowledgedNote",
-  r.created_at AS "createdAt"`;
+  r.last_reminded_at AS "lastRemindedAt", r.created_at AS "createdAt"`;
 
 const FROM = `FROM refund_request r
   LEFT JOIN expenditure e ON e.id = r.expenditure_id

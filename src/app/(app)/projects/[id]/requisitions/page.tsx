@@ -2,12 +2,13 @@ import Link from "next/link";
 import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
 import { budgetLineRollups } from "@/server/services/budget";
-import { outstandingAdvances } from "@/server/services/requisitions";
+import { outstandingAdvances, myPendingRequisitions, requisitionTrail, type ApprovalStep } from "@/server/services/requisitions";
 import { listRefunds, refundableExpenditures } from "@/server/services/refunds";
-import { createRequisitionAction, createRefundRequestAction, decideRefundAction, financeDecideRefundAction, payRefundAction, acknowledgeRefundAction } from "@/app/actions";
+import { createRequisitionAction, createRefundRequestAction, editRefundRequestAction, decideRefundAction, financeDecideRefundAction, payRefundAction, acknowledgeRefundAction, sendRefundReminderAction, sendRequisitionReminderAction } from "@/app/actions";
+import { CancelButton } from "@/components/cancel-button";
 import { SectionTitle, Empty, StatusBadge, Field, Badge } from "@/components/ui";
 import { label } from "@/lib/enums";
-import { money, fmtDate, fmtDateTime } from "@/lib/format";
+import { money, fmtDate, fmtDateTime, workingDaysSince } from "@/lib/format";
 import { blockStaff } from "../_staffblock";
 
 export default async function RequisitionsPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ rfd?: string }> }) {
@@ -31,12 +32,19 @@ export default async function RequisitionsPage({ params, searchParams }: { param
   const filesByRefund = new Map<string, { id: string; kind: string; name: string }[]>();
   for (const f of refundFileRows) { const a = filesByRefund.get(f.refundId) ?? []; a.push(f); filesByRefund.set(f.refundId, a); }
   const RFD_MSG: Record<string, string> = {
-    created: "Refund requested — sent for approval.", decided: "Decision recorded.", paid: "Refund marked paid.",
+    created: "Refund requested — sent for approval.", edited: "Request updated.", decided: "Decision recorded.", paid: "Refund marked paid.",
     acknowledged: "Receipt acknowledged. Thank you.", needevidence: "Please attach evidence for the refund.",
-    needreason: "Please give a reason for the refund.", needproof: "Please attach proof of payment.",
-    selfapprove: "You can't approve your own refund request.", badstate: "That refund isn't at a stage where this action applies.",
-    badexp: "Pick a valid expenditure to refund against.",
+    needreason: "Please give a reason for the refund.", needamount: "Enter an amount greater than zero.", needproof: "Please attach proof of payment.",
+    selfapprove: "You can't approve your own refund request.", badstate: "That request isn't at a stage where this action applies.",
+    badexp: "Pick a valid expenditure to refund against.", reminded: "Reminder sent to the approver by email and in-app.",
+    tooearly: "You can send a reminder once it has been waiting 5 working days.", remindsoon: "A reminder was already sent today — try again tomorrow.",
   };
+
+  // My own requests still awaiting a decision (for the "Your pending requests" section).
+  const myPendingRefunds = refunds.filter((r) => r.requestedById === meId && ["submitted", "pi_approved"].includes(r.status));
+  const myReqs = await myPendingRequisitions(id, meId);
+  const reqTrails = new Map<string, ApprovalStep[]>();
+  for (const rq of myReqs) reqTrails.set(rq.id, await requisitionTrail(rq.id));
 
   const reqs = await q<{ id: string; number: string; title: string; amount: number; status: string; neededBy: string | null; requester: string | null }>(
     `SELECT r.id, r.number, r.title, r.amount, r.status, r.needed_by AS "neededBy", u.name AS requester
@@ -53,6 +61,79 @@ export default async function RequisitionsPage({ params, searchParams }: { param
 
   return (
     <div className="space-y-7">
+      {/* ---------------- Your pending requests ---------------- */}
+      {(myPendingRefunds.length > 0 || myReqs.length > 0) && (
+        <div>
+          <SectionTitle>Your pending requests</SectionTitle>
+          <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
+            Requests you&apos;ve submitted that are still awaiting a decision — who has approved, who hasn&apos;t yet, and when. After 5 working days you can send a reminder.
+          </p>
+          <div className="space-y-3">
+            {myReqs.map((rq) => {
+              const trail = reqTrails.get(rq.id) ?? [];
+              const wd = workingDaysSince(rq.updatedAt);
+              const canRemind = wd >= 5;
+              return (
+                <div key={rq.id} className="card p-4">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <Badge tone="muted">Requisition</Badge>
+                    <Link href={`/projects/${id}/requisitions/${rq.id}`} className="font-mono text-xs hover:underline" style={{ color: "var(--brand)" }}>{rq.number}</Link>
+                    <span className="text-sm">{rq.title}</span>
+                    <StatusBadge status={rq.status} />
+                    <span className="font-medium">{money(rq.amount, c)}</span>
+                    <span className="ml-auto text-xs" style={{ color: "var(--muted)" }}>Submitted {fmtDateTime(rq.createdAt)} · waiting {wd} working day{wd === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="text-xs space-y-0.5 mt-1" style={{ color: "var(--muted)" }}>
+                    {trail.map((s) => (
+                      <div key={s.step}>
+                        {label(s.role)}: {s.decision === "approved" ? <span style={{ color: "var(--ok)" }}>✓ approved by {s.approverName ?? "—"} · {s.decidedAt ? fmtDateTime(s.decidedAt) : ""}</span>
+                          : s.decision === "rejected" ? <span style={{ color: "var(--danger)" }}>✕ rejected · {s.decidedAt ? fmtDateTime(s.decidedAt) : ""}</span>
+                          : <span>⏳ awaiting decision</span>}
+                      </div>
+                    ))}
+                    {trail.length === 0 && <div>Awaiting the first approval step.</div>}
+                  </div>
+                  <div className="mt-2">
+                    {canRemind ? (
+                      <form action={sendRequisitionReminderAction}><input type="hidden" name="projectId" value={id} /><input type="hidden" name="reqId" value={rq.id} />
+                        <button className="btn btn-sm" type="submit">🔔 Send reminder{rq.lastRemindedAt ? ` (last ${fmtDate(rq.lastRemindedAt)})` : ""}</button>
+                      </form>
+                    ) : <span className="text-xs" style={{ color: "var(--muted)" }}>Reminder available after 5 working days ({5 - wd} to go).</span>}
+                  </div>
+                </div>
+              );
+            })}
+            {myPendingRefunds.map((r) => {
+              const waitingSince = r.status === "pi_approved" ? (r.piAt ?? r.createdAt) : r.createdAt;
+              const wd = workingDaysSince(waitingSince);
+              const canRemind = wd >= 5;
+              return (
+                <div key={r.id} className="card p-4">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <Badge tone="muted">Refund</Badge>
+                    <span className="font-mono text-xs">{r.number}</span>
+                    <span className="text-sm">{r.reason}</span>
+                    <StatusBadge status={r.status} />
+                    <span className="font-medium">{money(r.amount, c)}</span>
+                    <span className="ml-auto text-xs" style={{ color: "var(--muted)" }}>Submitted {fmtDateTime(r.createdAt)} · waiting {wd} working day{wd === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="text-xs space-y-0.5 mt-1" style={{ color: "var(--muted)" }}>
+                    {r.requiresPi && <div>PI approval: {r.piDecision === "approved" ? <span style={{ color: "var(--ok)" }}>✓ by {r.piByName} · {r.piAt ? fmtDateTime(r.piAt) : ""}</span> : <span>⏳ awaiting</span>}</div>}
+                    <div>Finance approval: {r.financeDecision === "approved" ? <span style={{ color: "var(--ok)" }}>✓ by {r.financeByName} · {r.financeAt ? fmtDateTime(r.financeAt) : ""}</span> : <span>⏳ {r.requiresPi && r.status === "submitted" ? "after PI approves" : "awaiting"}</span>}</div>
+                  </div>
+                  <div className="mt-2">
+                    {canRemind ? (
+                      <form action={sendRefundReminderAction}><input type="hidden" name="projectId" value={id} /><input type="hidden" name="refundId" value={r.id} />
+                        <button className="btn btn-sm" type="submit">🔔 Send reminder{r.lastRemindedAt ? ` (last ${fmtDate(r.lastRemindedAt)})` : ""}</button>
+                      </form>
+                    ) : <span className="text-xs" style={{ color: "var(--muted)" }}>Reminder available after 5 working days ({5 - wd} to go).</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {advances.length > 0 && (
         <div>
           <SectionTitle>Advances awaiting accountability</SectionTitle>
@@ -146,6 +227,7 @@ export default async function RequisitionsPage({ params, searchParams }: { param
               const canFinAct = isFinance && !isRequester && r.status === (r.requiresPi ? "pi_approved" : "submitted");
               const canPay = isFinance && r.status === "approved";
               const canAck = isRequester && r.status === "paid";
+              const canEditRefund = (isRequester || isFinance) && ["submitted", "pi_approved"].includes(r.status);
               return (
                 <div key={r.id} className="card p-4">
                   <div className="flex flex-wrap items-center gap-2 mb-2">
@@ -165,6 +247,28 @@ export default async function RequisitionsPage({ params, searchParams }: { param
                     {r.paidAt && <div>Paid by {r.paidByName} · {fmtDateTime(r.paidAt)}{r.paymentRef ? ` · ref ${r.paymentRef}` : ""}{proof.map((f) => <a key={f.id} href={`/api/refund-files/${f.id}`} target="_blank" className="hover:underline ml-1" style={{ color: "var(--brand)" }}>📎 proof</a>)}</div>}
                     {r.acknowledgedAt && <div style={{ color: "var(--ok)" }}>✓ Acknowledged by requester · {fmtDateTime(r.acknowledgedAt)}{r.acknowledgedNote ? ` — “${r.acknowledgedNote}”` : ""}</div>}
                   </div>
+
+                  {canEditRefund && (
+                    <details className="editor inline-block mt-1">
+                      <summary className="btn btn-sm inline-block">Edit</summary>
+                      <div className="editor-panel card p-4 text-left">
+                        <div className="font-medium mb-3">Edit request</div>
+                        <form action={editRefundRequestAction} className="grid gap-2">
+                          <input type="hidden" name="projectId" value={id} /><input type="hidden" name="refundId" value={r.id} />
+                          <Field label="Against expenditure (optional)">
+                            <select name="expenditureId" defaultValue={r.expenditureId ?? ""} className="select">
+                              <option value="">— none (standalone reimbursement) —</option>
+                              {refundExps.map((e) => <option key={e.id} value={e.id}>{(e.reference || e.payee || "expenditure")} — {money(e.amount, c)}</option>)}
+                            </select>
+                          </Field>
+                          <Field label="Amount"><input type="number" step="0.01" name="amount" defaultValue={r.amount} className="input" /></Field>
+                          <Field label="Reason"><textarea name="reason" defaultValue={r.reason ?? ""} rows={2} className="textarea" /></Field>
+                          <Field label="Add more evidence (optional)"><input type="file" name="evidence" className="input" /></Field>
+                          <div className="flex gap-2"><button className="btn btn-primary btn-sm" type="submit">Save changes</button><CancelButton className="btn btn-sm">Cancel</CancelButton></div>
+                        </form>
+                      </div>
+                    </details>
+                  )}
 
                   {canPiAct && (
                     <form action={decideRefundAction} className="flex flex-wrap items-end gap-2 pt-2 mt-1" style={{ borderTop: "1px solid var(--border)" }}>
@@ -205,25 +309,25 @@ export default async function RequisitionsPage({ params, searchParams }: { param
           </div>
         )}
 
-        {canRequestRefund && (refundExps.length > 0 ? (
+        {canRequestRefund && (
           <div className="mt-4">
             <SectionTitle>Request a refund / reimbursement</SectionTitle>
+            <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>Link it to spend recorded in Spending, or raise a standalone reimbursement (no expenditure) — either way, attach proof.</p>
             <form action={createRefundRequestAction} className="card p-4 grid sm:grid-cols-2 gap-4">
               <input type="hidden" name="projectId" value={id} />
-              <Field label="Against expenditure (from Spending)">
-                <select name="expenditureId" required className="select">
+              <Field label="Against expenditure (optional)">
+                <select name="expenditureId" className="select">
+                  <option value="">— none (standalone reimbursement) —</option>
                   {refundExps.map((e) => <option key={e.id} value={e.id}>{(e.reference || e.payee || "expenditure")} — {money(e.amount, c)}{e.lineCode ? ` (${e.lineCode})` : ""} · {fmtDate(e.date)}</option>)}
                 </select>
               </Field>
-              <Field label="Amount to refund"><input type="number" step="0.01" name="amount" className="input" placeholder="defaults to the expenditure amount" /></Field>
+              <Field label="Amount to refund"><input type="number" step="0.01" name="amount" className="input" placeholder="required if no expenditure is linked" /></Field>
               <div className="sm:col-span-2"><Field label="Reason (required)"><textarea name="reason" required rows={2} className="textarea" placeholder="What is this refund for?" /></Field></div>
               <div className="sm:col-span-2"><Field label="Evidence (required — receipt, invoice, bank slip…)"><input type="file" name="evidence" required className="input" /></Field></div>
               <div className="sm:col-span-2 flex justify-end"><button className="btn btn-primary" type="submit">Request refund</button></div>
             </form>
           </div>
-        ) : (
-          <p className="text-xs mt-3" style={{ color: "var(--muted)" }}>No recorded spend yet to refund against — record expenditure in <Link href={`/projects/${id}/spending`} className="hover:underline" style={{ color: "var(--brand)" }}>Spending</Link> first.</p>
-        ))}
+        )}
       </div>
 
       {canCreate ? (

@@ -536,16 +536,21 @@ export async function deleteExpenditureAction(formData: FormData) {
 
 /* ---------------- Refunds / reimbursements ---------------- */
 import { nextRefundNumber } from "@/server/services/refunds";
+import { workingDaysSince } from "@/lib/format";
 
 const refundIsPi = (a: { isOrgAdmin: boolean; role: string | null }) => a.isOrgAdmin || a.role === "pi" || a.role === "co_pi";
 const refundIsFinance = (a: { isOrgAdmin: boolean; role: string | null }) => a.isOrgAdmin || a.role === "finance_admin";
 
-async function notifyRefundApprovers(projectId: string, step: "pi" | "finance", number: string, amount: number, orgId: string) {
+async function notifyRefundApprovers(projectId: string, step: "pi" | "finance", number: string, amount: number, orgId: string, reminder = false) {
   const roles = step === "pi" ? ["pi", "co_pi"] : ["finance_admin"];
-  const members = await q<{ userId: string }>(`SELECT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role = ANY($2::text[])`, [projectId, roles]);
-  for (const m of members) {
-    await notify({ orgId, userId: m.userId, type: "approval_needed", title: `Refund ${number} needs ${step === "pi" ? "PI" : "finance"} approval`,
-      body: `A refund/reimbursement is awaiting your approval.`, link: `/projects/${projectId}/requisitions`, email: false });
+  const ids = new Set<string>();
+  (await q<{ userId: string }>(`SELECT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role = ANY($2::text[])`, [projectId, roles])).forEach((m) => ids.add(m.userId));
+  // finance step: also nudge org admins (they stand in for finance)
+  if (step === "finance") (await q<{ userId: string }>(`SELECT m.user_id AS "userId" FROM org_membership m JOIN role r ON r.id=m.role_id WHERE m.org_id=$1 AND r.key='org_admin'`, [orgId])).forEach((m) => ids.add(m.userId));
+  for (const uid of ids) {
+    await notify({ orgId, userId: uid, type: "approval_needed",
+      title: `${reminder ? "Reminder: " : ""}Refund ${number} needs ${step === "pi" ? "PI" : "finance"} approval`,
+      body: `A refund/reimbursement is awaiting your approval.`, link: `/projects/${projectId}/requisitions`, email: true });
   }
 }
 
@@ -557,15 +562,23 @@ export async function createRefundRequestAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   const access = await getProjectAccess(projectId);
   if (!access.permissions.has("project.view")) throw new Error("FORBIDDEN");
-  const expenditureId = String(formData.get("expenditureId") || "");
-  const exp = await one<{ projectId: string; amount: number; budgetLineId: string | null }>(
-    `SELECT project_id AS "projectId", amount, budget_line_id AS "budgetLineId" FROM expenditure WHERE id=$1`, [expenditureId]);
-  if (!exp || exp.projectId !== projectId) redirect(`/projects/${projectId}/requisitions?rfd=badexp`);
+  // Expenditure is OPTIONAL — a reimbursement can be raised standalone (with proof)
+  // or linked to recorded spend. When linked, the amount defaults to the expenditure.
+  const expenditureId = String(formData.get("expenditureId") || "") || null;
+  let budgetLineId: string | null = null;
+  let expAmount = 0;
+  if (expenditureId) {
+    const exp = await one<{ projectId: string; amount: number; budgetLineId: string | null }>(
+      `SELECT project_id AS "projectId", amount, budget_line_id AS "budgetLineId" FROM expenditure WHERE id=$1`, [expenditureId]);
+    if (!exp || exp.projectId !== projectId) redirect(`/projects/${projectId}/requisitions?rfd=badexp`);
+    budgetLineId = exp.budgetLineId; expAmount = exp.amount;
+  }
   const reason = String(formData.get("reason") || "").trim();
   const file = formData.get("evidence") as File | null;
   if (!file || file.size === 0) redirect(`/projects/${projectId}/requisitions?rfd=needevidence`);
   if (!reason) redirect(`/projects/${projectId}/requisitions?rfd=needreason`);
-  const amount = Number(formData.get("amount") || exp.amount) || exp.amount;
+  const amount = Number(formData.get("amount") || expAmount) || expAmount;
+  if (!(amount > 0)) redirect(`/projects/${projectId}/requisitions?rfd=needamount`);
 
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
   const orgId = org!.orgId;
@@ -575,7 +588,7 @@ export async function createRefundRequestAction(formData: FormData) {
   await q(`INSERT INTO refund_request (id, org_id, project_id, expenditure_id, budget_line_id, number, amount, reason,
              requested_by_id, requested_by_name, requester_role, requires_pi, status)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'submitted')`,
-    [rid, orgId, projectId, expenditureId, exp.budgetLineId, number, amount, reason,
+    [rid, orgId, projectId, expenditureId, budgetLineId, number, amount, reason,
      user.id, user.name, access.role ?? (access.isOrgAdmin ? "org_admin" : "member"), requiresPi]);
   const buf = Buffer.from(await file.arrayBuffer());
   const fid = id("rff");
@@ -678,6 +691,94 @@ export async function acknowledgeRefundAction(formData: FormData) {
   await writeAudit({ orgId: r!.orgId, userId: user.id, action: "acknowledge", entity: "refund_request", entityId: projectId, meta: { number: r!.number, note } });
   revalidatePath(`/projects/${projectId}/requisitions`);
   redirect(`/projects/${projectId}/requisitions?rfd=acknowledged`);
+}
+
+// Edit a refund BEFORE it is approved. Allowed for the requester or a finance
+// admin / org admin, only while the request is still awaiting a decision.
+export async function editRefundRequestAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const rid = String(formData.get("refundId"));
+  const access = await getProjectAccess(projectId);
+  const r = await one<{ projectId: string; status: string; requestedById: string | null; orgId: string; number: string }>(
+    `SELECT project_id AS "projectId", status, requested_by_id AS "requestedById", org_id AS "orgId", number FROM refund_request WHERE id=$1`, [rid]);
+  if (!r || r.projectId !== projectId) redirect(`/projects/${projectId}/requisitions`);
+  const canEdit = r.requestedById === user.id || refundIsFinance(access);
+  if (!canEdit) throw new Error("FORBIDDEN");
+  if (!["submitted", "pi_approved"].includes(r.status)) redirect(`/projects/${projectId}/requisitions?rfd=badstate`);
+  const reason = String(formData.get("reason") || "").trim();
+  if (!reason) redirect(`/projects/${projectId}/requisitions?rfd=needreason`);
+  const expenditureId = String(formData.get("expenditureId") || "") || null;
+  let budgetLineId: string | null = null;
+  let expAmount = 0;
+  if (expenditureId) {
+    const exp = await one<{ projectId: string; amount: number; budgetLineId: string | null }>(
+      `SELECT project_id AS "projectId", amount, budget_line_id AS "budgetLineId" FROM expenditure WHERE id=$1`, [expenditureId]);
+    if (!exp || exp.projectId !== projectId) redirect(`/projects/${projectId}/requisitions?rfd=badexp`);
+    budgetLineId = exp.budgetLineId; expAmount = exp.amount;
+  }
+  const amount = Number(formData.get("amount") || expAmount) || expAmount;
+  if (!(amount > 0)) redirect(`/projects/${projectId}/requisitions?rfd=needamount`);
+  await q(`UPDATE refund_request SET amount=$2, reason=$3, expenditure_id=$4, budget_line_id=$5 WHERE id=$1`,
+    [rid, amount, reason, expenditureId, budgetLineId]);
+  // optional additional evidence
+  const file = formData.get("evidence") as File | null;
+  if (file && file.size > 0) {
+    const buf = Buffer.from(await file.arrayBuffer());
+    const fid = id("rff");
+    const key = await saveUpload(fid, file.name, buf);
+    await q(`INSERT INTO refund_file (id, refund_id, kind, name, storage_key, mime_type, size_bytes, uploaded_by)
+             VALUES ($1,$2,'evidence',$3,$4,$5,$6,$7)`, [fid, rid, file.name, key, mimeFor(file.name), buf.length, user.id]);
+  }
+  await writeAudit({ orgId: r.orgId, userId: user.id, action: "update", entity: "refund_request", entityId: projectId, meta: { number: r.number, amount, reason } });
+  revalidatePath(`/projects/${projectId}/requisitions`);
+  redirect(`/projects/${projectId}/requisitions?rfd=edited`);
+}
+
+// Nudge the current approver of a refund — only after it has been waiting ≥ 5
+// working days, and at most once per day. Notifies by email and in-app.
+export async function sendRefundReminderAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const rid = String(formData.get("refundId"));
+  await getProjectAccess(projectId); // must be able to view the project
+  const r = await one<{ projectId: string; status: string; requiresPi: boolean; number: string; amount: number; orgId: string; createdAt: string; piAt: string | null; lastRemindedAt: string | null }>(
+    `SELECT project_id AS "projectId", status, requires_pi AS "requiresPi", number, amount, org_id AS "orgId",
+            created_at AS "createdAt", pi_at AS "piAt", last_reminded_at AS "lastRemindedAt" FROM refund_request WHERE id=$1`, [rid]);
+  if (!r || r.projectId !== projectId) redirect(`/projects/${projectId}/requisitions`);
+  if (!["submitted", "pi_approved"].includes(r.status)) redirect(`/projects/${projectId}/requisitions?rfd=badstate`);
+  const waitingSince = r.status === "pi_approved" ? (r.piAt ?? r.createdAt) : r.createdAt;
+  if (workingDaysSince(waitingSince) < 5) redirect(`/projects/${projectId}/requisitions?rfd=tooearly`);
+  if (r.lastRemindedAt && Date.now() - new Date(r.lastRemindedAt).getTime() < 86400000) redirect(`/projects/${projectId}/requisitions?rfd=remindsoon`);
+  const step: "pi" | "finance" = r.status === "pi_approved" ? "finance" : (r.requiresPi ? "pi" : "finance");
+  await notifyRefundApprovers(projectId, step, r.number, r.amount, r.orgId, true);
+  await q(`UPDATE refund_request SET last_reminded_at=now() WHERE id=$1`, [rid]);
+  await writeAudit({ orgId: r.orgId, userId: user.id, action: "remind", entity: "refund_request", entityId: projectId, meta: { number: r.number } });
+  redirect(`/projects/${projectId}/requisitions?rfd=reminded`);
+}
+
+// Same reminder mechanism for a fund requisition awaiting approval.
+export async function sendRequisitionReminderAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const reqId = String(formData.get("reqId"));
+  await getProjectAccess(projectId);
+  const req = await one<{ projectId: string; status: string; number: string; orgId: string; updatedAt: string; lastRemindedAt: string | null }>(
+    `SELECT r.project_id AS "projectId", r.status, r.number, p.org_id AS "orgId", r.updated_at AS "updatedAt", r.last_reminded_at AS "lastRemindedAt"
+     FROM requisition r JOIN project p ON p.id=r.project_id WHERE r.id=$1`, [reqId]);
+  if (!req || req.projectId !== projectId) redirect(`/projects/${projectId}/requisitions`);
+  const pendingStates = ["submitted", "finance_review", "pm_approval", "admin_approval"];
+  if (!pendingStates.includes(req.status)) redirect(`/projects/${projectId}/requisitions?rfd=badstate`);
+  if (workingDaysSince(req.updatedAt) < 5) redirect(`/projects/${projectId}/requisitions?rfd=tooearly`);
+  if (req.lastRemindedAt && Date.now() - new Date(req.lastRemindedAt).getTime() < 86400000) redirect(`/projects/${projectId}/requisitions?rfd=remindsoon`);
+  // notify project approvers + org admins, email + in-app
+  const ids = new Set<string>();
+  (await q<{ userId: string }>(`SELECT DISTINCT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role IN ('pi','co_pi','finance_admin','project_manager')`, [projectId])).forEach((m) => ids.add(m.userId));
+  (await q<{ userId: string }>(`SELECT m.user_id AS "userId" FROM org_membership m JOIN role r ON r.id=m.role_id WHERE m.org_id=$1 AND r.key='org_admin'`, [req.orgId])).forEach((m) => ids.add(m.userId));
+  for (const uid of ids) await notify({ orgId: req.orgId, userId: uid, type: "approval_needed", title: `Reminder: requisition ${req.number} awaiting approval`, link: `/projects/${projectId}/requisitions/${reqId}`, email: true });
+  await q(`UPDATE requisition SET last_reminded_at=now() WHERE id=$1`, [reqId]);
+  await writeAudit({ orgId: req.orgId, userId: user.id, action: "remind", entity: "requisition", entityId: projectId, meta: { number: req.number } });
+  redirect(`/projects/${projectId}/requisitions?rfd=reminded`);
 }
 
 /* ---------------- Requisitions ---------------- */

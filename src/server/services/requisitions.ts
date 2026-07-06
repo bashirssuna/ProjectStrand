@@ -275,3 +275,22 @@ export async function advanceGateFor(projectId: string, requesterId: string | nu
   const blocked = previousDisbursement > 0 && outstanding > ADVANCE_OUTSTANDING_LIMIT * previousDisbursement + 0.001;
   return { outstanding, previousDisbursement, blocked, limit: ADVANCE_OUTSTANDING_LIMIT, openCount: agg?.openCount ?? 0 };
 }
+
+// Requisitions raised by a user that are still awaiting an approval decision.
+export type PendingReq = { id: string; number: string; title: string; amount: number; status: string; createdAt: string; updatedAt: string; lastRemindedAt: string | null };
+export async function myPendingRequisitions(projectId: string, userId: string): Promise<PendingReq[]> {
+  return q<PendingReq>(
+    `SELECT id, number, title, amount, status, created_at AS "createdAt", updated_at AS "updatedAt", last_reminded_at AS "lastRemindedAt"
+     FROM requisition WHERE project_id=$1 AND requested_by_id=$2 AND status IN ('submitted','finance_review','pm_approval','admin_approval')
+     ORDER BY created_at DESC`, [projectId, userId]);
+}
+
+// Per-step approval trail for a requisition: who is assigned each step, their
+// decision (pending/approved/rejected), and when they decided.
+export type ApprovalStep = { step: number; role: string; decision: string; approverName: string | null; decidedAt: string | null };
+export async function requisitionTrail(reqId: string): Promise<ApprovalStep[]> {
+  return q<ApprovalStep>(
+    `SELECT a.step, a.role, a.decision, u.name AS "approverName", a.decided_at AS "decidedAt"
+     FROM requisition_approval a LEFT JOIN app_user u ON u.id=a.approver_id
+     WHERE a.requisition_id=$1 ORDER BY a.step`, [reqId]);
+}

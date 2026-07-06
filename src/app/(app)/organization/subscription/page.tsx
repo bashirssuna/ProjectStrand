@@ -9,7 +9,7 @@ import { requestRenewalAction, submitPaymentProofAction, cancelRenewalAction } f
 
 const termLabel = (m: number) => m % 12 === 0 ? `${m / 12} year${m === 12 ? "" : "s"}` : `${m} months`;
 
-export default async function SubscriptionPage({ searchParams }: { searchParams: Promise<{ requested?: string; paid?: string; cancelled?: string; err?: string }> }) {
+export default async function SubscriptionPage({ searchParams }: { searchParams: Promise<{ requested?: string; invoiced?: string; paid?: string; cancelled?: string; err?: string }> }) {
   const { orgId, orgName, userId } = await requireOrgAdmin();
   const sp = await searchParams;
   const org = await getUserOrg(userId);
@@ -27,6 +27,7 @@ export default async function SubscriptionPage({ searchParams }: { searchParams:
       <PageHeader title="Subscription" subtitle={`Renewals & billing · ${orgName}`} actions={<Link href="/organization" className="btn btn-sm">← Organisation</Link>} />
 
       {sp.requested && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Renewal requested. The Project Strand team will send you an invoice shortly.</div>}
+      {sp.invoiced && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Your invoice has been issued below and emailed to you. Pay via the details shown, then upload your proof of payment.</div>}
       {sp.paid && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Proof of payment submitted. We&apos;ll activate your renewal once it&apos;s confirmed.</div>}
       {sp.cancelled && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>Renewal request cancelled.</div>}
       {sp.err === "file" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Please attach a proof-of-payment file.</div>}
@@ -106,6 +107,10 @@ export default async function SubscriptionPage({ searchParams }: { searchParams:
                   </div>
                 </div>
                 {req.invoiceNote && <p className="text-sm mt-2" style={{ color: "var(--muted)" }}>{req.invoiceNote}</p>}
+                <div className="flex items-center justify-between gap-2 mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                  <span className="text-xs" style={{ color: "var(--muted)" }}>Authorised &amp; digitally issued by {issuer.issuerName || "Project Strand"}.</span>
+                  <a href={`/print/subscription-invoice/${req.id}`} target="_blank" className="btn btn-sm">🖨 Print / Download</a>
+                </div>
               </div>
             )}
 
@@ -148,15 +153,23 @@ export default async function SubscriptionPage({ searchParams }: { searchParams:
         <div>
           {req && req.status === "rejected" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Your last request needs attention{req.rejectReason ? `: ${req.rejectReason}` : ""}. You can submit a new one below.</div>}
           {req && req.status === "approved" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Your last renewal was activated{req.completedAt ? ` on ${fmtDate(req.completedAt)}` : ""}. Thank you!</div>}
-          <SectionTitle>Request a renewal</SectionTitle>
-          <form action={requestRenewalAction} className="card p-4 grid gap-3">
-            <p className="text-sm" style={{ color: "var(--muted)" }}>Choose how long you&apos;d like to renew for. The Project Strand team will send an invoice with bank and mobile-money payment details. After paying, upload your proof here and we&apos;ll activate it.</p>
-            <div className="grid sm:grid-cols-2 gap-3 items-end">
-              <Field label="Renewal term"><select name="termMonths" className="select"><option value="12">1 year</option><option value="36">3 years</option><option value="60">5 years</option></select></Field>
-              <Field label="Note to the team (optional)"><input name="note" className="input" placeholder="e.g. please invoice to our finance office" /></Field>
-            </div>
-            <div className="flex justify-end"><button className="btn btn-primary" type="submit">Request renewal</button></div>
-          </form>
+          <SectionTitle>Choose a plan</SectionTitle>
+          <p className="text-sm mb-3" style={{ color: "var(--muted)" }}>Pick a term below. As soon as you select one, a signed invoice is issued instantly (and emailed to you) with bank and mobile-money payment details. After paying, upload your proof here and we&apos;ll activate it.</p>
+          <div className="grid sm:grid-cols-3 gap-3">
+            {[{ months: 12, subtotal: issuer.rate1yr, label: "1 year" }, { months: 36, subtotal: issuer.rate3yr, label: "3 years" }, { months: 60, subtotal: issuer.rate5yr, label: "5 years" }].map((p) => {
+              const vat = p.subtotal * (issuer.vatRate / 100);
+              const total = p.subtotal + vat;
+              return (
+                <form key={p.months} action={requestRenewalAction} className="card p-4 flex flex-col">
+                  <input type="hidden" name="termMonths" value={p.months} />
+                  <div className="font-display text-lg font-semibold">{p.label}</div>
+                  <div className="text-2xl font-bold mt-1">{money(p.subtotal, issuer.currency)}</div>
+                  <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>+ VAT {issuer.vatRate}% · {money(total, issuer.currency)} total</div>
+                  <button className="btn btn-primary btn-sm mt-3" type="submit">Select this plan</button>
+                </form>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

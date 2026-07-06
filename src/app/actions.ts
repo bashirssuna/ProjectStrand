@@ -4266,24 +4266,32 @@ export async function sendAnnouncementAction(formData: FormData) {
 }
 
 /* ===================== SUBSCRIPTION RENEWAL REQUESTS ===================== */
-import { requestRenewal, invoiceRequest, submitPaymentProof, approveRequest, rejectRequest, cancelRequest, upsertPlatformSettings, setIssuerLogo } from "@/server/services/billing";
+import { requestRenewal, invoiceRequest, submitPaymentProof, approveRequest, rejectRequest, cancelRequest, upsertPlatformSettings, setIssuerLogo, autoInvoiceFromSettings } from "@/server/services/billing";
 
 // ----- Organisation side (org admin / finance) -----
+// Organisation selects a plan/term. We create the request AND immediately issue a
+// signed invoice from the platform billing settings — so they get the invoice at once.
 export async function requestRenewalAction(formData: FormData) {
   const { orgId, userId, userName } = await requireInstitutionFinance();
   const termMonths = Number(formData.get("termMonths") || 12);
-  await requestRenewal({ orgId, termMonths, note: String(formData.get("note") || "") || undefined, by: { id: userId, name: userName } });
-  redirect("/organization/subscription?requested=1");
+  const from = String(formData.get("from") || "subscription");
+  const rid = await requestRenewal({ orgId, termMonths, note: String(formData.get("note") || "") || undefined, by: { id: userId, name: userName } });
+  // Auto-issue the invoice, signed with the platform (super-admin) billing identity.
+  const sup = await one<{ id: string; name: string }>(`SELECT id, name FROM app_user WHERE is_super_admin=true ORDER BY created_at LIMIT 1`);
+  await autoInvoiceFromSettings(rid, sup ?? { id: userId, name: userName });
+  redirect(from === "upgrade" ? "/upgrade?invoiced=1" : "/organization/subscription?invoiced=1");
 }
 
 export async function submitPaymentProofAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
   const requestId = String(formData.get("requestId"));
+  const from = String(formData.get("from") || "subscription");
+  const base = from === "upgrade" ? "/upgrade" : "/organization/subscription";
   // ensure the request belongs to this org and is awaiting payment
   const owns = await one<{ id: string }>(`SELECT id FROM subscription_request WHERE id=$1 AND org_id=$2 AND status='invoiced'`, [requestId, orgId]);
-  if (!owns) redirect("/organization/subscription?err=state");
+  if (!owns) redirect(`${base}?err=state`);
   const file = formData.get("file") as File | null;
-  if (!file || file.size === 0) redirect("/organization/subscription?err=file");
+  if (!file || file.size === 0) redirect(`${base}?err=file`);
   const f = file as File;
   const buf = Buffer.from(await f.arrayBuffer());
   const docId = id("subpay");
@@ -4292,7 +4300,7 @@ export async function submitPaymentProofAction(formData: FormData) {
     requestId, storageKey: key, fileName: f.name, mime: f.type || mimeFor(f.name), size: buf.length,
     paymentRef: String(formData.get("paymentRef") || "") || undefined, note: String(formData.get("note") || "") || undefined,
   });
-  redirect("/organization/subscription?paid=1");
+  redirect(`${base}?paid=1`);
 }
 
 export async function cancelRenewalAction(formData: FormData) {

@@ -302,7 +302,30 @@ export async function invoiceRequest(input: { requestId: string; subtotal: numbe
     );
     await sendEmail({ to, subject: `Invoice ${invoiceNo} — Project Strand subscription`, html });
   }
+  await notifyOrgAdmins(req.orgId, `Invoice ${invoiceNo} issued — pay and upload proof of payment`);
   await writeAudit({ orgId: req.orgId, userId: input.by.id, action: "update", entity: "subscription_request", entityId: input.requestId, after: { invoiceNo, total } });
+}
+
+// In-app notification to an organisation's admins (email is sent separately by the
+// individual steps). Keeps the whole exchange visible inside the system too.
+async function notifyOrgAdmins(orgId: string, title: string, link = "/organization/subscription"): Promise<void> {
+  const admins = await q<{ userId: string }>(
+    `SELECT m.user_id AS "userId" FROM org_membership m JOIN role r ON r.id=m.role_id WHERE m.org_id=$1 AND r.key='org_admin'`, [orgId]);
+  for (const a of admins) await notify({ orgId, userId: a.userId, type: "approval_needed", title, link, email: false });
+}
+
+// Auto-issue the invoice for a just-created request using the platform's billing
+// settings (the rate for the chosen term, VAT, currency, bank & mobile-money). This
+// fires the moment an organisation selects a plan, so they get a signed invoice
+// immediately without waiting for the operator to raise one by hand.
+export async function autoInvoiceFromSettings(requestId: string, by: { id: string; name: string }): Promise<void> {
+  const req = await one<{ termMonths: number; status: string }>(`SELECT term_months AS "termMonths", status FROM subscription_request WHERE id=$1`, [requestId]);
+  if (!req || req.status !== "requested") return; // already invoiced or beyond
+  const s = await getPlatformSettings();
+  await invoiceRequest({
+    requestId, subtotal: rateForTerm(s, req.termMonths), vatRate: s.vatRate, currency: s.currency,
+    bankDetails: s.bankDetails ?? "", momoDetails: s.momoDetails ?? "", by,
+  });
 }
 
 // Organisation uploads proof of payment.
@@ -334,6 +357,7 @@ export async function approveRequest(input: { requestId: string; by: { id: strin
   await sendReceiptEmail(pid);
   await q(`UPDATE subscription_request SET status='approved', completed_at=now(), completed_by=$2, completed_by_name=$3, payment_id=$4 WHERE id=$1`,
     [input.requestId, input.by.id, input.by.name, pid]);
+  await notifyOrgAdmins(req.orgId, `Subscription activated — payment approved. Thank you!`);
   await writeAudit({ orgId: req.orgId, userId: input.by.id, action: "update", entity: "subscription_request", entityId: input.requestId, after: { approved: true, paymentId: pid } });
 }
 
@@ -344,6 +368,7 @@ export async function rejectRequest(input: { requestId: string; reason: string; 
     [input.requestId, input.reason, input.by.id, input.by.name]);
   const to = await orgAdminEmail(req.orgId);
   if (to) await sendEmail({ to, subject: `Subscription renewal — update`, html: shell(`<p>Your subscription renewal request needs attention:</p><p style="color:#44403c">${input.reason.replace(/</g, "&lt;")}</p><p>Please start a new request in Project Strand (Organisation → Subscription) if needed.</p>`) });
+  await notifyOrgAdmins(req.orgId, `Subscription request needs attention — ${input.reason.slice(0, 60)}`);
   await writeAudit({ orgId: req.orgId, userId: input.by.id, action: "update", entity: "subscription_request", entityId: input.requestId, after: { rejected: true } });
 }
 

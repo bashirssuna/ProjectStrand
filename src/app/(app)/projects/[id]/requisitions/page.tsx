@@ -238,6 +238,13 @@ export default async function RequisitionsPage({ params, searchParams }: { param
                     <span className="ml-auto text-xs" style={{ color: "var(--muted)" }}>{r.lineCode ? `${r.lineCode} · ` : ""}{r.expenditurePayee ?? r.expenditureRef ?? "expenditure"}</span>
                   </div>
                   {r.reason && <p className="text-sm mb-2">{r.reason}</p>}
+                  {(r.bankDetails || r.momoDetails) && (
+                    <div className="text-xs mb-2 rounded p-2" style={{ background: "var(--surface)" }}>
+                      <span className="font-medium">Pay to</span>
+                      {r.bankDetails && <span> · 🏦 {r.bankDetails}</span>}
+                      {r.momoDetails && <span> · 📱 {r.momoDetails}</span>}
+                    </div>
+                  )}
                   <div className="text-xs mb-2" style={{ color: "var(--muted)" }}>
                     Evidence: {evidence.length ? evidence.map((f) => <a key={f.id} href={`/api/refund-files/${f.id}`} target="_blank" className="hover:underline mr-2" style={{ color: "var(--brand)" }}>📎 {f.name}</a>) : "—"}
                   </div>
@@ -263,6 +270,10 @@ export default async function RequisitionsPage({ params, searchParams }: { param
                           </Field>
                           <Field label="Amount"><input type="number" step="0.01" name="amount" defaultValue={r.amount} className="input" /></Field>
                           <Field label="Reason"><textarea name="reason" defaultValue={r.reason ?? ""} rows={2} className="textarea" /></Field>
+                          <div className="grid sm:grid-cols-2 gap-2">
+                            <Field label="Bank details (where to pay)"><textarea name="bankDetails" defaultValue={r.bankDetails ?? ""} rows={2} className="textarea" placeholder="Bank, account name & no., branch" /></Field>
+                            <Field label="Mobile money (where to pay)"><textarea name="momoDetails" defaultValue={r.momoDetails ?? ""} rows={2} className="textarea" placeholder="Network, number, name" /></Field>
+                          </div>
                           <Field label="Add more evidence (optional)"><input type="file" name="evidence" className="input" /></Field>
                           <div className="flex gap-2"><button className="btn btn-primary btn-sm" type="submit">Save changes</button><CancelButton className="btn btn-sm">Cancel</CancelButton></div>
                         </form>
@@ -323,6 +334,8 @@ export default async function RequisitionsPage({ params, searchParams }: { param
               </Field>
               <Field label="Amount to refund"><input type="number" step="0.01" name="amount" className="input" placeholder="required if no expenditure is linked" /></Field>
               <div className="sm:col-span-2"><Field label="Reason (required)"><textarea name="reason" required rows={2} className="textarea" placeholder="What is this refund for?" /></Field></div>
+              <Field label="Bank details (where to pay you)"><textarea name="bankDetails" rows={2} className="textarea" placeholder="Bank, account name & number, branch" /></Field>
+              <Field label="Mobile money (where to pay you)"><textarea name="momoDetails" rows={2} className="textarea" placeholder="Network, number, registered name" /></Field>
               <div className="sm:col-span-2"><Field label="Evidence (required — receipt, invoice, bank slip…)"><input type="file" name="evidence" required className="input" /></Field></div>
               <div className="sm:col-span-2 flex justify-end"><button className="btn btn-primary" type="submit">Request refund</button></div>
             </form>

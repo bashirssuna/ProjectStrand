@@ -579,16 +579,18 @@ export async function createRefundRequestAction(formData: FormData) {
   if (!reason) redirect(`/projects/${projectId}/requisitions?rfd=needreason`);
   const amount = Number(formData.get("amount") || expAmount) || expAmount;
   if (!(amount > 0)) redirect(`/projects/${projectId}/requisitions?rfd=needamount`);
+  const bankDetails = String(formData.get("bankDetails") || "").trim() || null;
+  const momoDetails = String(formData.get("momoDetails") || "").trim() || null;
 
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
   const orgId = org!.orgId;
   const number = await nextRefundNumber(orgId);
   const rid = id("rfd");
   const requiresPi = !refundIsPi(access); // PI/Co-PI (and org admins) skip straight to finance
-  await q(`INSERT INTO refund_request (id, org_id, project_id, expenditure_id, budget_line_id, number, amount, reason,
+  await q(`INSERT INTO refund_request (id, org_id, project_id, expenditure_id, budget_line_id, number, amount, reason, bank_details, momo_details,
              requested_by_id, requested_by_name, requester_role, requires_pi, status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'submitted')`,
-    [rid, orgId, projectId, expenditureId, budgetLineId, number, amount, reason,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'submitted')`,
+    [rid, orgId, projectId, expenditureId, budgetLineId, number, amount, reason, bankDetails, momoDetails,
      user.id, user.name, access.role ?? (access.isOrgAdmin ? "org_admin" : "member"), requiresPi]);
   const buf = Buffer.from(await file.arrayBuffer());
   const fid = id("rff");
@@ -719,8 +721,10 @@ export async function editRefundRequestAction(formData: FormData) {
   }
   const amount = Number(formData.get("amount") || expAmount) || expAmount;
   if (!(amount > 0)) redirect(`/projects/${projectId}/requisitions?rfd=needamount`);
-  await q(`UPDATE refund_request SET amount=$2, reason=$3, expenditure_id=$4, budget_line_id=$5 WHERE id=$1`,
-    [rid, amount, reason, expenditureId, budgetLineId]);
+  const bankDetails = String(formData.get("bankDetails") || "").trim() || null;
+  const momoDetails = String(formData.get("momoDetails") || "").trim() || null;
+  await q(`UPDATE refund_request SET amount=$2, reason=$3, expenditure_id=$4, budget_line_id=$5, bank_details=$6, momo_details=$7 WHERE id=$1`,
+    [rid, amount, reason, expenditureId, budgetLineId, bankDetails, momoDetails]);
   // optional additional evidence
   const file = formData.get("evidence") as File | null;
   if (file && file.size > 0) {

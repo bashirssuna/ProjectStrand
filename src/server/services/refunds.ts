@@ -5,6 +5,7 @@ export type RefundFile = { id: string; kind: string; name: string; storageKey: s
 
 export type RefundRow = {
   id: string; number: string; amount: number; reason: string | null; status: string;
+  bankDetails: string | null; momoDetails: string | null;
   requestedById: string | null; requestedByName: string | null; requesterRole: string | null; requiresPi: boolean;
   expenditureId: string | null; expenditureRef: string | null; expenditurePayee: string | null; lineCode: string | null; lineDesc: string | null;
   piDecision: string | null; piByName: string | null; piAt: string | null; piComment: string | null;
@@ -15,7 +16,7 @@ export type RefundRow = {
   createdAt: string;
 };
 
-const COLS = `r.id, r.number, r.amount, r.reason, r.status,
+const COLS = `r.id, r.number, r.amount, r.reason, r.status, r.bank_details AS "bankDetails", r.momo_details AS "momoDetails",
   r.requested_by_id AS "requestedById", r.requested_by_name AS "requestedByName", r.requester_role AS "requesterRole", r.requires_pi AS "requiresPi",
   r.expenditure_id AS "expenditureId", e.reference AS "expenditureRef", e.payee AS "expenditurePayee",
   bl.code AS "lineCode", bl.description AS "lineDesc",

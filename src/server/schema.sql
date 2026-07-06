@@ -3012,6 +3012,7 @@ CREATE TABLE IF NOT EXISTS refund_request (
   number text NOT NULL,
   amount double precision NOT NULL,
   reason text,
+  bank_details text, momo_details text,
   requested_by_id text, requested_by_name text, requester_role text,
   requires_pi boolean NOT NULL DEFAULT true,
   status text NOT NULL DEFAULT 'submitted',   -- submitted | pi_approved | approved | rejected | paid | acknowledged
@@ -3023,6 +3024,8 @@ CREATE TABLE IF NOT EXISTS refund_request (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE refund_request ADD COLUMN IF NOT EXISTS last_reminded_at timestamptz;
+ALTER TABLE refund_request ADD COLUMN IF NOT EXISTS bank_details text;
+ALTER TABLE refund_request ADD COLUMN IF NOT EXISTS momo_details text;
 ALTER TABLE requisition ADD COLUMN IF NOT EXISTS last_reminded_at timestamptz;
 CREATE TABLE IF NOT EXISTS refund_file (
   id text PRIMARY KEY,

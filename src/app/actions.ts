@@ -2457,6 +2457,7 @@ import {
   ensureChartOfAccounts, postJournal, reverseJournal,
   institutionalStatements, accountBalances, postExpenditureToLedger,
   postCashPayment, postCashReceipt, postFundsTransfer, reverseExpenditureJournals, recognizeIndirectRecovery, reconcileLedger,
+  autoArchiveOldJournals,
 } from "@/server/services/ledger";
 
 // Institution-level finance is restricted to organisation admins. Returns the
@@ -2543,6 +2544,29 @@ export async function reverseJournalAction(formData: FormData) {
   await reverseJournal(orgId, entryId, { id: userId, name: userName });
   revalidatePath("/finance/journal");
   redirect("/finance/journal?reversed=1");
+}
+
+// Archive every settled journal entry older than the chosen window (default 12
+// months) so the general-journal view stays tidy. Archiving is presentational only —
+// archived entries still post to all statements and balances.
+export async function archiveOldJournalAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const months = Math.max(1, Math.min(120, Number(formData.get("months") || 12)));
+  const n = await autoArchiveOldJournals({ orgId, months });
+  revalidatePath("/finance/journal");
+  redirect(`/finance/journal?archived=${n}`);
+}
+
+// Manually archive or restore a single journal entry from the journal view.
+export async function setJournalArchivedAction(formData: FormData) {
+  const { orgId } = await requireInstitutionFinance();
+  const entryId = String(formData.get("entryId"));
+  const archive = String(formData.get("archive") || "1") === "1";
+  await q(
+    `UPDATE journal_entry SET archived=$3, archived_at=CASE WHEN $3 THEN now() ELSE NULL END WHERE id=$1 AND org_id=$2`,
+    [entryId, orgId, archive]);
+  revalidatePath("/finance/journal");
+  redirect(archive ? "/finance/journal?archived=1" : "/finance/journal?restored=1");
 }
 
 // One-time reconciliation: recognise grant income for past project spend and

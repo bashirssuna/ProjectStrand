@@ -363,7 +363,38 @@ export async function recognizeIndirectRecovery(orgId: string, projectId: string
       { accountId: income, credit: amount, description: "Indirect cost recovery (income)", projectId },
     ],
   });
+  // Deduct the overhead from the project budget so the project's remaining reflects
+  // only its direct costs (idempotent; see deductIndirectFromBudget).
+  await deductIndirectFromBudget(projectId, budgetId, by);
   return amount;
+}
+
+// Consume each indirect budget line as an OVERHEAD-XFER expenditure — the overhead is
+// "transferred to the institution" at budget approval, so the project cannot spend it.
+// These rows carry the OVERHEAD-XFER marker and are NOT posted to the ledger (the
+// IDC income entry is the institutional side). Idempotent per line: it tops up to
+// (planned − real spend) and never double-counts an existing transfer. Returns the
+// number of lines it created a transfer for.
+export async function deductIndirectFromBudget(projectId: string, budgetId: string, by: { id: string; name: string }): Promise<number> {
+  const today = new Date().toISOString().slice(0, 10);
+  const indLines = await q<{ id: string; planned: number; spent: number; xfer: number }>(
+    `SELECT bl.id, bl.planned::float AS planned,
+            COALESCE((SELECT SUM(amount) FROM expenditure WHERE budget_line_id=bl.id AND COALESCE(reference,'')<>'OVERHEAD-XFER'),0)::float AS spent,
+            COALESCE((SELECT SUM(amount) FROM expenditure WHERE budget_line_id=bl.id AND COALESCE(reference,'')='OVERHEAD-XFER'),0)::float AS xfer
+     FROM budget_line bl JOIN budget_category bc ON bc.id=bl.category_id
+     WHERE bl.budget_id=$1 AND bc.cost_type='indirect'`, [budgetId]);
+  let n = 0;
+  for (const bl of indLines) {
+    const target = round2(bl.planned - bl.spent);   // overhead to move to the institution
+    const deduct = round2(target - bl.xfer);         // minus what's already been moved
+    if (deduct > 0) {
+      await q(`INSERT INTO expenditure (id, project_id, budget_line_id, amount, date, reference, payee, approved, created_by_id)
+               VALUES ($1,$2,$3,$4,$5,'OVERHEAD-XFER','Institution (indirect cost recovery)',true,$6)`,
+        [id("exp"), projectId, bl.id, deduct, today, by.id]);
+      n++;
+    }
+  }
+  return n;
 }
 
 // Reverses every not-yet-reversed general-ledger entry posted for an expenditure.
@@ -395,24 +426,55 @@ export async function reconcileLedger(orgId: string, by: { id: string; name: str
        AND NOT EXISTS (SELECT 1 FROM journal_entry je WHERE je.org_id=$1 AND je.reference='IDC-'||b.id)`, [orgId]);
   for (const a of approved) { if ((await recognizeIndirectRecovery(orgId, a.projectId, a.budgetId, by)) > 0) overheadPosted++; }
 
-  // (b) legacy expenditure entries with no grant-income line
+  // (a2) ensure the indirect deduction exists for EVERY approved budget, including
+  //      budgets whose overhead income was recognised before deduction was enabled
+  //      (those are skipped by the dup guard in recognizeIndirectRecovery above).
+  const allApproved = await q<{ budgetId: string; projectId: string }>(
+    `SELECT b.id AS "budgetId", b.project_id AS "projectId" FROM budget b
+     WHERE b.status='approved' AND b.project_id IN (SELECT id FROM project WHERE org_id=$1)`, [orgId]);
+  for (const a of allApproved) { await deductIndirectFromBudget(a.projectId, a.budgetId, by); }
+
+  // (b) any project expenditure that lacks a correct (active, grant-income-bearing)
+  //     ledger entry — legacy 2-line entries, never-posted spend, or an entry left
+  //     reversed by an interrupted run. Excludes overhead-transfer rows (no ledger by
+  //     design) and voucher-paid rows (the voucher posted their entry).
   let expendituresFixed = 0;
-  const legacy = await q<{ expenditureId: string; projectId: string }>(
-    `SELECT DISTINCT je.source_id AS "expenditureId", je.project_id AS "projectId"
-     FROM journal_entry je
-     WHERE je.org_id=$1 AND je.source_type='expenditure' AND je.reverses_entry_id IS NULL AND je.source_id IS NOT NULL
-       AND NOT EXISTS (SELECT 1 FROM journal_entry r WHERE r.reverses_entry_id=je.id)
-       AND NOT EXISTS (SELECT 1 FROM journal_line jl JOIN ledger_account la ON la.id=jl.account_id WHERE jl.entry_id=je.id AND la.code='4000')`, [orgId]);
-  for (const l of legacy) {
-    const exp = await one<{ amount: number; date: string; reference: string | null; payee: string | null }>(
-      `SELECT amount, date, reference, payee FROM expenditure WHERE id=$1`, [l.expenditureId]);
-    if (!exp || !l.projectId) continue;
-    await reverseExpenditureJournals(orgId, l.expenditureId, by);
-    await postExpenditureToLedger({ orgId, projectId: l.projectId, expenditureId: l.expenditureId, amount: exp.amount,
-      date: String(exp.date), reference: exp.reference, payee: exp.payee, postedBy: by.id, postedByName: by.name, force: true });
+  const toFix = await q<{ expenditureId: string; projectId: string; amount: number; date: string; reference: string | null; payee: string | null }>(
+    `SELECT e.id AS "expenditureId", e.project_id AS "projectId", e.amount::float AS amount,
+            to_char(e.date, 'YYYY-MM-DD') AS date, e.reference, e.payee
+     FROM expenditure e
+     JOIN project p ON p.id=e.project_id AND p.org_id=$1
+     WHERE COALESCE(e.reference,'') <> 'OVERHEAD-XFER'
+       AND e.budget_line_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM payment_voucher pv WHERE pv.expenditure_id=e.id)
+       AND NOT EXISTS (
+         SELECT 1 FROM journal_entry je
+         WHERE je.source_type='expenditure' AND je.source_id=e.id AND je.reverses_entry_id IS NULL
+           AND NOT EXISTS (SELECT 1 FROM journal_entry r WHERE r.reverses_entry_id=je.id)
+           AND EXISTS (SELECT 1 FROM journal_line jl JOIN ledger_account la ON la.id=jl.account_id WHERE jl.entry_id=je.id AND la.code='4000')
+       )`, [orgId]);
+  for (const e of toFix) {
+    if (!e.projectId) continue;
+    await reverseExpenditureJournals(orgId, e.expenditureId, by); // clear any stale/legacy entry
+    await postExpenditureToLedger({ orgId, projectId: e.projectId, expenditureId: e.expenditureId, amount: e.amount,
+      date: e.date, reference: e.reference, payee: e.payee, postedBy: by.id, postedByName: by.name, force: true });
     expendituresFixed++;
   }
   return { overheadPosted, expendituresFixed };
+}
+
+// Auto-archive settled general-journal entries older than `months` (default 12) so the
+// journal view stays tidy. Purely presentational — archived entries still post to every
+// financial statement and balance. Idempotent (skips already-archived rows). With no
+// orgId it archives across all organisations (used by the scheduled cron).
+export async function autoArchiveOldJournals(opts?: { orgId?: string; months?: number }): Promise<number> {
+  const months = Math.max(1, Math.floor(opts?.months ?? 12));
+  const params: unknown[] = [months];
+  let where = `archived = false AND entry_date < (CURRENT_DATE - ($1::int * INTERVAL '1 month'))`;
+  if (opts?.orgId) { params.push(opts.orgId); where += ` AND org_id = $${params.length}`; }
+  const res = await q<{ id: string }>(
+    `UPDATE journal_entry SET archived = true, archived_at = now() WHERE ${where} RETURNING id`, params);
+  return res.length;
 }
 
 // ===========================================================================
@@ -650,7 +712,7 @@ export async function cashFlowStatement(orgId: string, opts?: { from?: string; t
   );
   // movements in the window, grouped by entry (so each row is one transaction)
   const moves = await q<{ date: string; memo: string | null; net: number }>(
-    `SELECT je.entry_date AS date, je.memo,
+    `SELECT to_char(je.entry_date, 'YYYY-MM-DD') AS date, je.memo,
             SUM(jl.debit - jl.credit)::float AS net
      FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
      WHERE jl.account_id = ANY($1::text[]) AND je.entry_date BETWEEN $2::date AND $3::date AND ($4::text IS NULL OR jl.project_id = $4)

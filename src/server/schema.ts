@@ -2243,6 +2243,14 @@ ALTER TABLE platform_settings ADD COLUMN IF NOT EXISTS issuer_logo_data_url text
 -- in addition to their serial entry_no, per accounting referencing practice.
 ALTER TABLE journal_entry ADD COLUMN IF NOT EXISTS reference text;
 
+-- Journal housekeeping: archive settled/old entries so the general-journal view stays
+-- tidy. Archiving is purely presentational — archived entries still post to all
+-- financial statements and balances. archived_at records when it was archived.
+ALTER TABLE journal_entry ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false;
+ALTER TABLE journal_entry ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+CREATE INDEX IF NOT EXISTS idx_journal_entry_archived ON journal_entry(org_id, archived);
+CREATE INDEX IF NOT EXISTS idx_journal_entry_project ON journal_entry(org_id, project_id);
+
 -- Organisation receiving-bank details, shown on invoices ("pay to").
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS bank_details text;
 

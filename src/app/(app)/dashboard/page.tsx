@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireUser } from "@/server/auth";
 import { listProjectsForUser, getProjectSummary, healthScore } from "@/server/services/projects";
-import { HBar, Donut } from "@/components/charts";
+import { Donut } from "@/components/charts";
 import { q } from "@/server/db";
 import { getUserOrg } from "@/server/services/accounts";
 import { PageHeader, Stat, Badge, StatusBadge, ProgressBar, Empty } from "@/components/ui";
@@ -81,25 +81,28 @@ export default async function DashboardPage() {
   const projStatusDefs: [string, string][] = [["active", "var(--ok)"], ["on_hold", "var(--warn)"], ["completed", "var(--brand)"], ["draft", "#a8a29e"], ["archived", "#d6d3d1"]];
   const projSegments = projStatusDefs.map(([st, color]) => ({ label: label(st), value: projects.filter((p) => p.status === st).length, color }));
 
-  const remaining = Math.max(0, totalPlanned - totalSpent);
   const burnPct = totalPlanned ? Math.round((totalSpent / totalPlanned) * 100) : 0;
-  const budgetSegments = [
-    { label: "Spent", value: Math.round(totalSpent), color: "var(--brand)" },
-    { label: "Remaining", value: Math.round(remaining), color: "#e7e5e4" },
-  ];
 
   const projIds = projects.map((p) => p.id);
   const reqRows = projIds.length
     ? await q<{ status: string; n: number }>(`SELECT status, COUNT(*)::int n FROM requisition WHERE project_id = ANY($1) GROUP BY status`, [projIds])
     : [];
-  const reqBucket = (statuses: string[]) => reqRows.filter((r) => statuses.includes(r.status)).reduce((s, r) => s + r.n, 0);
-  const reqSegments = [
-    { label: "In progress", value: reqBucket(["draft", "submitted", "finance_review", "pending", "manager_review", "admin_review", "partially_funded"]), color: "var(--warn)" },
-    { label: "Approved / disbursed", value: reqBucket(["approved", "disbursed"]), color: "var(--ok)" },
-    { label: "Retired / closed", value: reqBucket(["retired", "accounted", "closed"]), color: "var(--brand)" },
-    { label: "Rejected", value: reqBucket(["rejected", "cancelled"]), color: "var(--danger)" },
-  ];
   const reqTotal = reqRows.reduce((s, r) => s + r.n, 0);
+
+  // Per-project requisition buckets (for the per-project overview cards).
+  const reqByProjRows = projIds.length
+    ? await q<{ projectId: string; status: string; n: number }>(`SELECT project_id AS "projectId", status, COUNT(*)::int n FROM requisition WHERE project_id = ANY($1) GROUP BY project_id, status`, [projIds])
+    : [];
+  const reqByProject = new Map<string, { inProgress: number; approved: number; closed: number; rejected: number; total: number }>();
+  for (const r of reqByProjRows) {
+    const b = reqByProject.get(r.projectId) ?? { inProgress: 0, approved: 0, closed: 0, rejected: 0, total: 0 };
+    if (["draft", "submitted", "finance_review", "pending", "manager_review", "admin_review", "partially_funded"].includes(r.status)) b.inProgress += r.n;
+    else if (["approved", "disbursed"].includes(r.status)) b.approved += r.n;
+    else if (["retired", "accounted", "closed"].includes(r.status)) b.closed += r.n;
+    else if (["rejected", "cancelled"].includes(r.status)) b.rejected += r.n;
+    b.total += r.n;
+    reqByProject.set(r.projectId, b);
+  }
 
   return (
     <div>
@@ -152,18 +155,6 @@ export default async function DashboardPage() {
         </div>
       )}
 
-      {totalPlanned > 0 && (
-        <Link href="/finance/statements" className="card p-4 mb-7 block hover:border-brand transition-colors" style={{ borderColor: "var(--border)" }}>
-          <div className="text-sm font-medium mb-1">Budget utilisation by project</div>
-          {projects.map((p, i) => {
-            const b = summaries[i]?.budget;
-            if (!b || !b.planned) return null;
-            return <HBar key={p.id} label={`${p.code} ${p.title}`} value={b.actual} max={b.planned}
-              money={`${money(b.actual, p.currency)} / ${money(b.planned, p.currency)}`} />;
-          })}
-        </Link>
-      )}
-
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
         <Stat label="Active projects" value={projects.filter((p) => p.status === "active").length} sub={`${projects.length} total`} />
         <Stat label="Portfolio budget" value={money(totalPlanned, primaryCurrency)} sub={displayBudget ? `≈ ${displayBudget} · ${pct(totalPlanned ? (totalSpent / totalPlanned) * 100 : 0)} spent` : `${pct(totalPlanned ? (totalSpent / totalPlanned) * 100 : 0)} spent`} />
@@ -182,15 +173,46 @@ export default async function DashboardPage() {
             <div className="text-sm font-medium mb-3">Projects by status</div>
             <Donut segments={projSegments} centerLabel={String(projects.length)} centerSub="projects" />
           </Link>
-          <Link href="/finance/statements" className="card p-4 hover:border-brand transition-colors" style={{ borderColor: "var(--border)" }}>
-            <div className="text-sm font-medium mb-3">Budget utilisation</div>
-            <Donut segments={budgetSegments} centerLabel={`${burnPct}%`} centerSub="spent" />
-            <div className="text-xs mt-2" style={{ color: "var(--muted)" }}>{money(totalSpent, primaryCurrency)} of {money(totalPlanned, primaryCurrency)}</div>
-          </Link>
-          <Link href="/projects" className="card p-4 hover:border-brand transition-colors" style={{ borderColor: "var(--border)" }}>
-            <div className="text-sm font-medium mb-3">Requisitions pipeline</div>
-            <Donut segments={reqSegments} centerLabel={String(reqTotal)} centerSub="total" />
-          </Link>
+          <div className="card p-4" style={{ borderColor: "var(--border)" }}>
+            <div className="flex items-center justify-between mb-3"><div className="text-sm font-medium">Budget utilisation by project</div><span className="text-xs" style={{ color: "var(--muted)" }}>{burnPct}% overall</span></div>
+            {projects.length === 0 ? <div className="text-xs" style={{ color: "var(--muted)" }}>No projects.</div> : (
+              <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                {projects.map((p, i) => {
+                  const s = summaries[i]; const planned = s?.budget?.planned ?? 0; const spent = s?.budget?.actual ?? 0;
+                  const burn = planned ? Math.round((spent / planned) * 100) : 0;
+                  return (
+                    <Link key={p.id} href={`/projects/${p.id}/budget`} className="block hover:opacity-80">
+                      <div className="flex justify-between text-xs mb-0.5"><span className="font-mono">{p.code}</span><span style={{ color: "var(--muted)" }}>{money(spent, p.currency || primaryCurrency)} / {money(planned, p.currency || primaryCurrency)} · {burn}%</span></div>
+                      <ProgressBar value={burn} tone={burn > 90 ? "danger" : burn > 75 ? "warn" : "ok"} />
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="card p-4" style={{ borderColor: "var(--border)" }}>
+            <div className="flex items-center justify-between mb-3"><div className="text-sm font-medium">Requisitions by project</div><span className="text-xs" style={{ color: "var(--muted)" }}>{reqTotal} total</span></div>
+            {projects.length === 0 ? <div className="text-xs" style={{ color: "var(--muted)" }}>No projects.</div> : (
+              <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                {projects.map((p) => {
+                  const b = reqByProject.get(p.id) ?? { inProgress: 0, approved: 0, closed: 0, rejected: 0, total: 0 };
+                  return (
+                    <Link key={p.id} href={`/projects/${p.id}/requisitions`} className="flex items-center justify-between text-xs hover:opacity-80 py-0.5">
+                      <span className="font-mono">{p.code}</span>
+                      {b.total === 0 ? <span style={{ color: "var(--muted)" }}>none</span> : (
+                        <span className="flex gap-1.5">
+                          {b.inProgress > 0 && <Badge tone="warn">{b.inProgress} pending</Badge>}
+                          {b.approved > 0 && <Badge tone="ok">{b.approved} approved</Badge>}
+                          {b.closed > 0 && <Badge tone="info">{b.closed} closed</Badge>}
+                          {b.rejected > 0 && <Badge tone="danger">{b.rejected} rejected</Badge>}
+                        </span>
+                      )}
+                    </Link>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

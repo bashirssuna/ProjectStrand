@@ -3000,3 +3000,33 @@ CREATE TABLE IF NOT EXISTS message (
 );
 CREATE INDEX IF NOT EXISTS idx_message_pair ON message(org_id, from_user_id, to_user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_message_inbox ON message(to_user_id, read_at);
+
+
+-- ===================== Refund / reimbursement requests =====================
+CREATE TABLE IF NOT EXISTS refund_request (
+  id text PRIMARY KEY,
+  org_id text NOT NULL REFERENCES organization(id) ON DELETE CASCADE,
+  project_id text NOT NULL REFERENCES project(id) ON DELETE CASCADE,
+  expenditure_id text REFERENCES expenditure(id) ON DELETE SET NULL,
+  budget_line_id text,
+  number text NOT NULL,
+  amount double precision NOT NULL,
+  reason text,
+  requested_by_id text, requested_by_name text, requester_role text,
+  requires_pi boolean NOT NULL DEFAULT true,
+  status text NOT NULL DEFAULT 'submitted',   -- submitted | pi_approved | approved | rejected | paid | acknowledged
+  pi_decision text, pi_by_id text, pi_by_name text, pi_at timestamptz, pi_comment text,
+  finance_decision text, finance_by_id text, finance_by_name text, finance_at timestamptz, finance_comment text,
+  paid_at timestamptz, paid_by_id text, paid_by_name text, payment_ref text,
+  acknowledged_at timestamptz, acknowledged_note text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS refund_file (
+  id text PRIMARY KEY,
+  refund_id text NOT NULL REFERENCES refund_request(id) ON DELETE CASCADE,
+  kind text NOT NULL DEFAULT 'evidence',      -- evidence | proof
+  name text NOT NULL, storage_key text, mime_type text, size_bytes integer,
+  uploaded_by text, created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_refund_project ON refund_request(project_id);
+CREATE INDEX IF NOT EXISTS idx_refund_file_refund ON refund_file(refund_id);

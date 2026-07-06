@@ -292,11 +292,21 @@ export async function deleteActivityAction(formData: FormData) {
 }
 
 /* ---------------- Budget ---------------- */
+// On a LIVE (active) project, any budget change must carry a reason, which is
+// recorded in the audit log. On a draft project no reason is required.
+async function budgetChangeReason(projectId: string, formData: FormData): Promise<string | null> {
+  const proj = await one<{ status: string }>(`SELECT status FROM project WHERE id=$1`, [projectId]);
+  const reason = String(formData.get("reason") || "").trim();
+  if (proj?.status === "active" && !reason) redirect(`/projects/${projectId}/budget?bm=needreason`);
+  return reason || null;
+}
+
 export async function addBudgetLineAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
-  await requirePermission(projectId, "budget.manage");
+  await requireBudgetBulk(projectId); // budget editing is restricted to PI / Co-PI / Finance / org admin
   await assertBudgetEditable(projectId);
+  const reason = await budgetChangeReason(projectId, formData);
   let budgetId = String(formData.get("budgetId") || "");
   if (!budgetId) {
     // Reuse the project's existing budget (created with the project) rather than
@@ -319,7 +329,7 @@ export async function addBudgetLineAction(formData: FormData) {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
     [id("bl"), budgetId, categoryId, String(formData.get("code") || "BL"), String(formData.get("description") || "Line"),
      String(formData.get("unit") || "unit"), unitCost, quantity, frequency, unitCost * quantity * frequency, justification]);
-  await writeAudit({ userId: user.id, action: "create", entity: "budget_line", entityId: budgetId });
+  await writeAudit({ userId: user.id, action: "create", entity: "budget_line", entityId: projectId, meta: { budgetId, reason: reason ?? undefined } });
   await evaluateProject(projectId);
   revalidatePath(`/projects/${projectId}/budget`);
 }
@@ -329,7 +339,7 @@ export async function addBudgetLineAction(formData: FormData) {
 export async function setupBudgetSectionsAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
-  await requirePermission(projectId, "budget.manage");
+  await requireBudgetBulk(projectId);
   let budgetId = String(formData.get("budgetId") || "");
   if (!budgetId) {
     budgetId = (await one<{ id: string }>(`SELECT id FROM budget WHERE project_id=$1 ORDER BY version LIMIT 1`, [projectId]))?.id ?? "";
@@ -348,8 +358,9 @@ export async function setupBudgetSectionsAction(formData: FormData) {
 export async function updateBudgetLineAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
-  await requirePermission(projectId, "budget.manage");
+  await requireBudgetBulk(projectId);
   await assertBudgetEditable(projectId);
+  const reason = await budgetChangeReason(projectId, formData);
   const lineId = String(formData.get("lineId"));
   await assertLineInProject(lineId, projectId);
   const unitCost = Number(formData.get("unitCost") || 0);
@@ -368,9 +379,9 @@ export async function updateBudgetLineAction(formData: FormData) {
   }
   await q(`UPDATE budget_line SET code=$2, description=$3, category_id=$4, unit_cost=$5, quantity=$6, frequency=$7, planned=$8, justification=$9 WHERE id=$1`,
     [lineId, String(formData.get("code") || "BL"), String(formData.get("description") || "Line"), categoryId, unitCost, quantity, frequency, planned, justification]);
-  await writeAudit({ userId: user.id, action: "update", entity: "budget_line", entityId: lineId,
+  await writeAudit({ userId: user.id, action: "update", entity: "budget_line", entityId: projectId,
     before: prev ? { planned: prev.planned, unitCost: prev.unitCost, quantity: prev.quantity } : undefined,
-    after: { planned, unitCost, quantity, frequency } });
+    after: { planned, unitCost, quantity, frequency }, meta: { lineId, reason: reason ?? undefined } });
   await evaluateProject(projectId);
   revalidatePath(`/projects/${projectId}/budget`);
 }
@@ -378,11 +389,12 @@ export async function updateBudgetLineAction(formData: FormData) {
 export async function deleteBudgetLineAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
-  await requirePermission(projectId, "budget.manage");
+  await requireBudgetBulk(projectId);
   const lineId = String(formData.get("lineId"));
   await assertLineInProject(lineId, projectId);
   // preserve the final state in history before removing the line
   await assertBudgetEditable(projectId);
+  const reason = await budgetChangeReason(projectId, formData);
   const prev = await one<{ code: string; description: string; unitCost: number; quantity: number; planned: number }>(
     `SELECT code, description, unit_cost AS "unitCost", quantity, planned FROM budget_line WHERE id=$1`, [lineId]);
   if (prev) {
@@ -397,7 +409,7 @@ export async function deleteBudgetLineAction(formData: FormData) {
   await q(`DELETE FROM commitment WHERE budget_line_id=$1`, [lineId]);
   await q(`DELETE FROM expenditure WHERE budget_line_id=$1`, [lineId]);
   await q(`DELETE FROM budget_line WHERE id=$1`, [lineId]);
-  await writeAudit({ userId: user.id, action: "delete", entity: "budget_line", entityId: lineId });
+  await writeAudit({ userId: user.id, action: "delete", entity: "budget_line", entityId: projectId, meta: { lineId, reason: reason ?? undefined } });
   await evaluateProject(projectId);
   revalidatePath(`/projects/${projectId}/budget`);
 }
@@ -407,13 +419,14 @@ export async function clearBudgetLinesAction(formData: FormData) {
   const projectId = String(formData.get("projectId"));
   await requireBudgetBulk(projectId);
   await assertBudgetEditable(projectId);
+  const reason = await budgetChangeReason(projectId, formData);
   const inProject = `SELECT bl.id FROM budget_line bl JOIN budget b ON b.id=bl.budget_id WHERE b.project_id=$1`;
   await q(`UPDATE requisition SET budget_line_id=NULL WHERE budget_line_id IN (${inProject})`, [projectId]);
   await q(`UPDATE activity SET budget_line_id=NULL WHERE budget_line_id IN (${inProject})`, [projectId]);
   await q(`DELETE FROM commitment WHERE budget_line_id IN (${inProject})`, [projectId]);
   await q(`DELETE FROM expenditure WHERE budget_line_id IN (${inProject})`, [projectId]);
   await q(`DELETE FROM budget_line WHERE budget_id IN (SELECT id FROM budget WHERE project_id=$1)`, [projectId]);
-  await writeAudit({ userId: user.id, action: "delete", entity: "budget_line", entityId: projectId, meta: { clearedAll: true } });
+  await writeAudit({ userId: user.id, action: "delete", entity: "budget_line", entityId: projectId, meta: { clearedAll: true, reason: reason ?? undefined } });
   await evaluateProject(projectId);
   revalidatePath(`/projects/${projectId}/budget`);
 }
@@ -519,6 +532,152 @@ export async function deleteExpenditureAction(formData: FormData) {
   revalidatePath(`/projects/${projectId}/spending`);
   revalidatePath(`/projects/${projectId}/budget`);
   redirect(`/projects/${projectId}/spending?exp=deleted`);
+}
+
+/* ---------------- Refunds / reimbursements ---------------- */
+import { nextRefundNumber } from "@/server/services/refunds";
+
+const refundIsPi = (a: { isOrgAdmin: boolean; role: string | null }) => a.isOrgAdmin || a.role === "pi" || a.role === "co_pi";
+const refundIsFinance = (a: { isOrgAdmin: boolean; role: string | null }) => a.isOrgAdmin || a.role === "finance_admin";
+
+async function notifyRefundApprovers(projectId: string, step: "pi" | "finance", number: string, amount: number, orgId: string) {
+  const roles = step === "pi" ? ["pi", "co_pi"] : ["finance_admin"];
+  const members = await q<{ userId: string }>(`SELECT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role = ANY($2::text[])`, [projectId, roles]);
+  for (const m of members) {
+    await notify({ orgId, userId: m.userId, type: "approval_needed", title: `Refund ${number} needs ${step === "pi" ? "PI" : "finance"} approval`,
+      body: `A refund/reimbursement is awaiting your approval.`, link: `/projects/${projectId}/requisitions`, email: false });
+  }
+}
+
+// Any project member (including the PI) can request a refund/reimbursement for money
+// already recorded as spent. Evidence is required. PI/Co-PI requests go straight to
+// finance; everyone else is routed to the PI first, then finance.
+export async function createRefundRequestAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const access = await getProjectAccess(projectId);
+  if (!access.permissions.has("project.view")) throw new Error("FORBIDDEN");
+  const expenditureId = String(formData.get("expenditureId") || "");
+  const exp = await one<{ projectId: string; amount: number; budgetLineId: string | null }>(
+    `SELECT project_id AS "projectId", amount, budget_line_id AS "budgetLineId" FROM expenditure WHERE id=$1`, [expenditureId]);
+  if (!exp || exp.projectId !== projectId) redirect(`/projects/${projectId}/requisitions?rfd=badexp`);
+  const reason = String(formData.get("reason") || "").trim();
+  const file = formData.get("evidence") as File | null;
+  if (!file || file.size === 0) redirect(`/projects/${projectId}/requisitions?rfd=needevidence`);
+  if (!reason) redirect(`/projects/${projectId}/requisitions?rfd=needreason`);
+  const amount = Number(formData.get("amount") || exp.amount) || exp.amount;
+
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
+  const orgId = org!.orgId;
+  const number = await nextRefundNumber(orgId);
+  const rid = id("rfd");
+  const requiresPi = !refundIsPi(access); // PI/Co-PI (and org admins) skip straight to finance
+  await q(`INSERT INTO refund_request (id, org_id, project_id, expenditure_id, budget_line_id, number, amount, reason,
+             requested_by_id, requested_by_name, requester_role, requires_pi, status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'submitted')`,
+    [rid, orgId, projectId, expenditureId, exp.budgetLineId, number, amount, reason,
+     user.id, user.name, access.role ?? (access.isOrgAdmin ? "org_admin" : "member"), requiresPi]);
+  const buf = Buffer.from(await file.arrayBuffer());
+  const fid = id("rff");
+  const key = await saveUpload(fid, file.name, buf);
+  await q(`INSERT INTO refund_file (id, refund_id, kind, name, storage_key, mime_type, size_bytes, uploaded_by)
+           VALUES ($1,$2,'evidence',$3,$4,$5,$6,$7)`, [fid, rid, file.name, key, mimeFor(file.name), buf.length, user.id]);
+  await writeAudit({ orgId, userId: user.id, action: "create", entity: "refund_request", entityId: projectId, meta: { number, amount, requiresPi } });
+  await notifyRefundApprovers(projectId, requiresPi ? "pi" : "finance", number, amount, orgId);
+  revalidatePath(`/projects/${projectId}/requisitions`);
+  redirect(`/projects/${projectId}/requisitions?rfd=created`);
+}
+
+async function loadRefund(rid: string, projectId: string) {
+  const r = await one<{ projectId: string; status: string; requiresPi: boolean; requestedById: string | null; number: string; amount: number; orgId: string }>(
+    `SELECT project_id AS "projectId", status, requires_pi AS "requiresPi", requested_by_id AS "requestedById", number, amount, org_id AS "orgId" FROM refund_request WHERE id=$1`, [rid]);
+  if (!r || r.projectId !== projectId) return null;
+  return r;
+}
+
+export async function decideRefundAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const rid = String(formData.get("refundId"));
+  const decision = String(formData.get("decision")) === "approved" ? "approved" : "rejected";
+  const comment = String(formData.get("comment") || "").trim() || null;
+  const access = await getProjectAccess(projectId);
+  const r = await loadRefund(rid, projectId);
+  if (!r) redirect(`/projects/${projectId}/requisitions`);
+  if (!refundIsPi(access)) throw new Error("FORBIDDEN");
+  if (r!.requestedById && r!.requestedById === user.id) redirect(`/projects/${projectId}/requisitions?rfd=selfapprove`);
+  if (!(r!.status === "submitted" && r!.requiresPi)) redirect(`/projects/${projectId}/requisitions?rfd=badstate`);
+  const newStatus = decision === "approved" ? "pi_approved" : "rejected";
+  await q(`UPDATE refund_request SET pi_decision=$2, pi_by_id=$3, pi_by_name=$4, pi_at=now(), pi_comment=$5, status=$6 WHERE id=$1`,
+    [rid, decision, user.id, user.name, comment, newStatus]);
+  await writeAudit({ orgId: r!.orgId, userId: user.id, action: decision === "approved" ? "approve" : "reject", entity: "refund_request", entityId: projectId, meta: { number: r!.number, step: "pi", comment } });
+  if (decision === "approved") await notifyRefundApprovers(projectId, "finance", r!.number, r!.amount, r!.orgId);
+  else if (r!.requestedById) await notify({ orgId: r!.orgId, userId: r!.requestedById, type: "approval_needed", title: `Refund ${r!.number} was rejected by the PI`, link: `/projects/${projectId}/requisitions`, email: false });
+  revalidatePath(`/projects/${projectId}/requisitions`);
+  redirect(`/projects/${projectId}/requisitions?rfd=decided`);
+}
+
+export async function financeDecideRefundAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const rid = String(formData.get("refundId"));
+  const decision = String(formData.get("decision")) === "approved" ? "approved" : "rejected";
+  const comment = String(formData.get("comment") || "").trim() || null;
+  const access = await getProjectAccess(projectId);
+  const r = await loadRefund(rid, projectId);
+  if (!r) redirect(`/projects/${projectId}/requisitions`);
+  if (!refundIsFinance(access)) throw new Error("FORBIDDEN");
+  if (r!.requestedById && r!.requestedById === user.id) redirect(`/projects/${projectId}/requisitions?rfd=selfapprove`);
+  const validState = r!.requiresPi ? "pi_approved" : "submitted";
+  if (r!.status !== validState) redirect(`/projects/${projectId}/requisitions?rfd=badstate`);
+  const newStatus = decision === "approved" ? "approved" : "rejected";
+  await q(`UPDATE refund_request SET finance_decision=$2, finance_by_id=$3, finance_by_name=$4, finance_at=now(), finance_comment=$5, status=$6 WHERE id=$1`,
+    [rid, decision, user.id, user.name, comment, newStatus]);
+  await writeAudit({ orgId: r!.orgId, userId: user.id, action: decision === "approved" ? "approve" : "reject", entity: "refund_request", entityId: projectId, meta: { number: r!.number, step: "finance", comment } });
+  if (r!.requestedById) await notify({ orgId: r!.orgId, userId: r!.requestedById, type: "approval_needed",
+    title: `Refund ${r!.number} ${decision === "approved" ? "approved — awaiting payment" : "was rejected by finance"}`, link: `/projects/${projectId}/requisitions`, email: false });
+  revalidatePath(`/projects/${projectId}/requisitions`);
+  redirect(`/projects/${projectId}/requisitions?rfd=decided`);
+}
+
+export async function payRefundAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const rid = String(formData.get("refundId"));
+  const access = await getProjectAccess(projectId);
+  const r = await loadRefund(rid, projectId);
+  if (!r) redirect(`/projects/${projectId}/requisitions`);
+  if (!refundIsFinance(access)) throw new Error("FORBIDDEN");
+  if (r!.status !== "approved") redirect(`/projects/${projectId}/requisitions?rfd=badstate`);
+  const file = formData.get("proof") as File | null;
+  if (!file || file.size === 0) redirect(`/projects/${projectId}/requisitions?rfd=needproof`);
+  const paymentRef = String(formData.get("paymentRef") || "").trim() || null;
+  const buf = Buffer.from(await file.arrayBuffer());
+  const fid = id("rff");
+  const key = await saveUpload(fid, file.name, buf);
+  await q(`INSERT INTO refund_file (id, refund_id, kind, name, storage_key, mime_type, size_bytes, uploaded_by)
+           VALUES ($1,$2,'proof',$3,$4,$5,$6,$7)`, [fid, rid, file.name, key, mimeFor(file.name), buf.length, user.id]);
+  await q(`UPDATE refund_request SET paid_at=now(), paid_by_id=$2, paid_by_name=$3, payment_ref=$4, status='paid' WHERE id=$1`,
+    [rid, user.id, user.name, paymentRef]);
+  await writeAudit({ orgId: r!.orgId, userId: user.id, action: "pay", entity: "refund_request", entityId: projectId, meta: { number: r!.number, paymentRef } });
+  if (r!.requestedById) await notify({ orgId: r!.orgId, userId: r!.requestedById, type: "approval_needed", title: `Refund ${r!.number} paid — please acknowledge receipt`, link: `/projects/${projectId}/requisitions`, email: false });
+  revalidatePath(`/projects/${projectId}/requisitions`);
+  redirect(`/projects/${projectId}/requisitions?rfd=paid`);
+}
+
+export async function acknowledgeRefundAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const rid = String(formData.get("refundId"));
+  const note = String(formData.get("note") || "").trim() || null;
+  const r = await loadRefund(rid, projectId);
+  if (!r) redirect(`/projects/${projectId}/requisitions`);
+  if (r!.requestedById !== user.id) throw new Error("FORBIDDEN");
+  if (r!.status !== "paid") redirect(`/projects/${projectId}/requisitions?rfd=badstate`);
+  await q(`UPDATE refund_request SET acknowledged_at=now(), acknowledged_note=$2, status='acknowledged' WHERE id=$1`, [rid, note]);
+  await writeAudit({ orgId: r!.orgId, userId: user.id, action: "acknowledge", entity: "refund_request", entityId: projectId, meta: { number: r!.number, note } });
+  revalidatePath(`/projects/${projectId}/requisitions`);
+  redirect(`/projects/${projectId}/requisitions?rfd=acknowledged`);
 }
 
 /* ---------------- Requisitions ---------------- */

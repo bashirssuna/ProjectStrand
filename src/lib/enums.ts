@@ -68,6 +68,8 @@ export const STATUS_TONE: Record<string, "ok" | "warn" | "danger" | "info" | "mu
   submitted: "info", finance_review: "info", pm_approval: "info",
   admin_approval: "info", approved: "ok", partially_funded: "warn", rejected: "danger",
   disbursed: "ok", retired: "ok",
+  // refunds
+  pi_approved: "info", paid: "ok", acknowledged: "ok",
   // anomaly / generic
   info: "info", warning: "warn", critical: "danger", open: "warn", mitigating: "info",
 };

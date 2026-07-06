@@ -3,18 +3,40 @@ import { getProjectAccess } from "@/server/policy";
 import { q, one } from "@/server/db";
 import { budgetLineRollups } from "@/server/services/budget";
 import { outstandingAdvances } from "@/server/services/requisitions";
-import { createRequisitionAction } from "@/app/actions";
+import { listRefunds, refundableExpenditures } from "@/server/services/refunds";
+import { createRequisitionAction, createRefundRequestAction, decideRefundAction, financeDecideRefundAction, payRefundAction, acknowledgeRefundAction } from "@/app/actions";
 import { SectionTitle, Empty, StatusBadge, Field, Badge } from "@/components/ui";
-import { money, fmtDate } from "@/lib/format";
+import { label } from "@/lib/enums";
+import { money, fmtDate, fmtDateTime } from "@/lib/format";
 import { blockStaff } from "../_staffblock";
 
-export default async function RequisitionsPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function RequisitionsPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ rfd?: string }> }) {
   const { id } = await params;
+  const sp = await searchParams;
   await blockStaff(id);
   const access = await getProjectAccess(id);
   const canCreate = access.permissions.has("requisitions.create");
+  const meId = access.user.id;
+  const isPi = access.isOrgAdmin || access.role === "pi" || access.role === "co_pi";
+  const isFinance = access.isOrgAdmin || access.role === "finance_admin";
+  const canRequestRefund = access.permissions.has("project.view");
   const proj = await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [id]);
   const c = proj?.currency ?? "USD";
+
+  const refunds = await listRefunds(id);
+  const refundExps = await refundableExpenditures(id);
+  const refundFileRows = await q<{ refundId: string; id: string; kind: string; name: string }>(
+    `SELECT rf.refund_id AS "refundId", rf.id, rf.kind, rf.name FROM refund_file rf
+     JOIN refund_request r ON r.id=rf.refund_id WHERE r.project_id=$1 ORDER BY rf.created_at`, [id]);
+  const filesByRefund = new Map<string, { id: string; kind: string; name: string }[]>();
+  for (const f of refundFileRows) { const a = filesByRefund.get(f.refundId) ?? []; a.push(f); filesByRefund.set(f.refundId, a); }
+  const RFD_MSG: Record<string, string> = {
+    created: "Refund requested — sent for approval.", decided: "Decision recorded.", paid: "Refund marked paid.",
+    acknowledged: "Receipt acknowledged. Thank you.", needevidence: "Please attach evidence for the refund.",
+    needreason: "Please give a reason for the refund.", needproof: "Please attach proof of payment.",
+    selfapprove: "You can't approve your own refund request.", badstate: "That refund isn't at a stage where this action applies.",
+    badexp: "Pick a valid expenditure to refund against.",
+  };
 
   const reqs = await q<{ id: string; number: string; title: string; amount: number; status: string; neededBy: string | null; requester: string | null }>(
     `SELECT r.id, r.number, r.title, r.amount, r.status, r.needed_by AS "neededBy", u.name AS requester
@@ -96,6 +118,112 @@ export default async function RequisitionsPage({ params }: { params: Promise<{ i
             </table>
           </div>
         )}
+      </div>
+
+      {/* ---------------- Refunds & reimbursements ---------------- */}
+      {sp.rfd && (
+        <div className="card p-3 text-sm" style={{ color: ["created", "decided", "paid", "acknowledged"].includes(sp.rfd) ? "var(--ok)" : "var(--danger)", borderColor: ["created", "decided", "paid", "acknowledged"].includes(sp.rfd) ? "var(--ok)" : "var(--danger)" }}>
+          {RFD_MSG[sp.rfd] ?? ""}
+        </div>
+      )}
+      <div>
+        <SectionTitle>Refunds &amp; reimbursements</SectionTitle>
+        <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
+          Claim money back for spend already recorded in <Link href={`/projects/${id}/spending`} className="hover:underline" style={{ color: "var(--brand)" }}>Spending</Link>, with evidence attached.
+          PI / Co-PI requests are approved by Finance alone; everyone else is routed to the PI first, then Finance. When paid, Finance attaches proof of payment and the requester acknowledges receipt.
+        </p>
+
+        {refunds.length === 0 ? (
+          <Empty title="No refund requests" hint={canRequestRefund ? "Request a reimbursement below." : "No refunds requested yet."} />
+        ) : (
+          <div className="space-y-3">
+            {refunds.map((r) => {
+              const files = filesByRefund.get(r.id) ?? [];
+              const evidence = files.filter((f) => f.kind === "evidence");
+              const proof = files.filter((f) => f.kind === "proof");
+              const isRequester = r.requestedById === meId;
+              const canPiAct = isPi && !isRequester && r.status === "submitted" && r.requiresPi;
+              const canFinAct = isFinance && !isRequester && r.status === (r.requiresPi ? "pi_approved" : "submitted");
+              const canPay = isFinance && r.status === "approved";
+              const canAck = isRequester && r.status === "paid";
+              return (
+                <div key={r.id} className="card p-4">
+                  <div className="flex flex-wrap items-center gap-2 mb-2">
+                    <span className="font-mono text-xs">{r.number}</span>
+                    <StatusBadge status={r.status} />
+                    <span className="font-medium">{money(r.amount, c)}</span>
+                    <span className="text-sm" style={{ color: "var(--muted)" }}>· {r.requestedByName ?? "—"} ({label(r.requesterRole ?? "member")})</span>
+                    <span className="ml-auto text-xs" style={{ color: "var(--muted)" }}>{r.lineCode ? `${r.lineCode} · ` : ""}{r.expenditurePayee ?? r.expenditureRef ?? "expenditure"}</span>
+                  </div>
+                  {r.reason && <p className="text-sm mb-2">{r.reason}</p>}
+                  <div className="text-xs mb-2" style={{ color: "var(--muted)" }}>
+                    Evidence: {evidence.length ? evidence.map((f) => <a key={f.id} href={`/api/refund-files/${f.id}`} target="_blank" className="hover:underline mr-2" style={{ color: "var(--brand)" }}>📎 {f.name}</a>) : "—"}
+                  </div>
+                  <div className="text-xs space-y-0.5 mb-1" style={{ color: "var(--muted)" }}>
+                    {r.requiresPi && r.piDecision && <div>PI {r.piDecision} by {r.piByName} · {fmtDateTime(r.piAt)}{r.piComment ? ` — ${r.piComment}` : ""}</div>}
+                    {r.financeDecision && <div>Finance {r.financeDecision} by {r.financeByName} · {fmtDateTime(r.financeAt)}{r.financeComment ? ` — ${r.financeComment}` : ""}</div>}
+                    {r.paidAt && <div>Paid by {r.paidByName} · {fmtDateTime(r.paidAt)}{r.paymentRef ? ` · ref ${r.paymentRef}` : ""}{proof.map((f) => <a key={f.id} href={`/api/refund-files/${f.id}`} target="_blank" className="hover:underline ml-1" style={{ color: "var(--brand)" }}>📎 proof</a>)}</div>}
+                    {r.acknowledgedAt && <div style={{ color: "var(--ok)" }}>✓ Acknowledged by requester · {fmtDateTime(r.acknowledgedAt)}{r.acknowledgedNote ? ` — “${r.acknowledgedNote}”` : ""}</div>}
+                  </div>
+
+                  {canPiAct && (
+                    <form action={decideRefundAction} className="flex flex-wrap items-end gap-2 pt-2 mt-1" style={{ borderTop: "1px solid var(--border)" }}>
+                      <input type="hidden" name="projectId" value={id} /><input type="hidden" name="refundId" value={r.id} />
+                      <Field label="PI comment"><input name="comment" className="input input-sm" placeholder="optional" /></Field>
+                      <button name="decision" value="approved" className="btn btn-sm btn-primary" type="submit">PI approve</button>
+                      <button name="decision" value="rejected" className="btn btn-sm" type="submit" style={{ color: "var(--danger)" }}>Reject</button>
+                    </form>
+                  )}
+                  {canFinAct && (
+                    <form action={financeDecideRefundAction} className="flex flex-wrap items-end gap-2 pt-2 mt-1" style={{ borderTop: "1px solid var(--border)" }}>
+                      <input type="hidden" name="projectId" value={id} /><input type="hidden" name="refundId" value={r.id} />
+                      <Field label="Finance comment"><input name="comment" className="input input-sm" placeholder="optional" /></Field>
+                      <button name="decision" value="approved" className="btn btn-sm btn-primary" type="submit">Finance approve</button>
+                      <button name="decision" value="rejected" className="btn btn-sm" type="submit" style={{ color: "var(--danger)" }}>Reject</button>
+                    </form>
+                  )}
+                  {canPay && (
+                    <form action={payRefundAction} className="grid gap-2 pt-2 mt-1" style={{ borderTop: "1px solid var(--border)" }}>
+                      <input type="hidden" name="projectId" value={id} /><input type="hidden" name="refundId" value={r.id} />
+                      <div className="grid sm:grid-cols-2 gap-2">
+                        <Field label="Payment reference"><input name="paymentRef" className="input input-sm" placeholder="e.g. bank txn ref" /></Field>
+                        <Field label="Proof of payment (required)"><input type="file" name="proof" required className="input input-sm" /></Field>
+                      </div>
+                      <div><button className="btn btn-sm btn-primary" type="submit">Mark paid &amp; attach proof</button></div>
+                    </form>
+                  )}
+                  {canAck && (
+                    <form action={acknowledgeRefundAction} className="grid gap-2 pt-2 mt-1" style={{ borderTop: "1px solid var(--border)" }}>
+                      <input type="hidden" name="projectId" value={id} /><input type="hidden" name="refundId" value={r.id} />
+                      <Field label="Acknowledge receipt — note (optional)"><input name="note" className="input input-sm" placeholder="e.g. received in full" /></Field>
+                      <div><button className="btn btn-sm btn-primary" type="submit">Acknowledge receipt</button></div>
+                    </form>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {canRequestRefund && (refundExps.length > 0 ? (
+          <div className="mt-4">
+            <SectionTitle>Request a refund / reimbursement</SectionTitle>
+            <form action={createRefundRequestAction} className="card p-4 grid sm:grid-cols-2 gap-4">
+              <input type="hidden" name="projectId" value={id} />
+              <Field label="Against expenditure (from Spending)">
+                <select name="expenditureId" required className="select">
+                  {refundExps.map((e) => <option key={e.id} value={e.id}>{(e.reference || e.payee || "expenditure")} — {money(e.amount, c)}{e.lineCode ? ` (${e.lineCode})` : ""} · {fmtDate(e.date)}</option>)}
+                </select>
+              </Field>
+              <Field label="Amount to refund"><input type="number" step="0.01" name="amount" className="input" placeholder="defaults to the expenditure amount" /></Field>
+              <div className="sm:col-span-2"><Field label="Reason (required)"><textarea name="reason" required rows={2} className="textarea" placeholder="What is this refund for?" /></Field></div>
+              <div className="sm:col-span-2"><Field label="Evidence (required — receipt, invoice, bank slip…)"><input type="file" name="evidence" required className="input" /></Field></div>
+              <div className="sm:col-span-2 flex justify-end"><button className="btn btn-primary" type="submit">Request refund</button></div>
+            </form>
+          </div>
+        ) : (
+          <p className="text-xs mt-3" style={{ color: "var(--muted)" }}>No recorded spend yet to refund against — record expenditure in <Link href={`/projects/${id}/spending`} className="hover:underline" style={{ color: "var(--brand)" }}>Spending</Link> first.</p>
+        ))}
       </div>
 
       {canCreate ? (

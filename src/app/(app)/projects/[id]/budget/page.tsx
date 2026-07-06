@@ -17,8 +17,11 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
   const access = await getProjectAccess(id);
   const canManage = access.permissions.has("budget.manage");
   const canBulk = canManageBudgetBulk(access);
-  const proj = await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [id]);
+  const proj = await one<{ currency: string; status: string }>(`SELECT currency, status FROM project WHERE id=$1`, [id]);
   const c = proj?.currency ?? "USD";
+  // Budget editing (add/edit/delete lines, clear all) is restricted to PI / Co-PI /
+  // Finance / org admin. On a LIVE (active) project every change needs a reason.
+  const isLive = proj?.status === "active";
 
   const bud = await one<{ id: string; name: string; kind: string; status: string }>(
     `SELECT id, name, kind, status FROM budget WHERE project_id=$1 ORDER BY version DESC LIMIT 1`, [id]
@@ -27,7 +30,10 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
   const editable = !bud || status !== "approved";
   const approvals = bud ? await budgetApprovalHistory(bud.id) : [];
   const reallocations = bud ? await budgetReallocations(bud.id) : [];
-  const canEdit = canManage && editable;
+  const canEdit = canBulk && editable;
+  const reasonField = isLive ? (
+    <Field label="Reason for this change (required — project is live)"><input name="reason" required className="input" placeholder="Why is the budget being changed?" /></Field>
+  ) : null;
   const lines = bud ? await budgetLineRollups(bud.id) : [];
   const sum = bud ? await budgetSummary(bud.id) : null;
   const cats = bud ? await q<{ id: string; name: string; costType: string }>(
@@ -100,14 +106,16 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
             <Field label="× Days / times"><input name="frequency" type="number" step="any" defaultValue={l.frequency} className="input" /></Field>
           </div>
           <Field label="Justification"><textarea name="justification" rows={2} defaultValue={l.justification ?? ""} className="textarea" placeholder="Why this cost is needed" /></Field>
+          {reasonField}
           <div className="flex gap-2">
             <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
             <CancelButton className="btn btn-sm">Cancel</CancelButton>
           </div>
         </form>
-        <form action={deleteBudgetLineAction} className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+        <form action={deleteBudgetLineAction} className="mt-3 pt-3 grid gap-2" style={{ borderTop: "1px solid var(--border)" }}>
           <input type="hidden" name="projectId" value={id} />
           <input type="hidden" name="lineId" value={l.id} />
+          {isLive && <Field label="Reason for deletion (required — project is live)"><input name="reason" required className="input" placeholder="Why delete this line?" /></Field>}
           <button className="btn btn-sm w-full" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Delete this line</button>
         </form>
         <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
@@ -151,7 +159,8 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
   return (
     <div className="space-y-7">
       {sp.bm && (
-        <div className="card p-3 text-sm" style={{ color: ["insufficient", "badmove"].includes(sp.bm) ? "var(--danger)" : "var(--ok)", borderColor: ["insufficient", "badmove"].includes(sp.bm) ? "var(--danger)" : "var(--ok)" }}>
+        <div className="card p-3 text-sm" style={{ color: ["insufficient", "badmove", "needreason"].includes(sp.bm) ? "var(--danger)" : "var(--ok)", borderColor: ["insufficient", "badmove", "needreason"].includes(sp.bm) ? "var(--danger)" : "var(--ok)" }}>
+          {sp.bm === "needreason" && "This project is live — a reason is required for any budget change. Please try again and give a reason."}
           {sp.bm === "submitted" && "Budget submitted for approval."}
           {sp.bm === "approved" && "Budget approved and locked. Reopen it to make further changes."}
           {sp.bm === "rejected" && "Budget returned for revision."}
@@ -218,7 +227,8 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
               </form>
             )}
             {canBulk && lines.length > 0 && (
-              <form action={clearBudgetLinesAction}><input type="hidden" name="projectId" value={id} />
+              <form action={clearBudgetLinesAction} className="flex items-center gap-2"><input type="hidden" name="projectId" value={id} />
+                {isLive && <input name="reason" required placeholder="Reason (required)" className="input input-sm" style={{ width: 170 }} />}
                 <ConfirmSubmit
                   message="Clear ALL budget lines? This permanently deletes every line along with its committed and spent records, and unlinks any requisitions and activities tied to them. This cannot be undone."
                   className="btn btn-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Clear all</ConfirmSubmit>
@@ -316,6 +326,7 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
             <Field label="× Days / times"><input type="number" step="0.01" name="frequency" className="input" defaultValue={1} /></Field>
             <div className="sm:col-span-5"><Field label="Justification (optional)"><input name="justification" className="input" placeholder="Why this cost is needed" /></Field></div>
             <button className="btn btn-primary self-end" type="submit">Add line</button>
+            {isLive && <div className="sm:col-span-6"><Field label="Reason for adding this line (required — project is live)"><input name="reason" required className="input" placeholder="Why is this line being added to a live budget?" /></Field></div>}
           </form>
           <p className="text-xs mt-2" style={{ color: "var(--muted)" }}>Planned amount = unit cost / rate × qty × days/times. For a lump sum, leave qty and days at 1. Example (Personnel): 4 RAs × 50,000/day × 240 days.</p>
         </div>

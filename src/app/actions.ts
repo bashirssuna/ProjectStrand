@@ -465,9 +465,9 @@ export async function editExpenditureAction(formData: FormData) {
   const expId = String(formData.get("expenditureId"));
   const reason = String(formData.get("reason") || "").trim();
   const access = await getProjectAccess(projectId);
-  const exp = await one<{ projectId: string; createdById: string | null; amount: number; budgetLineId: string; date: string; reference: string | null; payee: string | null; note: string | null }>(
+  const exp = await one<{ projectId: string; createdById: string | null; amount: number; budgetLineId: string; date: string; reference: string | null; payee: string | null; note: string | null; approved: boolean }>(
     `SELECT project_id AS "projectId", created_by_id AS "createdById", amount, budget_line_id AS "budgetLineId",
-            date, reference, payee, note FROM expenditure WHERE id=$1`, [expId]);
+            date, reference, payee, note, approved FROM expenditure WHERE id=$1`, [expId]);
   if (!exp || exp.projectId !== projectId) redirect(`/projects/${projectId}/spending`);
   const isOwner = !!exp.createdById && exp.createdById === user.id;
   if (!isOwner && !canManageBudgetBulk(access)) throw new Error("FORBIDDEN");
@@ -494,7 +494,13 @@ export async function editExpenditureAction(formData: FormData) {
     [expId, newAmount, newLine, newDate, newRef, newPayee, newApproved, mergedNote, projectId]);
 
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
-  if (org) {
+  // Touch the ledger only when a posting-relevant field changed (amount, date,
+  // reference, payee, line or the approved flag) — editing a note must not create
+  // reversal churn in the journal. Un-approving reverses; the re-post below is a
+  // no-op for unapproved records (approval gate in postExpenditureToLedger).
+  const day = (d: unknown) => { try { return new Date(d as string).toISOString().slice(0, 10); } catch { return String(d); } };
+  const ledgerRelevant = changes.length > 0 || day(newDate) !== day(exp.date) || exp.approved !== newApproved;
+  if (org && ledgerRelevant) {
     await reverseExpenditureJournals(org.orgId, expId, { id: user.id, name: user.name });
     await postExpenditureToLedger({ orgId: org.orgId, projectId, expenditureId: expId, amount: newAmount, date: String(newDate), reference: newRef, payee: newPayee, postedBy: user.id, postedByName: user.name, force: true });
   }
@@ -610,6 +616,28 @@ async function loadRefund(rid: string, projectId: string) {
   return r;
 }
 
+// A reimbursement reaches the books only at final (finance) approval. Linked
+// refunds approve & post their underlying expenditure record; standalone refunds
+// post their own entry. Idempotent — also called at payment as a safety net for
+// refunds that were approved before this rule existed.
+async function postApprovedRefund(rid: string, by: { id: string; name: string }): Promise<void> {
+  const r = await one<{ orgId: string; projectId: string; expenditureId: string | null; number: string; amount: number; requestedByName: string | null }>(
+    `SELECT org_id AS "orgId", project_id AS "projectId", expenditure_id AS "expenditureId", number, amount, requested_by_name AS "requestedByName"
+     FROM refund_request WHERE id=$1`, [rid]);
+  if (!r) return;
+  if (r.expenditureId) {
+    const exp = await one<{ amount: number; date: string; reference: string | null; payee: string | null; approved: boolean }>(
+      `SELECT amount, to_char(date, 'YYYY-MM-DD') AS date, reference, payee, approved FROM expenditure WHERE id=$1`, [r.expenditureId]);
+    if (!exp) return;
+    if (!exp.approved) await q(`UPDATE expenditure SET approved=true WHERE id=$1`, [r.expenditureId]);
+    await postExpenditureToLedger({ orgId: r.orgId, projectId: r.projectId, expenditureId: r.expenditureId,
+      amount: exp.amount, date: exp.date, reference: exp.reference, payee: exp.payee, postedBy: by.id, postedByName: by.name });
+  } else {
+    await postRefundToLedger({ orgId: r.orgId, projectId: r.projectId, refundId: rid, number: r.number,
+      amount: r.amount, payee: r.requestedByName, postedBy: by.id, postedByName: by.name });
+  }
+}
+
 export async function decideRefundAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
@@ -648,6 +676,8 @@ export async function financeDecideRefundAction(formData: FormData) {
   const newStatus = decision === "approved" ? "approved" : "rejected";
   await q(`UPDATE refund_request SET finance_decision=$2, finance_by_id=$3, finance_by_name=$4, finance_at=now(), finance_comment=$5, status=$6 WHERE id=$1`,
     [rid, decision, user.id, user.name, comment, newStatus]);
+  // Final approval is the moment the reimbursement becomes real spend — post it now.
+  if (decision === "approved") await postApprovedRefund(rid, { id: user.id, name: user.name });
   await writeAudit({ orgId: r!.orgId, userId: user.id, action: decision === "approved" ? "approve" : "reject", entity: "refund_request", entityId: projectId, meta: { number: r!.number, step: "finance", comment } });
   if (r!.requestedById) await notify({ orgId: r!.orgId, userId: r!.requestedById, type: "approval_needed",
     title: `Refund ${r!.number} ${decision === "approved" ? "approved — awaiting payment" : "was rejected by finance"}`, link: `/projects/${projectId}/requisitions`, email: false });
@@ -674,6 +704,9 @@ export async function payRefundAction(formData: FormData) {
            VALUES ($1,$2,'proof',$3,$4,$5,$6,$7)`, [fid, rid, file.name, key, mimeFor(file.name), buf.length, user.id]);
   await q(`UPDATE refund_request SET paid_at=now(), paid_by_id=$2, paid_by_name=$3, payment_ref=$4, status='paid' WHERE id=$1`,
     [rid, user.id, user.name, paymentRef]);
+  // Safety net: refunds approved before posting-at-approval existed post here instead
+  // (idempotent — skips when the entry is already in the ledger).
+  await postApprovedRefund(rid, { id: user.id, name: user.name });
   await writeAudit({ orgId: r!.orgId, userId: user.id, action: "pay", entity: "refund_request", entityId: projectId, meta: { number: r!.number, paymentRef } });
   if (r!.requestedById) await notify({ orgId: r!.orgId, userId: r!.requestedById, type: "approval_needed", title: `Refund ${r!.number} paid — please acknowledge receipt`, link: `/projects/${projectId}/requisitions`, email: false });
   revalidatePath(`/projects/${projectId}/requisitions`);
@@ -2457,7 +2490,7 @@ import {
   ensureChartOfAccounts, postJournal, reverseJournal,
   institutionalStatements, accountBalances, postExpenditureToLedger,
   postCashPayment, postCashReceipt, postFundsTransfer, reverseExpenditureJournals, recognizeIndirectRecovery, reconcileLedger,
-  autoArchiveOldJournals,
+  autoArchiveOldJournals, postRefundToLedger,
 } from "@/server/services/ledger";
 
 // Institution-level finance is restricted to organisation admins. Returns the
@@ -2576,7 +2609,7 @@ export async function reconcileLedgerAction() {
   const r = await reconcileLedger(orgId, { id: userId, name: userName });
   await writeAudit({ orgId, userId, action: "reconcile", entity: "ledger", meta: r });
   revalidatePath("/finance");
-  redirect(`/finance?reconciled=${r.overheadPosted}-${r.expendituresFixed}`);
+  redirect(`/finance?reconciled=${r.overheadPosted}-${r.expendituresFixed}-${r.unapprovedCleared}`);
 }
 
 /* ===================== FINANCE OPS: invoices, receipts, assets, bank, FX ===================== */

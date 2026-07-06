@@ -39,8 +39,10 @@ export default async function FinanceHome({ searchParams }: { searchParams: Prom
           <Link href="/operations" className="btn btn-sm">Institutional overview →</Link>
         </div>
       } />
-      {sp.reconciled && (() => { const [o, e] = sp.reconciled.split("-"); return (
-        <div className="card p-3 mb-4 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Ledger reconciled — recognised overhead on {o} approved budget{o === "1" ? "" : "s"} and grant income on {e} past expenditure{e === "1" ? "" : "s"}.</div>
+      {sp.reconciled && (() => { const [o, e, u] = sp.reconciled.split("-"); return (
+        <div className="card p-3 mb-4 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>
+          Ledger reconciled — recognised overhead on {o} approved budget{o === "1" ? "" : "s"}, grant income on {e} past expenditure{e === "1" ? "" : "s"}{Number(u) > 0 ? <>, and pulled {u} unapproved posting{u === "1" ? "" : "s"} back out of the books</> : null}.
+        </div>
       ); })()}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
         <Stat label="Total income" value={money(fs.incomeStatement.totalIncome, c)} sub="all projects" />

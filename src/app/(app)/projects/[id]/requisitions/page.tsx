@@ -212,6 +212,7 @@ export default async function RequisitionsPage({ params, searchParams }: { param
         <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
           Claim money back for spend already recorded in <Link href={`/projects/${id}/spending`} className="hover:underline" style={{ color: "var(--brand)" }}>Spending</Link>, with evidence attached.
           PI / Co-PI requests are approved by Finance alone; everyone else is routed to the PI first, then Finance. When paid, Finance attaches proof of payment and the requester acknowledges receipt.
+          Nothing reaches the general ledger or financial statements until Finance gives final approval.
         </p>
 
         {refunds.length === 0 ? (

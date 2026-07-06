@@ -15,7 +15,7 @@ import { id } from "@/lib/ids";
 export type JournalSource =
   | "manual" | "expenditure" | "voucher" | "reversal" | "fx_revaluation"
   | "payroll" | "vendor_bill" | "vendor_payment" | "subaward" | "perdiem"
-  | "petty_cash" | "funding" | "treasury" | "inventory";
+  | "petty_cash" | "funding" | "treasury" | "inventory" | "refund";
 
 export type JournalLineInput = {
   accountId: string;
@@ -212,8 +212,17 @@ export async function institutionalStatements(orgId: string, opts?: { from?: str
   const cumulative = await accountBalances(orgId, { upTo: to, projectId: opts?.projectId });
   const period = opts?.from ? await accountBalances(orgId, { from: opts.from, upTo: to, projectId: opts?.projectId }) : cumulative;
 
-  const totalDebit = round2(cumulative.reduce((s, a) => s + a.debit, 0));
-  const totalCredit = round2(cumulative.reduce((s, a) => s + a.credit, 0));
+  // Trial balance in the standard form: each account's NET closing balance on one
+  // side (not gross debit/credit turnover, which double-counts corrections and
+  // reversals and makes the totals look inflated).
+  const tbAccounts = cumulative
+    .map((a) => {
+      const net = round2(a.debit - a.credit);
+      return { ...a, debit: net > 0 ? net : 0, credit: net < 0 ? round2(-net) : 0 };
+    })
+    .filter((a) => a.debit !== 0 || a.credit !== 0);
+  const totalDebit = round2(tbAccounts.reduce((s, a) => s + a.debit, 0));
+  const totalCredit = round2(tbAccounts.reduce((s, a) => s + a.credit, 0));
 
   const income = period.filter((a) => a.accountType === "income");
   const expenses = period.filter((a) => a.accountType === "expense");
@@ -232,7 +241,7 @@ export async function institutionalStatements(orgId: string, opts?: { from?: str
     orgName: org.name,
     asOf: to ?? new Date().toISOString().slice(0, 10),
     periodFrom: opts?.from ?? null,
-    trialBalance: { accounts: cumulative.filter((a) => a.debit !== 0 || a.credit !== 0), totalDebit, totalCredit, balanced: totalDebit === totalCredit },
+    trialBalance: { accounts: tbAccounts, totalDebit, totalCredit, balanced: totalDebit === totalCredit },
     incomeStatement: { income, expenses, totalIncome, totalExpense, surplus },
     // Assets = Liabilities + Equity + net surplus (current-year result not yet closed to equity)
     balanceSheet: { assets, liabilities, equity, totalAssets, totalLiabilities, totalEquity, surplus, balanced: round2(totalAssets) === round2(totalLiabilities + totalEquity + surplus) },
@@ -269,7 +278,7 @@ export async function accountTransactions(orgId: string, accountId: string, opts
   if (opts?.to) { p.push(opts.to); w += ` AND je.entry_date <= $${p.length}::date`; }
   if (opts?.projectId) { p.push(opts.projectId); w += ` AND jl.project_id=$${p.length}`; }
   const rows = await q<Omit<LedgerTxn, "running">>(
-    `SELECT jl.id, je.entry_date AS date, je.entry_no AS "entryNo", je.memo, je.source_type AS "sourceType",
+    `SELECT jl.id, to_char(je.entry_date, 'YYYY-MM-DD') AS date, je.entry_no AS "entryNo", je.memo, je.source_type AS "sourceType",
             jl.description, jl.project_id AS "projectId", pr.code AS "projectCode",
             jl.debit::float AS debit, jl.credit::float AS credit
      FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
@@ -286,16 +295,26 @@ export async function accountTransactions(orgId: string, accountId: string, opts
 // Posts the journal for a recorded expenditure, using the org's posting rule
 // (debit expense account, credit cash/bank). Maps the budget line's category to
 // a sensible expense account when possible. No-op if no chart of accounts yet.
+// APPROVAL GATE: only approved expenditures reach the ledger. Draft spend and
+// reimbursement claims awaiting a decision stay out of the books entirely; they
+// post when the record (or its refund request) is finally approved.
 export async function postExpenditureToLedger(input: {
   orgId: string; projectId: string; expenditureId: string; amount: number; date: string;
   reference?: string | null; payee?: string | null; postedBy?: string | null; postedByName?: string | null;
-  force?: boolean; // re-post even if a (reversed) entry already exists — used when editing
+  force?: boolean; // skip the duplicate check — caller has just reversed the old entry (edit flow)
 }): Promise<void> {
   const haveCoa = await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ledger_account WHERE org_id=$1`, [input.orgId]);
   if (!haveCoa || haveCoa.c === 0) return; // ledger not enabled for this org
-  // don't double-post the same expenditure (unless forced, i.e. re-posting after a reversal on edit)
+  const row = await one<{ approved: boolean }>(`SELECT approved FROM expenditure WHERE id=$1`, [input.expenditureId]);
+  if (!row?.approved) return; // not (yet) approved — nothing goes to the books
+  // Don't double-post: skip if an ACTIVE (not-reversed) entry already exists for this
+  // expenditure. Reversed entries don't count — a record reversed on edit/un-approval
+  // can be posted again once it is approved.
   if (!input.force) {
-    const dup = await one<{ id: string }>(`SELECT id FROM journal_entry WHERE source_type='expenditure' AND source_id=$1`, [input.expenditureId]);
+    const dup = await one<{ id: string }>(
+      `SELECT je.id FROM journal_entry je
+       WHERE je.source_type='expenditure' AND je.source_id=$1 AND je.reverses_entry_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM journal_entry r WHERE r.reverses_entry_id=je.id)`, [input.expenditureId]);
     if (dup) return;
   }
 
@@ -328,6 +347,50 @@ export async function postExpenditureToLedger(input: {
     reference: input.reference ?? null,
     sourceType: "expenditure",
     sourceId: input.expenditureId,
+    projectId: input.projectId,
+    postedBy: input.postedBy, postedByName: input.postedByName,
+    lines,
+  });
+}
+
+// A reimbursement that finance has approved is real spend. Refunds LINKED to a
+// recorded expenditure approve & post that expenditure instead (see the refund
+// actions); STANDALONE reimbursements have no expenditure row, so they post their
+// own grant-model entry here (Dr expense, Cr cash, Dr cash, Cr grant income).
+// Idempotent per refund: skips when an active entry already exists.
+export async function postRefundToLedger(input: {
+  orgId: string; projectId: string; refundId: string; number: string; amount: number;
+  payee?: string | null; postedBy?: string | null; postedByName?: string | null;
+}): Promise<void> {
+  const haveCoa = await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ledger_account WHERE org_id=$1`, [input.orgId]);
+  if (!haveCoa || haveCoa.c === 0) return;
+  if (!(input.amount > 0)) return;
+  const dup = await one<{ id: string }>(
+    `SELECT je.id FROM journal_entry je
+     WHERE je.source_type='refund' AND je.source_id=$1 AND je.reverses_entry_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM journal_entry r WHERE r.reverses_entry_id=je.id)`, [input.refundId]);
+  if (dup) return;
+  const rule = await one<{ debit: string | null; credit: string | null }>(
+    `SELECT debit_account_id AS debit, credit_account_id AS credit FROM gl_posting_rule WHERE org_id=$1 AND rule_key='expenditure'`, [input.orgId]);
+  const debitAcc = rule?.debit ?? (await one<{ id: string }>(`SELECT id FROM ledger_account WHERE org_id=$1 AND code='5200'`, [input.orgId]))?.id ?? null;
+  const creditAcc = rule?.credit ?? (await one<{ id: string }>(`SELECT id FROM ledger_account WHERE org_id=$1 AND code='1000'`, [input.orgId]))?.id ?? null;
+  if (!debitAcc || !creditAcc) return;
+  const grantIncomeAcc = (await one<{ id: string }>(`SELECT id FROM ledger_account WHERE org_id=$1 AND code='4000'`, [input.orgId]))?.id ?? null;
+  const lines: JournalLineInput[] = [
+    { accountId: debitAcc, debit: input.amount, description: "Reimbursement", projectId: input.projectId },
+    { accountId: creditAcc, credit: input.amount, description: "Cash/bank", projectId: input.projectId },
+  ];
+  if (grantIncomeAcc) {
+    lines.push({ accountId: creditAcc, debit: input.amount, description: "Grant funds applied", projectId: input.projectId });
+    lines.push({ accountId: grantIncomeAcc, credit: input.amount, description: "Grant income recognised", projectId: input.projectId });
+  }
+  await postJournal({
+    orgId: input.orgId,
+    entryDate: new Date().toISOString().slice(0, 10),
+    memo: `Reimbursement ${input.number}${input.payee ? ` — ${input.payee}` : ""}`,
+    reference: input.number,
+    sourceType: "refund",
+    sourceId: input.refundId,
     projectId: input.projectId,
     postedBy: input.postedBy, postedByName: input.postedByName,
     lines,
@@ -414,9 +477,9 @@ export async function reverseExpenditureJournals(orgId: string, expenditureId: s
 // recognition was enabled: (a) recognise overhead on every already-approved budget
 // that lacks it, and (b) upgrade legacy 2-line expenditure entries so grant income
 // is recognised against them. Idempotent — safe to run repeatedly.
-export async function reconcileLedger(orgId: string, by: { id: string; name: string }): Promise<{ overheadPosted: number; expendituresFixed: number }> {
+export async function reconcileLedger(orgId: string, by: { id: string; name: string }): Promise<{ overheadPosted: number; expendituresFixed: number; unapprovedCleared: number }> {
   const haveCoa = await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ledger_account WHERE org_id=$1`, [orgId]);
-  if (!haveCoa || haveCoa.c === 0) return { overheadPosted: 0, expendituresFixed: 0 };
+  if (!haveCoa || haveCoa.c === 0) return { overheadPosted: 0, expendituresFixed: 0, unapprovedCleared: 0 };
 
   // (a) overhead for approved budgets not yet recognised
   let overheadPosted = 0;
@@ -444,7 +507,8 @@ export async function reconcileLedger(orgId: string, by: { id: string; name: str
             to_char(e.date, 'YYYY-MM-DD') AS date, e.reference, e.payee
      FROM expenditure e
      JOIN project p ON p.id=e.project_id AND p.org_id=$1
-     WHERE COALESCE(e.reference,'') <> 'OVERHEAD-XFER'
+     WHERE e.approved = true
+       AND COALESCE(e.reference,'') <> 'OVERHEAD-XFER'
        AND e.budget_line_id IS NOT NULL
        AND NOT EXISTS (SELECT 1 FROM payment_voucher pv WHERE pv.expenditure_id=e.id)
        AND NOT EXISTS (
@@ -460,7 +524,23 @@ export async function reconcileLedger(orgId: string, by: { id: string; name: str
       date: e.date, reference: e.reference, payee: e.payee, postedBy: by.id, postedByName: by.name, force: true });
     expendituresFixed++;
   }
-  return { overheadPosted, expendituresFixed };
+
+  // (c) pull UNAPPROVED spend back out of the books: draft expenditures and
+  //     reimbursement claims still awaiting a decision must not appear in the
+  //     ledger; reverse any active entry they left behind (posted before the
+  //     approval gate existed). Also clears entries whose expenditure was deleted.
+  let unapprovedCleared = 0;
+  const toClear = await q<{ expenditureId: string }>(
+    `SELECT DISTINCT je.source_id AS "expenditureId"
+     FROM journal_entry je
+     WHERE je.org_id=$1 AND je.source_type='expenditure' AND je.reverses_entry_id IS NULL
+       AND NOT EXISTS (SELECT 1 FROM journal_entry r WHERE r.reverses_entry_id=je.id)
+       AND NOT EXISTS (SELECT 1 FROM expenditure e WHERE e.id=je.source_id AND e.approved=true)`, [orgId]);
+  for (const e of toClear) {
+    await reverseExpenditureJournals(orgId, e.expenditureId, by);
+    unapprovedCleared++;
+  }
+  return { overheadPosted, expendituresFixed, unapprovedCleared };
 }
 
 // Auto-archive settled general-journal entries older than `months` (default 12) so the
@@ -710,12 +790,18 @@ export async function cashFlowStatement(orgId: string, opts?: { from?: string; t
      FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
      WHERE jl.account_id = ANY($1::text[]) AND je.entry_date < $2::date AND ($3::text IS NULL OR jl.project_id = $3)`, [ids, from, pid]
   );
-  // movements in the window, grouped by entry (so each row is one transaction)
+  // movements in the window, grouped by entry (so each row is one transaction).
+  // Correction churn is hidden: an entry and its reversal cancel exactly, so when
+  // BOTH fall inside the window neither is listed (net change is unaffected; pairs
+  // straddling the window boundary are kept so opening + in − out stays exact).
   const moves = await q<{ date: string; memo: string | null; net: number }>(
     `SELECT to_char(je.entry_date, 'YYYY-MM-DD') AS date, je.memo,
             SUM(jl.debit - jl.credit)::float AS net
      FROM journal_line jl JOIN journal_entry je ON je.id=jl.entry_id
      WHERE jl.account_id = ANY($1::text[]) AND je.entry_date BETWEEN $2::date AND $3::date AND ($4::text IS NULL OR jl.project_id = $4)
+       AND NOT EXISTS (SELECT 1 FROM journal_entry r WHERE r.reverses_entry_id = je.id AND r.entry_date <= $3::date)
+       AND NOT (je.reverses_entry_id IS NOT NULL AND EXISTS (
+             SELECT 1 FROM journal_entry o WHERE o.id = je.reverses_entry_id AND o.entry_date >= $2::date))
      GROUP BY je.id, je.entry_date, je.memo
      HAVING SUM(jl.debit - jl.credit) <> 0
      ORDER BY je.entry_date`, [ids, from, to, pid]

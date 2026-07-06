@@ -7,7 +7,7 @@ import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
 import { PROJECT_STATUS, PROJECT_ROLES, PERMISSIONS, ROLE_PERMISSIONS, type Permission, type ProjectRole } from "@/lib/enums";
 import { createSession, destroySession, requireUser, verifyPassword } from "@/server/auth";
-import { requirePermission, getProjectAccess, canCreateProjects, requireBudgetBulk } from "@/server/policy";
+import { requirePermission, getProjectAccess, canCreateProjects, requireBudgetBulk, canManageBudgetBulk } from "@/server/policy";
 import { createProject } from "@/server/services/projects";
 import { addProjectMemberByEmail, removeProjectMember, createAdminAccount, issuePasswordToken, consumePasswordToken, markTokenUsed, signupOrganization, getUserOrg, createOrganizationWithAdmin, setOrgState, requestUpgrade } from "@/server/services/accounts";
 import { hashPassword, passwordError } from "@/lib/password";
@@ -440,6 +440,85 @@ export async function addExpenditureAction(formData: FormData) {
   await evaluateProject(projectId);
   revalidatePath(`/projects/${projectId}/spending`);
   revalidatePath(`/projects/${projectId}/budget`);
+}
+
+// Edit an expenditure. Allowed only for the person who entered it or a senior
+// budget role (PI/Co-PI/Finance/org admin). A reason is required; the change is
+// stamped onto the expenditure as a change note and written to the audit log.
+// The general-ledger posting is reversed and re-posted at the corrected amount.
+export async function editExpenditureAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const expId = String(formData.get("expenditureId"));
+  const reason = String(formData.get("reason") || "").trim();
+  const access = await getProjectAccess(projectId);
+  const exp = await one<{ projectId: string; createdById: string | null; amount: number; budgetLineId: string; date: string; reference: string | null; payee: string | null; note: string | null }>(
+    `SELECT project_id AS "projectId", created_by_id AS "createdById", amount, budget_line_id AS "budgetLineId",
+            date, reference, payee, note FROM expenditure WHERE id=$1`, [expId]);
+  if (!exp || exp.projectId !== projectId) redirect(`/projects/${projectId}/spending`);
+  const isOwner = !!exp.createdById && exp.createdById === user.id;
+  if (!isOwner && !canManageBudgetBulk(access)) throw new Error("FORBIDDEN");
+  if (!reason) redirect(`/projects/${projectId}/spending?experr=reason`);
+
+  const newAmount = Number(formData.get("amount") || exp.amount);
+  const newLine = String(formData.get("budgetLineId") || exp.budgetLineId);
+  if (newLine) await assertLineInProject(newLine, projectId);
+  const newDate = String(formData.get("date") || "") || exp.date;
+  const newRef = String(formData.get("reference") || "");
+  const newPayee = String(formData.get("payee") || "");
+  const newApproved = formData.get("approved") === "on";
+
+  const changes: string[] = [];
+  if (Number(newAmount) !== Number(exp.amount)) changes.push(`amount ${exp.amount}→${newAmount}`);
+  if (newLine !== exp.budgetLineId) changes.push("budget line changed");
+  if ((newRef || "") !== (exp.reference || "")) changes.push(`reference "${exp.reference ?? ""}"→"${newRef}"`);
+  if ((newPayee || "") !== (exp.payee || "")) changes.push(`payee "${exp.payee ?? ""}"→"${newPayee}"`);
+  const stamp = new Date().toISOString().slice(0, 10);
+  const changeNote = `[${stamp}] Edited by ${user.name}${changes.length ? ` — ${changes.join("; ")}` : ""}. Reason: ${reason}`;
+  const mergedNote = exp.note ? `${changeNote}\n${exp.note}` : changeNote;
+
+  await q(`UPDATE expenditure SET amount=$2, budget_line_id=$3, date=$4, reference=$5, payee=$6, approved=$7, note=$8 WHERE id=$1 AND project_id=$9`,
+    [expId, newAmount, newLine, newDate, newRef, newPayee, newApproved, mergedNote, projectId]);
+
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
+  if (org) {
+    await reverseExpenditureJournals(org.orgId, expId, { id: user.id, name: user.name });
+    await postExpenditureToLedger({ orgId: org.orgId, projectId, expenditureId: expId, amount: newAmount, date: String(newDate), reference: newRef, payee: newPayee, postedBy: user.id, postedByName: user.name, force: true });
+  }
+  await writeAudit({ orgId: org?.orgId, userId: user.id, action: "update", entity: "expenditure", entityId: projectId, before: { amount: exp.amount }, after: { amount: newAmount }, meta: { expenditureId: expId, reason, changes } });
+  await evaluateProject(projectId);
+  revalidatePath(`/projects/${projectId}/spending`);
+  revalidatePath(`/projects/${projectId}/budget`);
+  redirect(`/projects/${projectId}/spending?exp=edited`);
+}
+
+// Delete an expenditure (same authorisation as edit, reason required). Reverses
+// any general-ledger posting and removes the row — which returns the money to the
+// budget line it came from (remaining = planned − Σ expenditure) — and records the
+// deletion, with the reason and the line it was restored to, in the audit log.
+export async function deleteExpenditureAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const expId = String(formData.get("expenditureId"));
+  const reason = String(formData.get("reason") || "").trim();
+  const access = await getProjectAccess(projectId);
+  const exp = await one<{ projectId: string; createdById: string | null; amount: number; budgetLineId: string; reference: string | null; payee: string | null }>(
+    `SELECT project_id AS "projectId", created_by_id AS "createdById", amount, budget_line_id AS "budgetLineId", reference, payee FROM expenditure WHERE id=$1`, [expId]);
+  if (!exp || exp.projectId !== projectId) redirect(`/projects/${projectId}/spending`);
+  const isOwner = !!exp.createdById && exp.createdById === user.id;
+  if (!isOwner && !canManageBudgetBulk(access)) throw new Error("FORBIDDEN");
+  if (!reason) redirect(`/projects/${projectId}/spending?experr=reason`);
+
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
+  if (org) await reverseExpenditureJournals(org.orgId, expId, { id: user.id, name: user.name });
+  const codeRow = await one<{ code: string }>(`SELECT code FROM budget_line WHERE id=$1`, [exp.budgetLineId]);
+  await q(`DELETE FROM expenditure WHERE id=$1 AND project_id=$2`, [expId, projectId]);
+  await writeAudit({ orgId: org?.orgId, userId: user.id, action: "delete", entity: "expenditure", entityId: projectId,
+    before: { amount: exp.amount, budgetLine: codeRow?.code, reference: exp.reference, payee: exp.payee }, meta: { expenditureId: expId, reason, restoredTo: codeRow?.code } });
+  await evaluateProject(projectId);
+  revalidatePath(`/projects/${projectId}/spending`);
+  revalidatePath(`/projects/${projectId}/budget`);
+  redirect(`/projects/${projectId}/spending?exp=deleted`);
 }
 
 /* ---------------- Requisitions ---------------- */
@@ -2101,7 +2180,7 @@ export async function retractRequisitionAction(formData: FormData) {
 import {
   ensureChartOfAccounts, postJournal, reverseJournal,
   institutionalStatements, accountBalances, postExpenditureToLedger,
-  postCashPayment, postCashReceipt, postFundsTransfer,
+  postCashPayment, postCashReceipt, postFundsTransfer, reverseExpenditureJournals,
 } from "@/server/services/ledger";
 
 // Institution-level finance is restricted to organisation admins. Returns the

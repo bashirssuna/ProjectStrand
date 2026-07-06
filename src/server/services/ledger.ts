@@ -289,12 +289,15 @@ export async function accountTransactions(orgId: string, accountId: string, opts
 export async function postExpenditureToLedger(input: {
   orgId: string; projectId: string; expenditureId: string; amount: number; date: string;
   reference?: string | null; payee?: string | null; postedBy?: string | null; postedByName?: string | null;
+  force?: boolean; // re-post even if a (reversed) entry already exists — used when editing
 }): Promise<void> {
   const haveCoa = await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ledger_account WHERE org_id=$1`, [input.orgId]);
   if (!haveCoa || haveCoa.c === 0) return; // ledger not enabled for this org
-  // don't double-post the same expenditure
-  const dup = await one<{ id: string }>(`SELECT id FROM journal_entry WHERE source_type='expenditure' AND source_id=$1`, [input.expenditureId]);
-  if (dup) return;
+  // don't double-post the same expenditure (unless forced, i.e. re-posting after a reversal on edit)
+  if (!input.force) {
+    const dup = await one<{ id: string }>(`SELECT id FROM journal_entry WHERE source_type='expenditure' AND source_id=$1`, [input.expenditureId]);
+    if (dup) return;
+  }
 
   const rule = await one<{ debit: string | null; credit: string | null }>(
     `SELECT debit_account_id AS debit, credit_account_id AS credit FROM gl_posting_rule WHERE org_id=$1 AND rule_key='expenditure'`, [input.orgId]
@@ -318,6 +321,19 @@ export async function postExpenditureToLedger(input: {
       { accountId: creditAcc, credit: input.amount, description: "Cash/bank", projectId: input.projectId },
     ],
   });
+}
+
+// Reverses every not-yet-reversed general-ledger entry posted for an expenditure.
+// Used when an expenditure is edited (before re-posting) or deleted, so the ledger
+// stays consistent with the corrected/removed spend. No-op if the ledger is off.
+export async function reverseExpenditureJournals(orgId: string, expenditureId: string, by: { id: string; name: string }): Promise<void> {
+  const entries = await q<{ id: string }>(
+    `SELECT je.id FROM journal_entry je
+     WHERE je.org_id=$1 AND je.source_type='expenditure' AND je.source_id=$2
+       AND NOT EXISTS (SELECT 1 FROM journal_entry r WHERE r.reverses_entry_id=je.id)`,
+    [orgId, expenditureId]
+  );
+  for (const e of entries) await reverseJournal(orgId, e.id, by);
 }
 
 // ===========================================================================

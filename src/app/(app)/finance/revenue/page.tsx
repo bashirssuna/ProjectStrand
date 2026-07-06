@@ -2,6 +2,7 @@ import Link from "next/link";
 import { requireFinanceOrg } from "../_guard";
 import { q, one } from "@/server/db";
 import { deleteReceiptAction } from "@/app/actions";
+import { convertToBase, orgBaseCurrency } from "@/server/services/ledger";
 import { PageHeader, SectionTitle, Stat, Empty, Badge } from "@/components/ui";
 import { money, fmtDate, pct } from "@/lib/format";
 import { label } from "@/lib/enums";
@@ -21,41 +22,63 @@ function slicePath(cx: number, cy: number, r: number, a0: number, a1: number): s
 export default async function InstitutionalRevenuePage({ searchParams }: { searchParams: Promise<{ deleted?: string }> }) {
   const { orgId, orgName } = await requireFinanceOrg();
   const sp = await searchParams;
-  const ccy = (await one<{ ccy: string }>(`SELECT COALESCE(display_currency, base_currency, 'USD') AS ccy FROM organization WHERE id=$1`, [orgId]))?.ccy ?? "USD";
+  const baseCcy = await orgBaseCurrency(orgId);
 
   // Indirect-cost recovery per project = what each project has spent on its
-  // indirect-cost ("overhead") budget lines. That spend is the overhead the
-  // institution recovers from hosting the grant.
-  const idcRows = await q<{ id: string; code: string; title: string; idc: number }>(
-    `SELECT p.id, p.code, p.title, COALESCE(SUM(e.amount),0)::float AS idc
+  // indirect-cost ("overhead") budget lines (in that project's currency).
+  const idcRows = await q<{ id: string; code: string; title: string; idc: number; currency: string }>(
+    `SELECT p.id, p.code, p.title, COALESCE(p.currency,'USD') AS currency, COALESCE(SUM(e.amount),0)::float AS idc
      FROM project p
      JOIN expenditure e ON e.project_id = p.id
      JOIN budget_line bl ON bl.id = e.budget_line_id
      JOIN budget_category bc ON bc.id = bl.category_id
      WHERE p.org_id = $1 AND bc.cost_type = 'indirect'
-     GROUP BY p.id, p.code, p.title
+     GROUP BY p.id, p.code, p.title, p.currency
      HAVING COALESCE(SUM(e.amount),0) > 0
      ORDER BY idc DESC`, [orgId]
   );
-  // Other institutional income = money received that is not tied to a specific grant
-  // (service income, donations, interest…), recorded as non-project receipts.
-  const otherIncome = (await one<{ t: number }>(`SELECT COALESCE(SUM(amount),0)::float t FROM receipt WHERE org_id=$1 AND project_id IS NULL`, [orgId]))?.t ?? 0;
   // The individual non-project receipts that make up "Other income" — shown so it
   // is clear where the money came from, and so each can be deleted if entered in error.
   const otherReceipts = await q<{ id: string; number: string; receiptDate: string; amount: number; currency: string; method: string; reference: string | null; note: string | null; createdByName: string | null }>(
     `SELECT id, number, receipt_date AS "receiptDate", amount::float AS amount, currency, method, reference, note, created_by_name AS "createdByName"
      FROM receipt WHERE org_id=$1 AND project_id IS NULL ORDER BY receipt_date DESC, created_at DESC`, [orgId]
   );
+  // Non-project payment vouchers (recorded in the base currency) and assets (own currency).
+  const voucherRows = await q<{ amount: number }>(`SELECT amount::float AS amount FROM payment_voucher WHERE org_id=$1 AND project_id IS NULL`, [orgId]);
+  const assetRows = await q<{ cost: number; currency: string }>(`SELECT cost::float AS cost, COALESCE(currency,'USD') AS currency FROM fixed_asset WHERE org_id=$1 AND project_id IS NULL`, [orgId]);
 
-  const idcTotal = idcRows.reduce((s, r) => s + r.idc, 0);
+  // Reporting currency: if every amount shares ONE currency, report in it — an exact,
+  // conversion-free view that matches the underlying receipts. Only when currencies
+  // are genuinely mixed do we convert each amount to the organisation's base currency.
+  const curSet = new Set<string>();
+  idcRows.forEach((r) => { if (r.idc > 0) curSet.add(r.currency); });
+  otherReceipts.forEach((r) => curSet.add(r.currency));
+  if (voucherRows.some((v) => v.amount)) curSet.add(baseCcy);
+  assetRows.forEach((a) => { if (a.cost) curSet.add(a.currency); });
+  const ccy = curSet.size === 1 ? [...curSet][0] : baseCcy;
+
+  const today = new Date().toISOString().slice(0, 10);
+  let convertedAmounts = false;   // did we convert any foreign amount to the base?
+  let missingRate = false;        // was an exchange rate missing (total may be understated)?
+  const toReport = async (amount: number, cur: string, asOf: string): Promise<number> => {
+    const ccyIn = cur || baseCcy;
+    if (!amount || ccyIn === ccy) return amount || 0;
+    const conv = await convertToBase(orgId, amount, ccyIn, asOf); // → base currency (== ccy here)
+    convertedAmounts = true;
+    if (conv.rate === 1 && ccyIn !== baseCcy) missingRate = true;
+    return conv.base;
+  };
+
+  const idcConv = await Promise.all(idcRows.map(async (r) => ({ ...r, value: await toReport(r.idc, r.currency, today) })));
+  const idcTotal = idcConv.reduce((s, r) => s + r.value, 0);
+  const otherIncome = (await Promise.all(otherReceipts.map((r) => toReport(r.amount, r.currency, r.receiptDate)))).reduce((s, v) => s + v, 0);
   const totalRevenue = idcTotal + otherIncome;
 
-  // What the pool funds: institution-level (non-project) payments and assets — rent,
-  // internet, office chairs, etc. (Expenditure is always project-scoped, so shared
-  // spending lives in non-project vouchers and non-project assets.)
-  const voucherUse = (await one<{ t: number; c: number }>(`SELECT COALESCE(SUM(amount),0)::float t, COUNT(*)::int c FROM payment_voucher WHERE org_id=$1 AND project_id IS NULL`, [orgId])) ?? { t: 0, c: 0 };
-  const assetUse = (await one<{ t: number; c: number }>(`SELECT COALESCE(SUM(cost),0)::float t, COUNT(*)::int c FROM fixed_asset WHERE org_id=$1 AND project_id IS NULL`, [orgId])) ?? { t: 0, c: 0 };
-  const totalUses = (voucherUse.t ?? 0) + (assetUse.t ?? 0);
+  // What the pool funds: institution-level (non-project) payments and assets.
+  const voucherUseT = await toReport(voucherRows.reduce((s, v) => s + v.amount, 0), baseCcy, today);
+  const assetUseT = (await Promise.all(assetRows.map((a) => toReport(a.cost, a.currency, today)))).reduce((s, v) => s + v, 0);
+  const voucherCount = voucherRows.length, assetCount = assetRows.length;
+  const totalUses = voucherUseT + assetUseT;
   const net = totalRevenue - totalUses;
 
   const recentVouchers = await q<{ number: string; payee: string; purpose: string | null; amount: number }>(
@@ -65,9 +88,9 @@ export default async function InstitutionalRevenuePage({ searchParams }: { searc
     `SELECT name, category, cost::float, currency, acquired_on AS "acquiredOn" FROM fixed_asset WHERE org_id=$1 AND project_id IS NULL ORDER BY acquired_on DESC LIMIT 6`, [orgId]
   );
 
-  // Pie slices: one per contributing project, plus an "Other income" slice.
+  // Pie slices: one per contributing project (converted), plus an "Other income" slice.
   const slices = [
-    ...idcRows.map((r, i) => ({ label: r.code, full: r.title, value: r.idc, color: PALETTE[i % PALETTE.length] })),
+    ...idcConv.map((r, i) => ({ label: r.code, full: r.title, value: r.value, color: PALETTE[i % PALETTE.length] })),
     ...(otherIncome > 0 ? [{ label: "Other", full: "Other income (non-project)", value: otherIncome, color: "#9aa0a6" }] : []),
   ];
   const size = 240, cx = size / 2, cy = size / 2, r = size / 2 - 4;
@@ -190,19 +213,19 @@ export default async function InstitutionalRevenuePage({ searchParams }: { searc
       </p>
       <div className="grid md:grid-cols-2 gap-4 mb-4">
         <div className="card p-4">
-          <div className="flex items-center justify-between mb-2"><div className="font-medium">Shared services & payments</div><Badge tone="muted">{voucherUse.c}</Badge></div>
-          <div className="text-lg font-semibold tabular-nums mb-2">{money(voucherUse.t ?? 0, ccy)}</div>
+          <div className="flex items-center justify-between mb-2"><div className="font-medium">Shared services & payments</div><Badge tone="muted">{voucherCount}</Badge></div>
+          <div className="text-lg font-semibold tabular-nums mb-2">{money(voucherUseT, ccy)}</div>
           {recentVouchers.length === 0 ? <p className="text-xs" style={{ color: "var(--muted)" }}>No non-project payment vouchers yet. Raise a voucher with no project to pay for rent, internet, etc.</p> : (
             <table className="w-full text-xs"><tbody>
               {recentVouchers.map((v, i) => (
-                <tr key={i}><td className="td">{v.payee}{v.purpose ? <span style={{ color: "var(--muted)" }}> · {v.purpose}</span> : ""}</td><td className="td text-right tabular-nums">{money(v.amount, ccy)}</td></tr>
+                <tr key={i}><td className="td">{v.payee}{v.purpose ? <span style={{ color: "var(--muted)" }}> · {v.purpose}</span> : ""}</td><td className="td text-right tabular-nums">{money(v.amount, baseCcy)}</td></tr>
               ))}
             </tbody></table>
           )}
         </div>
         <div className="card p-4">
-          <div className="flex items-center justify-between mb-2"><div className="font-medium">Institutional assets</div><Badge tone="muted">{assetUse.c}</Badge></div>
-          <div className="text-lg font-semibold tabular-nums mb-2">{money(assetUse.t ?? 0, ccy)}</div>
+          <div className="flex items-center justify-between mb-2"><div className="font-medium">Institutional assets</div><Badge tone="muted">{assetCount}</Badge></div>
+          <div className="text-lg font-semibold tabular-nums mb-2">{money(assetUseT, ccy)}</div>
           {recentAssets.length === 0 ? <p className="text-xs" style={{ color: "var(--muted)" }}>No non-project assets yet. Register an asset with no project (e.g. office chairs) to track it here.</p> : (
             <table className="w-full text-xs"><tbody>
               {recentAssets.map((a, i) => (
@@ -213,8 +236,16 @@ export default async function InstitutionalRevenuePage({ searchParams }: { searc
         </div>
       </div>
 
+      {missingRate && (
+        <div className="card p-3 mb-4 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
+          Some amounts are in a currency with no exchange rate to {baseCcy}, so the total may be understated. Add rates in <Link href="/finance/currency" className="underline">Currency &amp; FX</Link>, or set your base currency to match how you record money.
+        </div>
+      )}
       <div className="card p-4 text-xs" style={{ color: "var(--muted)" }}>
-        Indirect-cost recovery is computed from each project&apos;s spending on its indirect-cost budget lines; it is a management view of overhead earned, not a separate ledger posting. Figures are shown in {ccy} and assume a common currency across projects.
+        Indirect-cost recovery is computed from each project&apos;s spending on its indirect-cost budget lines; it is a management view of overhead earned, not a separate ledger posting.
+        {convertedAmounts
+          ? ` Amounts recorded in other currencies were converted to ${baseCcy} at the latest exchange rate on or before each transaction's date.`
+          : ` All amounts are in ${ccy}; figures are shown in ${ccy}.`}
       </div>
     </div>
   );

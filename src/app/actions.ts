@@ -1813,15 +1813,27 @@ async function postApprovedVoucher(vid: string, by: { id: string; name: string }
   if (!v) return;
   // 1. Post the cash movement (debit expense, credit cash/bank) once.
   if (!v.journalEntryId && v.accountId && v.expenseAccountId && v.amount > 0) {
+    // A PROJECT voucher spends grant funds, so — like any project expenditure —
+    // recognise matching grant income (so it doesn't show a phantom deficit). A
+    // NON-project (institutional) voucher — rent, internet, etc. — is a plain
+    // expense funded by recovered overhead, so it correctly reduces the surplus.
+    const grantIncomeAcc = v.projectId
+      ? (await one<{ id: string }>(`SELECT id FROM ledger_account WHERE org_id=$1 AND code='4000'`, [v.orgId]))?.id ?? null
+      : null;
+    const lines = [
+      { accountId: v.expenseAccountId, debit: v.amount, description: v.purpose ?? v.payee, projectId: v.projectId },
+      { accountId: v.accountId, credit: v.amount, description: `Payment to ${v.payee}`, projectId: v.projectId },
+    ];
+    if (grantIncomeAcc) {
+      lines.push({ accountId: v.accountId, debit: v.amount, description: "Grant funds applied", projectId: v.projectId });
+      lines.push({ accountId: grantIncomeAcc, credit: v.amount, description: "Grant income recognised", projectId: v.projectId });
+    }
     const posted = await postJournal({
       orgId: v.orgId, entryDate: v.date.slice(0, 10),
       memo: `Voucher ${v.number} — ${v.payee}${v.purpose ? ` · ${v.purpose}` : ""}`,
       reference: v.number, sourceType: "voucher", sourceId: vid, projectId: v.projectId,
       postedBy: by.id, postedByName: by.name,
-      lines: [
-        { accountId: v.expenseAccountId, debit: v.amount, description: v.purpose ?? v.payee, projectId: v.projectId },
-        { accountId: v.accountId, credit: v.amount, description: `Payment to ${v.payee}`, projectId: v.projectId },
-      ],
+      lines,
     });
     await q(`UPDATE payment_voucher SET journal_entry_id=$2 WHERE id=$1`, [vid, posted.entryId]);
   }

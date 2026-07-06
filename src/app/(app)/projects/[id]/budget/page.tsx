@@ -179,6 +179,13 @@ export default async function BudgetPage({ params, searchParams }: { params: Pro
           <Stat label="Burn rate" value={pct(sum.burn)} tone={sum.burn > 90 ? "warn" : undefined} />
         </div>
       )}
+      {sum && sum.indirectPlanned > 0 && (
+        <div className="card p-3 text-sm" style={{ color: "var(--muted)" }}>
+          <span className="font-medium" style={{ color: "var(--fg)" }}>Spendable by project (direct costs): {money(sum.spendable, c)}</span>
+          {" · "}Institutional overhead {status === "approved" ? "recovered" : "to be recovered"} on approval: {money(sum.indirectPlanned, c)}
+          {" — "}this indirect portion is the institution&apos;s revenue and is not available for project activities.
+        </div>
+      )}
 
       {bud && (
         <div className="card p-4">

@@ -24,17 +24,18 @@ export default async function InstitutionalRevenuePage({ searchParams }: { searc
   const sp = await searchParams;
   const baseCcy = await orgBaseCurrency(orgId);
 
-  // Indirect-cost recovery per project = what each project has spent on its
-  // indirect-cost ("overhead") budget lines (in that project's currency).
+  // Indirect-cost recovery per project = the overhead recognised when the project's
+  // budget is approved (the sum of its indirect-cost budget lines). It is recorded
+  // to the ledger and moves out of the project's spendable budget at approval.
   const idcRows = await q<{ id: string; code: string; title: string; idc: number; currency: string }>(
-    `SELECT p.id, p.code, p.title, COALESCE(p.currency,'USD') AS currency, COALESCE(SUM(e.amount),0)::float AS idc
+    `SELECT p.id, p.code, p.title, COALESCE(p.currency,'USD') AS currency, COALESCE(SUM(bl.planned),0)::float AS idc
      FROM project p
-     JOIN expenditure e ON e.project_id = p.id
-     JOIN budget_line bl ON bl.id = e.budget_line_id
+     JOIN budget b ON b.project_id = p.id AND b.status = 'approved'
+     JOIN budget_line bl ON bl.budget_id = b.id
      JOIN budget_category bc ON bc.id = bl.category_id
      WHERE p.org_id = $1 AND bc.cost_type = 'indirect'
      GROUP BY p.id, p.code, p.title, p.currency
-     HAVING COALESCE(SUM(e.amount),0) > 0
+     HAVING COALESCE(SUM(bl.planned),0) > 0
      ORDER BY idc DESC`, [orgId]
   );
   // The individual non-project receipts that make up "Other income" — shown so it
@@ -118,7 +119,7 @@ export default async function InstitutionalRevenuePage({ searchParams }: { searc
 
       <SectionTitle>Revenue by project</SectionTitle>
       <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
-        Each project contributes overhead as it spends on its indirect-cost budget lines. Below is each project&apos;s recovered overhead and its share of the institution&apos;s revenue pool.
+        Each project contributes overhead the moment its budget is approved — the indirect-cost portion is recognised as institutional revenue and moves out of the project&apos;s spendable budget. Below is each project&apos;s recovered overhead and its share of the institution&apos;s revenue pool.
       </p>
 
       {totalRevenue <= 0 ? (
@@ -242,7 +243,7 @@ export default async function InstitutionalRevenuePage({ searchParams }: { searc
         </div>
       )}
       <div className="card p-4 text-xs" style={{ color: "var(--muted)" }}>
-        Indirect-cost recovery is computed from each project&apos;s spending on its indirect-cost budget lines; it is a management view of overhead earned, not a separate ledger posting.
+        Indirect-cost recovery is the overhead recognised when each project&apos;s budget is approved (the sum of its indirect-cost budget lines); it is posted to the general ledger as income.
         {convertedAmounts
           ? ` Amounts recorded in other currencies were converted to ${baseCcy} at the latest exchange rate on or before each transaction's date.`
           : ` All amounts are in ${ccy}; figures are shown in ${ccy}.`}

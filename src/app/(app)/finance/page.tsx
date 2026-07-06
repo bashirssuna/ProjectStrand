@@ -4,10 +4,11 @@ import { one } from "@/server/db";
 import { institutionalStatements } from "@/server/services/ledger";
 import { PageHeader, SectionTitle, Stat, Empty, ToolCard } from "@/components/ui";
 import { money } from "@/lib/format";
-import { initLedgerAction } from "@/app/actions";
+import { initLedgerAction, reconcileLedgerAction } from "@/app/actions";
 
-export default async function FinanceHome() {
+export default async function FinanceHome({ searchParams }: { searchParams: Promise<{ reconciled?: string }> }) {
   const { orgId, orgName } = await requireFinanceOrg();
+  const sp = await searchParams;
   const c = (await one<{ currency: string }>(`SELECT currency FROM project WHERE org_id=$1 ORDER BY created_at LIMIT 1`, [orgId]))?.currency ?? "USD";
   const accCount = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ledger_account WHERE org_id=$1`, [orgId]))?.c ?? 0;
 
@@ -32,7 +33,15 @@ export default async function FinanceHome() {
 
   return (
     <div>
-      <PageHeader title="Institution Finance" subtitle={`General ledger & financial statements for ${orgName}`} actions={<Link href="/operations" className="btn btn-sm">Institutional overview →</Link>} />
+      <PageHeader title="Institution Finance" subtitle={`General ledger & financial statements for ${orgName}`} actions={
+        <div className="flex items-center gap-2">
+          <form action={reconcileLedgerAction}><button className="btn btn-sm" type="submit" title="Recognise grant income for past spend and overhead for approved budgets">↻ Reconcile ledger</button></form>
+          <Link href="/operations" className="btn btn-sm">Institutional overview →</Link>
+        </div>
+      } />
+      {sp.reconciled && (() => { const [o, e] = sp.reconciled.split("-"); return (
+        <div className="card p-3 mb-4 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Ledger reconciled — recognised overhead on {o} approved budget{o === "1" ? "" : "s"} and grant income on {e} past expenditure{e === "1" ? "" : "s"}.</div>
+      ); })()}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
         <Stat label="Total income" value={money(fs.incomeStatement.totalIncome, c)} sub="all projects" />
         <Stat label="Total expense" value={money(fs.incomeStatement.totalExpense, c)} sub="all projects" />

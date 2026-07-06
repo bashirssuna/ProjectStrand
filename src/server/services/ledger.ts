@@ -307,6 +307,20 @@ export async function postExpenditureToLedger(input: {
   if (!debitAcc) debitAcc = (await one<{ id: string }>(`SELECT id FROM ledger_account WHERE org_id=$1 AND code='5200'`, [input.orgId]))?.id ?? null;
   if (!debitAcc || !creditAcc) return;
 
+  // Grant/NGO fund accounting: as restricted grant funds are spent, recognise
+  // matching grant income so the income statement balances (income = funds used,
+  // not a phantom deficit). If a grant-income account (4000) exists we add the
+  // funding side to the same entry: grant received into cash + income recognised.
+  const grantIncomeAcc = (await one<{ id: string }>(`SELECT id FROM ledger_account WHERE org_id=$1 AND code='4000'`, [input.orgId]))?.id ?? null;
+  const lines = [
+    { accountId: debitAcc, debit: input.amount, description: "Expenditure", projectId: input.projectId },
+    { accountId: creditAcc, credit: input.amount, description: "Cash/bank", projectId: input.projectId },
+  ];
+  if (grantIncomeAcc) {
+    lines.push({ accountId: creditAcc, debit: input.amount, description: "Grant funds applied", projectId: input.projectId });
+    lines.push({ accountId: grantIncomeAcc, credit: input.amount, description: "Grant income recognised", projectId: input.projectId });
+  }
+
   await postJournal({
     orgId: input.orgId,
     entryDate: input.date.slice(0, 10),
@@ -316,11 +330,40 @@ export async function postExpenditureToLedger(input: {
     sourceId: input.expenditureId,
     projectId: input.projectId,
     postedBy: input.postedBy, postedByName: input.postedByName,
+    lines,
+  });
+}
+
+// Recognises institutional overhead (indirect-cost recovery) the moment a project
+// budget is approved: the sum of the budget's indirect-cost lines is posted as
+// income (Dr Grants receivable, Cr Grant income) and thereby "moves" out of the
+// project's spendable budget into the institution's revenue. Idempotent per budget.
+export async function recognizeIndirectRecovery(orgId: string, projectId: string, budgetId: string, by: { id: string; name: string }): Promise<number> {
+  const haveCoa = await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ledger_account WHERE org_id=$1`, [orgId]);
+  if (!haveCoa || haveCoa.c === 0) return 0;
+  const reference = `IDC-${budgetId}`;
+  const dup = await one<{ id: string }>(`SELECT id FROM journal_entry WHERE org_id=$1 AND reference=$2`, [orgId, reference]);
+  if (dup) return 0; // already recognised for this budget
+  const sum = await one<{ t: number }>(
+    `SELECT COALESCE(SUM(bl.planned),0)::float t FROM budget_line bl JOIN budget_category bc ON bc.id=bl.category_id
+     WHERE bl.budget_id=$1 AND bc.cost_type='indirect'`, [budgetId]);
+  const amount = round2(sum?.t ?? 0);
+  if (!(amount > 0)) return 0;
+  const receivable = (await one<{ id: string }>(`SELECT id FROM ledger_account WHERE org_id=$1 AND code='1100'`, [orgId]))?.id ?? null;
+  const income = (await one<{ id: string }>(`SELECT id FROM ledger_account WHERE org_id=$1 AND code='4000'`, [orgId]))?.id ?? null;
+  if (!receivable || !income) return 0;
+  const proj = await one<{ code: string }>(`SELECT code FROM project WHERE id=$1`, [projectId]);
+  await postJournal({
+    orgId, entryDate: new Date().toISOString().slice(0, 10),
+    memo: `Indirect cost recovery — ${proj?.code ?? "project"}`,
+    reference, sourceType: "manual", sourceId: budgetId, projectId,
+    postedBy: by.id, postedByName: by.name,
     lines: [
-      { accountId: debitAcc, debit: input.amount, description: "Expenditure", projectId: input.projectId },
-      { accountId: creditAcc, credit: input.amount, description: "Cash/bank", projectId: input.projectId },
+      { accountId: receivable, debit: amount, description: "Indirect cost recovery (receivable)", projectId },
+      { accountId: income, credit: amount, description: "Indirect cost recovery (income)", projectId },
     ],
   });
+  return amount;
 }
 
 // Reverses every not-yet-reversed general-ledger entry posted for an expenditure.
@@ -334,6 +377,42 @@ export async function reverseExpenditureJournals(orgId: string, expenditureId: s
     [orgId, expenditureId]
   );
   for (const e of entries) await reverseJournal(orgId, e.id, by);
+}
+
+// One-time reconciliation for data posted before grant-income / overhead
+// recognition was enabled: (a) recognise overhead on every already-approved budget
+// that lacks it, and (b) upgrade legacy 2-line expenditure entries so grant income
+// is recognised against them. Idempotent — safe to run repeatedly.
+export async function reconcileLedger(orgId: string, by: { id: string; name: string }): Promise<{ overheadPosted: number; expendituresFixed: number }> {
+  const haveCoa = await one<{ c: number }>(`SELECT COUNT(*)::int c FROM ledger_account WHERE org_id=$1`, [orgId]);
+  if (!haveCoa || haveCoa.c === 0) return { overheadPosted: 0, expendituresFixed: 0 };
+
+  // (a) overhead for approved budgets not yet recognised
+  let overheadPosted = 0;
+  const approved = await q<{ budgetId: string; projectId: string }>(
+    `SELECT b.id AS "budgetId", b.project_id AS "projectId" FROM budget b
+     WHERE b.status='approved' AND b.project_id IN (SELECT id FROM project WHERE org_id=$1)
+       AND NOT EXISTS (SELECT 1 FROM journal_entry je WHERE je.org_id=$1 AND je.reference='IDC-'||b.id)`, [orgId]);
+  for (const a of approved) { if ((await recognizeIndirectRecovery(orgId, a.projectId, a.budgetId, by)) > 0) overheadPosted++; }
+
+  // (b) legacy expenditure entries with no grant-income line
+  let expendituresFixed = 0;
+  const legacy = await q<{ expenditureId: string; projectId: string }>(
+    `SELECT DISTINCT je.source_id AS "expenditureId", je.project_id AS "projectId"
+     FROM journal_entry je
+     WHERE je.org_id=$1 AND je.source_type='expenditure' AND je.reverses_entry_id IS NULL AND je.source_id IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM journal_entry r WHERE r.reverses_entry_id=je.id)
+       AND NOT EXISTS (SELECT 1 FROM journal_line jl JOIN ledger_account la ON la.id=jl.account_id WHERE jl.entry_id=je.id AND la.code='4000')`, [orgId]);
+  for (const l of legacy) {
+    const exp = await one<{ amount: number; date: string; reference: string | null; payee: string | null }>(
+      `SELECT amount, date, reference, payee FROM expenditure WHERE id=$1`, [l.expenditureId]);
+    if (!exp || !l.projectId) continue;
+    await reverseExpenditureJournals(orgId, l.expenditureId, by);
+    await postExpenditureToLedger({ orgId, projectId: l.projectId, expenditureId: l.expenditureId, amount: exp.amount,
+      date: String(exp.date), reference: exp.reference, payee: exp.payee, postedBy: by.id, postedByName: by.name, force: true });
+    expendituresFixed++;
+  }
+  return { overheadPosted, expendituresFixed };
 }
 
 // ===========================================================================

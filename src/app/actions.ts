@@ -2444,7 +2444,7 @@ export async function retractRequisitionAction(formData: FormData) {
 import {
   ensureChartOfAccounts, postJournal, reverseJournal,
   institutionalStatements, accountBalances, postExpenditureToLedger,
-  postCashPayment, postCashReceipt, postFundsTransfer, reverseExpenditureJournals,
+  postCashPayment, postCashReceipt, postFundsTransfer, reverseExpenditureJournals, recognizeIndirectRecovery, reconcileLedger,
 } from "@/server/services/ledger";
 
 // Institution-level finance is restricted to organisation admins. Returns the
@@ -2531,6 +2531,16 @@ export async function reverseJournalAction(formData: FormData) {
   await reverseJournal(orgId, entryId, { id: userId, name: userName });
   revalidatePath("/finance/journal");
   redirect("/finance/journal?reversed=1");
+}
+
+// One-time reconciliation: recognise grant income for past project spend and
+// overhead for already-approved budgets, so historical figures match the model.
+export async function reconcileLedgerAction() {
+  const { orgId, userId, userName } = await requireInstitutionFinance();
+  const r = await reconcileLedger(orgId, { id: userId, name: userName });
+  await writeAudit({ orgId, userId, action: "reconcile", entity: "ledger", meta: r });
+  revalidatePath("/finance");
+  redirect(`/finance?reconciled=${r.overheadPosted}-${r.expendituresFixed}`);
 }
 
 /* ===================== FINANCE OPS: invoices, receipts, assets, bank, FX ===================== */
@@ -5559,6 +5569,11 @@ export async function approveBudgetAction(formData: FormData) {
   if (b.status !== "submitted") redirect(`/projects/${projectId}/budget`);
   await q(`UPDATE budget SET status='approved' WHERE id=$1`, [budgetId]);
   await q(`INSERT INTO budget_approval (id, budget_id, action, note, acted_by_id, acted_by_name) VALUES ($1,$2,'approved',$3,$4,$5)`, [id("bap"), budgetId, sNull(formData.get("note")), user.id, user.name]);
+  // Recognise the institution's indirect-cost recovery (overhead) now that the
+  // budget is approved: it posts to the ledger as income and moves out of the
+  // project's spendable budget.
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
+  if (org) await recognizeIndirectRecovery(org.orgId, projectId, budgetId, { id: user.id, name: user.name });
   await writeAudit({ userId: user.id, action: "approve", entity: "budget", entityId: budgetId });
   redirect(`/projects/${projectId}/budget?bm=approved`);
 }

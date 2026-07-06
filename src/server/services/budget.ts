@@ -56,6 +56,9 @@ export async function budgetLineRollups(budgetId: string): Promise<LineRollup[]>
 
 export type BudgetSummary = {
   planned: number; committed: number; actual: number; remaining: number; burn: number;
+  // Direct = the project's spendable budget; indirect (overhead) is recovered by
+  // the institution and does not fund project activities.
+  directPlanned: number; indirectPlanned: number; spendable: number;
 };
 
 export async function budgetSummary(budgetId: string): Promise<BudgetSummary> {
@@ -63,10 +66,13 @@ export async function budgetSummary(budgetId: string): Promise<BudgetSummary> {
   const planned = rollups.reduce((s, r) => s + r.planned, 0);
   const committed = rollups.reduce((s, r) => s + r.committed, 0);
   const actual = rollups.reduce((s, r) => s + r.actual, 0);
+  const indirectPlanned = rollups.filter((r) => r.costType === "indirect").reduce((s, r) => s + r.planned, 0);
+  const directPlanned = planned - indirectPlanned;
   return {
     planned, committed, actual,
     remaining: planned - committed - actual,
     burn: planned > 0 ? (actual / planned) * 100 : 0,
+    directPlanned, indirectPlanned, spendable: directPlanned,
   };
 }
 

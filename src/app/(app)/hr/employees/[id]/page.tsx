@@ -10,7 +10,7 @@ import { updateEmployeeAction, assignEmployeeDepartmentAction, createEmployeeLog
   updateEmployeeProfileAction, addEmployeeEducationAction, deleteEmployeeEducationAction,
   addEmployeePolicyAction, deleteEmployeePolicyAction, requestHrActionAction, decideHrActionAction,
   upsertEmployeeCompAction, upsertEmployeeProjectAction, removeEmployeeProjectAction,
-  generateResponsibilitiesFromDocAction, uploadEmployeeDocumentAction, deleteEmployeeDocumentAction, terminateEmployeeAction } from "@/app/actions";
+  generateResponsibilitiesFromDocAction, uploadEmployeeDocumentAction, deleteEmployeeDocumentAction, terminateEmployeeAction, deleteEmployeeAction } from "@/app/actions";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { dateInput } from "@/lib/format";
 import { COMMON_DEPARTMENTS } from "@/lib/departments";
@@ -81,6 +81,8 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
       {sp.login === "exists" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)", borderColor: "var(--border)" }}>This employee already has a login.</div>}
       {sp.login === "failed" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>Login created, but the invite email could not be sent. They can use “forgot password” to set one.</div>}
       {sp.loginerr && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>{decodeURIComponent(sp.loginerr)}</div>}
+      {sp.err === "notterminated" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Only terminated employees can be deleted — terminate the employment first.</div>}
+      {sp.err === "haspayroll" && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This employee appears in a finalised payroll run, so the record must be kept — deleting it would break the payroll totals and posted ledger entries for that period.</div>}
 
       {/* Login + department */}
       <div className="grid sm:grid-cols-2 gap-4 mb-6">
@@ -476,7 +478,27 @@ export default async function EmployeeDetail({ params, searchParams }: { params:
           </div>
         </form>
       ) : (
-        <div className="card p-4 mb-6"><Badge tone="muted">Terminated</Badge> <span className="text-sm" style={{ color: "var(--muted)" }}>This employee has been terminated.</span></div>
+        <div className="card p-4 mb-6" style={{ borderColor: "var(--danger)" }}>
+          <div className="flex items-center gap-2 mb-1">
+            <Badge tone="muted">Terminated</Badge>
+            <span className="text-sm" style={{ color: "var(--muted)" }}>This employee has been terminated.</span>
+          </div>
+          <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
+            If this record is no longer needed you can <strong>delete it permanently</strong>. This removes the employee and
+            <strong> all</strong> their details — profile, documents, education, leave, timesheets, draft payroll entries,
+            compensation and project assignments — and revokes any login still linked. It cannot be undone; only the audit-log
+            tombstone is kept. Employees who appear in a <strong>finalised payroll run</strong> cannot be deleted (the run&apos;s
+            totals and posted ledger entries must stay reconcilable) — keep such records instead.
+          </p>
+          <form action={deleteEmployeeAction}>
+            <input type="hidden" name="employeeId" value={e.id} />
+            <ConfirmSubmit
+              message={`Permanently delete ${e.firstName} ${e.lastName} and ALL their HR records (including payroll history)? This cannot be undone.`}
+              className="btn" style={{ background: "var(--danger)", color: "#fff", border: "none" }}>
+              Delete employee permanently
+            </ConfirmSubmit>
+          </form>
+        </div>
       )}
     </div>
   );

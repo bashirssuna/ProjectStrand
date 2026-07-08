@@ -885,11 +885,17 @@ export async function decideRequisitionAction(formData: FormData) {
   const decision = String(formData.get("decision")) === "approved" ? "approved" : "rejected";
   // attach the approver's signature if they have one (signing the requisition)
   const sig = await one<{ id: string }>(`SELECT id FROM signature_asset WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, [user.id]);
-  await decideRequisition({
-    reqId, approverId: user.id, decision,
-    comment: String(formData.get("comment") || "") || undefined,
-    signatureId: decision === "approved" && sig ? sig.id : undefined,
-  });
+  try {
+    await decideRequisition({
+      reqId, approverId: user.id, decision,
+      comment: String(formData.get("comment") || "") || undefined,
+      signatureId: decision === "approved" && sig ? sig.id : undefined,
+    });
+  } catch (err) {
+    if (err instanceof Error && /own requisition/.test(err.message))
+      redirect(`/projects/${projectId}/requisitions/${reqId}?err=selfapprove`);
+    throw err;
+  }
   revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
   revalidatePath(`/projects/${projectId}/requisitions`);
 }
@@ -3082,6 +3088,27 @@ export async function updateEmployeeAction(formData: FormData) {
 // register a brand-new account from scratch. We tombstone the login (the email becomes
 // available again) rather than hard-deleting it, so historical audit/document trails stay
 // intact. Their employee record is kept but marked terminated.
+// Revokes a (former) employee's login everywhere in the organisation: org and
+// project memberships, payment-approver designations, then tombstones the
+// account so the email is freed for a fresh registration. Shared by the
+// terminate workflow and by permanent deletion (which must never leave a live
+// login behind — the record can reach 'terminated' via the plain status
+// dropdown, which does not revoke anything).
+async function revokeEmployeeLogin(orgId: string, uid: string, actorId: string): Promise<void> {
+  // 1. Revoke all access in this organisation and its projects.
+  await q(`DELETE FROM org_membership WHERE user_id=$1 AND org_id=$2`, [uid, orgId]);
+  await q(`DELETE FROM project_member WHERE user_id=$1 AND project_id IN (SELECT id FROM project WHERE org_id=$2)`, [uid, orgId]);
+  // 2. Drop any approver designation they hold on payments in the org.
+  await q(`UPDATE payment_slip SET approver_id=NULL, approver_name=NULL, approver_title=NULL WHERE approver_id=$1 AND org_id=$2`, [uid, orgId]);
+  await q(`UPDATE payment_voucher SET approver_id=NULL, approver_name=NULL WHERE approver_id=$1 AND (org_id=$2 OR project_id IN (SELECT id FROM project WHERE org_id=$2))`, [uid, orgId]);
+  // 3. Free their email + disable the login. The original address can now be used to
+  //    register a fresh account. (Email is UNIQUE, so we tombstone it.)
+  const u = await one<{ email: string }>(`SELECT email FROM app_user WHERE id=$1`, [uid]);
+  if (u) await q(`UPDATE app_user SET email=$2, status='disabled', updated_at=now() WHERE id=$1`,
+    [uid, `terminated+${uid}+${u.email}`.slice(0, 250)]);
+  await writeAudit({ orgId, userId: actorId, action: "delete", entity: "app_user", entityId: uid, before: { email: u?.email }, meta: { terminated: true, emailFreed: true } });
+}
+
 export async function terminateEmployeeAction(formData: FormData) {
   const { orgId, userId: actorId, userName } = await requireInstitutionFinance();
   const eid = String(formData.get("employeeId"));
@@ -3090,27 +3117,44 @@ export async function terminateEmployeeAction(formData: FormData) {
   if (!e) redirect("/hr/employees");
   const today = new Date().toISOString().slice(0, 10);
 
-  if (e.userId) {
-    const uid = e.userId;
-    // 1. Revoke all access in this organisation and its projects.
-    await q(`DELETE FROM org_membership WHERE user_id=$1 AND org_id=$2`, [uid, orgId]);
-    await q(`DELETE FROM project_member WHERE user_id=$1 AND project_id IN (SELECT id FROM project WHERE org_id=$2)`, [uid, orgId]);
-    // 2. Drop any approver designation they hold on payments in the org.
-    await q(`UPDATE payment_slip SET approver_id=NULL, approver_name=NULL, approver_title=NULL WHERE approver_id=$1 AND org_id=$2`, [uid, orgId]);
-    await q(`UPDATE payment_voucher SET approver_id=NULL, approver_name=NULL WHERE approver_id=$1 AND (org_id=$2 OR project_id IN (SELECT id FROM project WHERE org_id=$2))`, [uid, orgId]);
-    // 3. Free their email + disable the login. The original address can now be used to
-    //    register a fresh account. (Email is UNIQUE, so we tombstone it.)
-    const u = await one<{ email: string }>(`SELECT email FROM app_user WHERE id=$1`, [uid]);
-    if (u) await q(`UPDATE app_user SET email=$2, status='disabled', updated_at=now() WHERE id=$1`,
-      [uid, `terminated+${uid}+${u.email}`.slice(0, 250)]);
-    await writeAudit({ orgId, userId: actorId, action: "delete", entity: "app_user", entityId: uid, before: { email: u?.email }, meta: { terminated: true, emailFreed: true } });
-  }
+  if (e.userId) await revokeEmployeeLogin(orgId, e.userId, actorId);
   // 4. Mark the employee record terminated and unlink the (now freed) login.
   await q(`UPDATE employee SET status='terminated', end_date=COALESCE(end_date, $2::date), user_id=NULL WHERE id=$1 AND org_id=$3`, [eid, today, orgId]);
   await writeAudit({ orgId, userId: actorId, action: "update", entity: "employee", entityId: eid, after: { status: "terminated", by: userName } });
   revalidatePath(`/hr/employees/${eid}`);
   revalidatePath(`/hr/employees`);
   redirect(`/hr/employees/${eid}?terminated=1`);
+}
+
+// Permanently delete a TERMINATED employee and all their HR details — profile,
+// documents, education, leave, timesheets, payroll history, compensation and
+// project assignments (child rows cascade). Guarded to terminated records so an
+// active person cannot be wiped by accident; the audit log keeps a tombstone.
+export async function deleteEmployeeAction(formData: FormData) {
+  const { orgId, userId: actorId, userName } = await requireInstitutionFinance();
+  const eid = String(formData.get("employeeId"));
+  const e = await one<{ status: string; firstName: string; lastName: string; staffNo: string | null; userId: string | null }>(
+    `SELECT status, first_name AS "firstName", last_name AS "lastName", staff_no AS "staffNo", user_id AS "userId" FROM employee WHERE id=$1 AND org_id=$2`, [eid, orgId]);
+  if (!e) redirect("/hr/employees");
+  if (e!.status !== "terminated") redirect(`/hr/employees/${eid}?err=notterminated`);
+  // Deleting would cascade away this person's payslips; if any belong to a
+  // FINALISED payroll run the run totals and its posted ledger entry would no
+  // longer reconcile to the surviving payslips — keep the record instead.
+  const finalisedPay = await one<{ x: number }>(
+    `SELECT 1 AS x FROM payslip ps JOIN payroll_run pr ON pr.id = ps.run_id
+     WHERE ps.employee_id=$1 AND pr.status='finalised' LIMIT 1`, [eid]);
+  if (finalisedPay) redirect(`/hr/employees/${eid}?err=haspayroll`);
+  // The record can reach 'terminated' via the plain status dropdown, which does
+  // NOT revoke access — never delete while a live login could remain behind.
+  if (e!.userId) await revokeEmployeeLogin(orgId, e!.userId, actorId);
+  // remove their uploaded documents from storage before the rows cascade away
+  const docs = await q<{ key: string | null }>(`SELECT storage_key AS key FROM employee_document WHERE employee_id=$1`, [eid]);
+  for (const d of docs) { if (d.key) await deleteUpload(d.key); }
+  await q(`DELETE FROM employee WHERE id=$1 AND org_id=$2`, [eid, orgId]);
+  await writeAudit({ orgId, userId: actorId, action: "delete", entity: "employee", entityId: eid,
+    before: { name: `${e!.firstName} ${e!.lastName}`, staffNo: e!.staffNo }, meta: { permanent: true, by: userName } });
+  revalidatePath("/hr/employees");
+  redirect("/hr/employees?deleted=1");
 }
 export async function addPayComponentAction(formData: FormData) {
   const { orgId } = await requireInstitutionFinance();
@@ -3422,8 +3466,13 @@ export async function uploadMyDocumentAction(formData: FormData) {
 }
 export async function deleteMyDocumentAction(formData: FormData) {
   const { employeeId } = await requireOwnEmployee();
-  // only allow deleting the employee's OWN documents
-  await q(`DELETE FROM employee_document WHERE id=$1 AND employee_id=$2`, [String(formData.get("documentId")), employeeId]);
+  // only allow deleting the employee's OWN documents; remove the stored bytes
+  // too, or they would linger in durable storage after the row is gone
+  const docId = String(formData.get("documentId"));
+  const doc = await one<{ storageKey: string | null }>(
+    `SELECT storage_key AS "storageKey" FROM employee_document WHERE id=$1 AND employee_id=$2`, [docId, employeeId]);
+  if (doc?.storageKey) await deleteUpload(doc.storageKey);
+  await q(`DELETE FROM employee_document WHERE id=$1 AND employee_id=$2`, [docId, employeeId]);
   revalidatePath("/portal/profile");
 }
 

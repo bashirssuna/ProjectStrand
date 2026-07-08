@@ -7,7 +7,7 @@ import { label } from "@/lib/enums";
 import { addEmployeeAction } from "@/app/actions";
 import { COMMON_DEPARTMENTS } from "@/lib/departments";
 
-export default async function EmployeesPage({ searchParams }: { searchParams: Promise<{ created?: string; err?: string; view?: string }> }) {
+export default async function EmployeesPage({ searchParams }: { searchParams: Promise<{ created?: string; deleted?: string; err?: string; view?: string }> }) {
   const { orgId } = await requireHrOrg();
   const sp = await searchParams;
   const view = sp.view === "department" || sp.view === "project" ? sp.view : "list";
@@ -53,6 +53,7 @@ export default async function EmployeesPage({ searchParams }: { searchParams: Pr
     <div className="max-w-5xl">
       <PageHeader title="Employees" subtitle="Staff records and employment details" actions={<Link href="/hr" className="btn btn-sm">← HR</Link>} />
       {sp.created && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Employee added.</div>}
+      {sp.deleted && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--muted)" }}>Employee and all their HR records deleted permanently.</div>}
       {sp.err && <div className="card p-3 mb-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>First and last name are required.</div>}
 
       {expiring.length > 0 && (

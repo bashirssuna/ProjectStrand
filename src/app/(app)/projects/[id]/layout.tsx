@@ -4,6 +4,7 @@ import { getProjectAccess } from "@/server/policy";
 import { one } from "@/server/db";
 import { TabLink } from "@/components/nav";
 import { StatusBadge } from "@/components/ui";
+import { label } from "@/lib/enums";
 
 export default async function ProjectLayout({
   children, params,
@@ -21,8 +22,10 @@ export default async function ProjectLayout({
   // Restricted logins (staff self-service AND external collaborators) get a
   // deliberately limited view of a project: only Overview, Statement of Work,
   // Work plan, Gantt and Objectives — never budget, spending, requisitions,
-  // documents, team, etc.
-  const restricted = access.user.isStaff || access.user.isCollaborator;
+  // documents, team, etc. Support-department staff (Finance / Accounts /
+  // Administration / HR) are exempt — they hold finance-admin rights across
+  // the organisation's projects.
+  const restricted = (access.user.isStaff && !access.deptFinance) || access.user.isCollaborator;
   const STAFF_TABS = new Set(["", "/sow", "/workplan", "/gantt", "/logframe"]);
   const allTabs: [string, string][] = [
     ["", "Overview"], ["/sow", "Statement of Work"], ["/workplan", "Work plan"],
@@ -56,7 +59,7 @@ export default async function ProjectLayout({
       {children}
 
       <div className="mt-8 pt-4 border-t text-xs" style={{ borderColor: "var(--border)", color: "var(--muted)" }}>
-        Your role: {access.role ?? (access.isSuperAdmin ? "Administrator" : access.user.isStaff ? "Staff (limited access)" : access.user.isCollaborator ? "Collaborator (view only)" : "—")}
+        Your role: {access.role ? label(access.role) : (access.isSuperAdmin ? "Administrator" : access.user.isStaff ? "Staff (limited access)" : access.user.isCollaborator ? "Collaborator (view only)" : "—")}
         {!restricted && <>
           {" · "}
           <Link href={`${base}/import`} className="hover:underline">Import more documents</Link>

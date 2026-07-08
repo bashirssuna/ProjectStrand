@@ -40,7 +40,7 @@ export const ROLE_PERMISSIONS: Record<ProjectRole, Permission[]> = {
   co_pi: PERMISSIONS.filter((p) => p !== "requisitions.create"),  // Co-PIs / Co-Investigators carry the same authority as the PI
   project_manager: [...PERMISSIONS],
   finance_admin: [
-    "project.view", "project.comment", "budget.manage", "reports.manage",
+    "project.view", "project.comment", "budget.manage", "reports.manage", "documents.manage",
     "requisitions.create", "requisitions.approve", "requisitions.sign", "approvals.approve",
   ],
   coordinator: [

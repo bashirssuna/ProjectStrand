@@ -1,5 +1,5 @@
 import "server-only";
-import { one } from "@/server/db";
+import { q, one } from "@/server/db";
 import { ROLE_PERMISSIONS, type Permission, type ProjectRole } from "@/lib/enums";
 import { requireUser, type SessionUser } from "@/server/auth";
 
@@ -8,8 +8,28 @@ export type ProjectAccess = {
   role: ProjectRole | null;
   isSuperAdmin: boolean;
   isOrgAdmin: boolean;
+  // True when the user is an ACTIVE employee of the project's organisation in an
+  // institutional support department (Finance / Accounts / Administration / HR).
+  // Such staff carry finance-admin capabilities on every project in their org.
+  deptFinance: boolean;
   permissions: Set<Permission>;
 };
+
+// Departments whose staff service every project (finance, accounts,
+// administration, human resources) — matched against the employee's free-text
+// department AND the linked department record's name. Matching is against the
+// WHOLE trimmed name, not substrings: "Research Administration", "Grants
+// Administration" or "Accountability" must NOT confer finance authority.
+const PRIVILEGED_DEPT =
+  /^\s*(finance|finance\s*(&|and)\s*admin(istration)?|accounts?|accounting|accounts?\s*(&|and)\s*finance|admin(istration)?|human\s*resources?|hr)\s*$/i;
+
+async function hasPrivilegedDepartment(orgId: string, userId: string): Promise<boolean> {
+  const rows = await q<{ dept: string | null; deptName: string | null }>(
+    `SELECT e.department AS dept, d.name AS "deptName"
+     FROM employee e LEFT JOIN department d ON d.id = e.department_id
+     WHERE e.user_id = $2 AND e.org_id = $1 AND e.status = 'active'`, [orgId, userId]);
+  return rows.some((r) => PRIVILEGED_DEPT.test(r.dept ?? "") || PRIVILEGED_DEPT.test(r.deptName ?? ""));
+}
 
 // Resolves the effective capabilities of the current user on a project.
 // Policy = role defaults ∪ explicit overrides ∪ org/super admin escalation.
@@ -51,6 +71,20 @@ export async function getProjectAccess(projectId: string): Promise<ProjectAccess
     ] as Permission[]).forEach((p) => permissions.add(p));
   }
 
+  // Institutional support staff — active employees in the Finance / Accounts /
+  // Administration / HR departments — service every project in their
+  // organisation, so they carry the finance-admin capability set on all of the
+  // org's projects without needing per-project membership. An EXPLICIT project
+  // membership always wins: if the team deliberately gave such a person a
+  // narrower role (e.g. viewer) on a project, the department grant does not
+  // apply there — permissions are additive and this is the only way to
+  // restrict a support-department employee on a specific project.
+  let deptFinance = false;
+  if (proj && !orgAdmin && !pm) {
+    deptFinance = await hasPrivilegedDepartment(proj.orgId, user.id);
+    if (deptFinance) ROLE_PERMISSIONS.finance_admin.forEach((p) => permissions.add(p));
+  }
+
   // External collaborators get strictly read-only access, and ONLY to projects
   // they are explicitly linked to. Resolved via their login (collaborator.user_id)
   // → project_collaborator. Anyone not linked gets nothing here, so the project
@@ -80,9 +114,13 @@ export async function getProjectAccess(projectId: string): Promise<ProjectAccess
 
   return {
     user,
-    role: pm?.role ?? null,
+    // Support-department staff without an explicit membership act as the
+    // project's finance admin (role-gated helpers like refund approval and
+    // bulk budget rights treat them accordingly).
+    role: pm?.role ?? (deptFinance ? "finance_admin" : null),
     isSuperAdmin: user.isSuperAdmin,
     isOrgAdmin: Boolean(orgAdmin),
+    deptFinance,
     permissions,
   };
 }

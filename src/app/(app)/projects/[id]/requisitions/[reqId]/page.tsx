@@ -15,7 +15,7 @@ const ROLE_LABEL: Record<string, string> = { finance_admin: "Finance review", pm
 
 export default async function RequisitionDetailPage({ params, searchParams }: {
   params: Promise<{ id: string; reqId: string }>;
-  searchParams: Promise<{ voucher?: string; edit?: string; retract?: string; blocked?: string }>;
+  searchParams: Promise<{ voucher?: string; edit?: string; retract?: string; blocked?: string; err?: string }>;
 }) {
   const { id, reqId } = await params;
   const sp = await searchParams;
@@ -115,6 +115,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
       {sp.edit === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This requisition can no longer be edited — it has already been submitted.</div>}
       {sp.retract === "ok" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Requisition retracted — it's back to draft and you can edit or re-submit it.</div>}
       {sp.retract === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Too late to retract — an approver has already acted on this requisition.</div>}
+      {sp.err === "selfapprove" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>You cannot approve your own requisition — another approver must act on it (segregation of duties).</div>}
       {sp.blocked === "accountability" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
         Can&apos;t submit: the requester still has unaccounted advances exceeding 25% of their previous disbursement. At least 75% of prior funds must be accounted for first (Finance Policy §13.2). See &quot;Advances awaiting accountability&quot; on the requisitions list.
       </div>}

@@ -102,6 +102,10 @@ export async function decideRequisition(input: {
     [input.reqId]
   );
   if (!req) throw new Error("Requisition not found");
+  // Segregation of duties: the requester can never approve their own
+  // requisition, whatever approval permissions they hold (mirrors refunds).
+  if (req.requestedById && req.requestedById === input.approverId)
+    throw new Error("You cannot approve your own requisition");
   const pending = await one<{ id: string; step: number; role: Step["role"] }>(
     `SELECT id, step, role FROM requisition_approval
      WHERE requisition_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`,

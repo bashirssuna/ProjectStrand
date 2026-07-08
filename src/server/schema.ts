@@ -2251,6 +2251,15 @@ ALTER TABLE journal_entry ADD COLUMN IF NOT EXISTS archived_at timestamptz;
 CREATE INDEX IF NOT EXISTS idx_journal_entry_archived ON journal_entry(org_id, archived);
 CREATE INDEX IF NOT EXISTS idx_journal_entry_project ON journal_entry(org_id, project_id);
 
+-- Durable file storage: uploaded file bytes live in the DATABASE (base64) so
+-- they survive redeploys/restarts on ephemeral-disk hosts (e.g. Render). The
+-- .uploads directory on disk is only a read cache — see services/storage.ts.
+CREATE TABLE IF NOT EXISTS file_blob (
+  key text PRIMARY KEY,
+  data text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- Organisation receiving-bank details, shown on invoices ("pay to").
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS bank_details text;
 

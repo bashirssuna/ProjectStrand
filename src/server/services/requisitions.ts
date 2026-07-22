@@ -10,10 +10,13 @@ const PHASE: Record<Step["role"], string> = {
   finance_admin: "finance_review", pm: "pm_approval", admin: "admin_approval",
 };
 
+// Default approval chain: Finance review, then PM / PI sign-off. Organisations
+// that want an extra admin layer can define their own approval_matrix row
+// (doc_type 'requisition') with an 'admin' step; it is no longer part of the
+// default because the two named approvers are the finance admin and the PI.
 const DEFAULT_MATRIX: Step[] = [
   { step: 1, role: "finance_admin", thresholdMin: 0 },
   { step: 2, role: "pm", thresholdMin: 0 },
-  { step: 3, role: "admin", thresholdMin: 5000 },
 ];
 
 async function matrixFor(projectId: string): Promise<Step[]> {
@@ -75,16 +78,30 @@ export async function submitRequisition(reqId: string, userId: string): Promise<
   await writeAudit({ orgId: org?.orgId, userId, action: "update", entity: "requisition", entityId: reqId, before: { status: "draft" }, after: { status: firstPhase } });
 }
 
+// Notify exactly the people who can DECIDE the step (mirrors canDecideStep in
+// policy.ts): the finance step goes to the finance admin, the PM/PI step to
+// PI / Co-PI / project manager, and an admin step to designated approvers.
+// Org admins are always included — they can decide any step and are the safety
+// net when a project has nobody in the step's role.
 async function notifyApprovers(projectId: string, role: Step["role"], reqId: string, number: string, email: boolean) {
-  const memberRole = role === "pm" ? "project_manager" : role === "admin" ? "pi" : "finance_admin";
-  const members = await q<{ userId: string }>(
-    `SELECT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role IN ($2,'pi','co_pi')`,
-    [projectId, memberRole]
-  );
+  const memberRoles = role === "pm" ? ["project_manager", "pi", "co_pi"]
+    : role === "admin" ? ["approver"]
+    : ["finance_admin"];
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
-  for (const m of members) {
+  const ids = new Set<string>();
+  (await q<{ userId: string }>(
+    `SELECT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role = ANY($2::text[])`,
+    [projectId, memberRoles]
+  )).forEach((m) => ids.add(m.userId));
+  if (org) {
+    (await q<{ userId: string }>(
+      `SELECT m.user_id AS "userId" FROM org_membership m JOIN role r ON r.id=m.role_id
+       WHERE m.org_id=$1 AND r.key='org_admin'`, [org.orgId]
+    )).forEach((m) => ids.add(m.userId));
+  }
+  for (const uid of ids) {
     await notify({
-      orgId: org?.orgId, userId: m.userId, type: "signature",
+      orgId: org?.orgId, userId: uid, type: "signature",
       title: `Requisition ${number} awaiting your approval`,
       body: `A requisition needs your review and signature.`,
       link: `/projects/${projectId}/requisitions/${reqId}`, email,
@@ -95,6 +112,11 @@ async function notifyApprovers(projectId: string, role: Step["role"], reqId: str
 export async function decideRequisition(input: {
   reqId: string; approverId: string; decision: "approved" | "rejected";
   comment?: string; signatureId?: string;
+  // The approval-step row the caller was authorised against. If, by the time we
+  // act, the earliest pending step is a DIFFERENT row (double-submit, or a
+  // concurrent decision advanced the chain), we must not stamp this caller's
+  // decision onto a step they were never validated for.
+  expectedStepId?: string;
 }): Promise<void> {
   const req = await one<{ projectId: string; number: string; amount: number; budgetLineId: string | null; requestedById: string | null }>(
     `SELECT project_id AS "projectId", number, amount, budget_line_id AS "budgetLineId",
@@ -112,12 +134,17 @@ export async function decideRequisition(input: {
     [input.reqId]
   );
   if (!pending) throw new Error("No pending approval step");
+  if (input.expectedStepId && pending.id !== input.expectedStepId)
+    throw new Error("This approval step was already decided");
 
-  await q(
+  // Conditional single-shot write: if a concurrent request decided this row
+  // first, zero rows come back and we bail instead of double-deciding.
+  const updated = await q<{ id: string }>(
     `UPDATE requisition_approval SET decision=$2, comment=$3, approver_id=$4, signature_id=$5, decided_at=now()
-     WHERE id=$1`,
+     WHERE id=$1 AND decision='pending' RETURNING id`,
     [pending.id, input.decision, input.comment ?? null, input.approverId, input.signatureId ?? null]
   );
+  if (updated.length === 0) throw new Error("This approval step was already decided");
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
   await writeAudit({
     orgId: org?.orgId, userId: input.approverId,
@@ -128,6 +155,9 @@ export async function decideRequisition(input: {
 
   if (input.decision === "rejected") {
     await q(`UPDATE requisition SET status='rejected', updated_at=now() WHERE id=$1`, [input.reqId]);
+    // Close out the untouched later steps so a rejected requisition never
+    // resurfaces on "awaiting approval" queues via stranded pending rows.
+    await q(`UPDATE requisition_approval SET decision='skipped', decided_at=now() WHERE requisition_id=$1 AND decision='pending'`, [input.reqId]);
     if (req.requestedById) await notify({ orgId: org?.orgId, userId: req.requestedById, type: "approval_needed", title: `Requisition ${req.number} was rejected`, link: `/projects/${req.projectId}/requisitions/${input.reqId}`, email: true });
     return;
   }

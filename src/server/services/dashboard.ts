@@ -30,7 +30,8 @@ export async function institutionalSnapshot(orgId: string) {
                         FROM anomaly_flag f JOIN project p ON p.id=f.project_id WHERE p.org_id=$1`, [orgId]),
     one<{ c: number }>(`SELECT COUNT(DISTINCT ra.requisition_id)::int c FROM requisition_approval ra
                         JOIN requisition r ON r.id=ra.requisition_id JOIN project p ON p.id=r.project_id
-                        WHERE p.org_id=$1 AND ra.decision='pending'`, [orgId]),
+                        WHERE p.org_id=$1 AND ra.decision='pending'
+                          AND r.status IN ('submitted','finance_review','pm_approval','admin_approval')`, [orgId]),
     one<{ c: number }>(`SELECT COUNT(*)::int c FROM employee WHERE org_id=$1 AND status <> 'terminated'`, [orgId]),
     one<{ openSurveys: number; latestId: string | null }>(
       `SELECT COUNT(*) FILTER (WHERE status='open')::int "openSurveys",

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getProjectAccess } from "@/server/policy";
+import { getProjectAccess, canDecideStep } from "@/server/policy";
 import { q, one } from "@/server/db";
 import { SectionTitle, Empty, Badge, StatusBadge, Field } from "@/components/ui";
 import { money, fmtDate, fmtDateTime, dateInput } from "@/lib/format";
@@ -8,8 +8,10 @@ import {
   submitRequisitionAction, decideRequisitionAction,
   addRequisitionAttachmentAction, createVoucherAction, recordReqExpenditureAction,
   editRequisitionAction, retractRequisitionAction, checkVoucherAction, approveVoucherAction,
+  attachVoucherEvidenceAction,
 } from "@/app/actions";
 import { budgetLineRollups } from "@/server/services/budget";
+import { blockStaff } from "../../_staffblock";
 
 const ROLE_LABEL: Record<string, string> = { finance_admin: "Finance review", pm: "PM / PI approval", admin: "Admin approval" };
 
@@ -19,6 +21,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
 }) {
   const { id, reqId } = await params;
   const sp = await searchParams;
+  await blockStaff(id);
   const access = await getProjectAccess(id);
 
   const req = await one<{
@@ -67,11 +70,13 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
     id: string; number: string; payee: string; amount: number; method: string; reference: string | null;
     status: string; preparedByName: string | null; preparedBy: string | null;
     checkedByName: string | null; checkedBy: string | null; approvedByName: string | null; expenditureId: string | null;
+    evidenceKey: string | null; evidenceName: string | null;
   }>(
     `SELECT id, number, payee, amount, method, reference, status,
             prepared_by_name AS "preparedByName", prepared_by AS "preparedBy",
             checked_by_name AS "checkedByName", checked_by AS "checkedBy",
-            approved_by_name AS "approvedByName", expenditure_id AS "expenditureId"
+            approved_by_name AS "approvedByName", expenditure_id AS "expenditureId",
+            evidence_key AS "evidenceKey", evidence_name AS "evidenceName"
      FROM payment_voucher WHERE requisition_id=$1 ORDER BY created_at`, [reqId]
   );
   // Only APPROVED vouchers represent money actually paid out.
@@ -107,7 +112,13 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
                 (COALESCE(bl.planned,0) - COALESCE((SELECT SUM(amount) FROM expenditure WHERE budget_line_id=bl.id),0))::float AS remaining
            FROM budget_line bl WHERE bl.id=$1`, [req.budgetLineId])
     : null;
+  // The earliest undecided step is the one the next decision applies to. Only
+  // people matching that step's role (or org admins) may act on it, and the
+  // requester never decides their own requisition.
   const myPending = approvals.find((a) => a.decision === "pending");
+  const iCanDecide = !!myPending && inFlight && canApprove
+    && canDecideStep(access, myPending.role)
+    && req.requesterId !== access.user.id;
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -116,6 +127,8 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
       {sp.retract === "ok" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Requisition retracted — it's back to draft and you can edit or re-submit it.</div>}
       {sp.retract === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Too late to retract — an approver has already acted on this requisition.</div>}
       {sp.err === "selfapprove" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>You cannot approve your own requisition — another approver must act on it (segregation of duties).</div>}
+      {sp.err === "wrongstep" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This approval step is not yours to decide — it must be decided by the role shown on the pending step (or an organisation admin).</div>}
+      {sp.err === "raced" && <div className="card p-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>That approval step had already been decided (possibly a double-click or another approver acting at the same time) — nothing was changed. Review the chain below.</div>}
       {sp.blocked === "accountability" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
         Can&apos;t submit: the requester still has unaccounted advances exceeding 25% of their previous disbursement. At least 75% of prior funds must be accounted for first (Finance Policy §13.2). See &quot;Advances awaiting accountability&quot; on the requisitions list.
       </div>}
@@ -179,7 +192,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
               <button className="btn btn-sm" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Retract to draft</button>
             </form>
           )}
-          {approved && (
+          {req.status !== "draft" && (
             <a href={`/print/requisition/${req.id}`} target="_blank" rel="noopener" className="btn btn-sm">
               🖨 Print / Save PDF (letterhead)
             </a>
@@ -235,22 +248,32 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
                   <img src={a.signature} alt="signature" style={{ height: 36, marginTop: 4 }} />
                 )}
               </div>
-              <Badge tone={a.decision === "approved" ? "ok" : a.decision === "rejected" ? "danger" : "warn"}>{label(a.decision)}</Badge>
+              <Badge tone={a.decision === "approved" ? "ok" : a.decision === "rejected" ? "danger" : a.decision === "skipped" ? "muted" : "warn"}>{label(a.decision)}</Badge>
             </div>
           ))}
-          {myPending && canApprove && req.status === "submitted" && !myHasSignature && (
+          {iCanDecide && !myHasSignature && (
             <p className="text-xs pt-2" style={{ color: "var(--warn)" }}>
               You have no signature on file. <Link href="/profile" className="underline">Add one</Link> to sign on approval.
             </p>
           )}
-          {myPending && canApprove && req.status === "submitted" && (
-            <form action={decideRequisitionAction} className="flex flex-wrap items-end gap-2 pt-2">
+          {iCanDecide && myPending && (
+            <form action={decideRequisitionAction} className="flex flex-wrap items-end gap-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
               <input type="hidden" name="projectId" value={id} />
               <input type="hidden" name="reqId" value={req.id} />
+              <div className="w-full text-sm font-medium pt-2">
+                Your decision — Step {myPending.step}: {ROLE_LABEL[myPending.role] ?? label(myPending.role)}
+              </div>
               <Field label="Comment (optional)"><input name="comment" className="input" /></Field>
               <button className="btn btn-primary btn-sm" name="decision" value="approved" type="submit">Approve &amp; sign</button>
               <button className="btn btn-sm" name="decision" value="rejected" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Reject</button>
             </form>
+          )}
+          {myPending && inFlight && !iCanDecide && (
+            <p className="text-xs pt-2" style={{ color: "var(--muted)" }}>
+              {req.requesterId === access.user.id && canApprove
+                ? "You raised this requisition, so someone else must approve it (segregation of duties)."
+                : <>Waiting on <strong>{ROLE_LABEL[myPending.role] ?? label(myPending.role)}</strong> — only {myPending.role === "finance_admin" ? "the finance admin" : myPending.role === "pm" ? "the PI, Co-PI or project manager" : "a designated approver"} (or an organisation admin) can decide this step.</>}
+            </p>
           )}
         </div>
       </div>
@@ -293,6 +316,10 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
           {sp.voucher === "stage" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>That voucher is not at the right stage for this action.</p>}
           {sp.voucher === "sameprep" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>The person who prepared a voucher can&apos;t also check it — ask another finance user.</p>}
           {sp.voucher === "samecheck" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>The person who checked a voucher can&apos;t also approve it — ask an authorised signatory.</p>}
+          {sp.voucher === "evidence" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Payment evidence attached to the voucher.</p>}
+          {sp.voucher === "noevidence" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>Choose a file to attach as payment evidence.</p>}
+          {sp.voucher === "sameprep2" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>The person who prepared a voucher can&apos;t also approve the payment — ask another authorised signatory.</p>}
+          {sp.voucher === "evidencelocked" && <p className="text-sm mb-2" style={{ color: "var(--danger)" }}>This voucher is approved and already has payment evidence — it can&apos;t be replaced (the proof behind a completed payment stays on file).</p>}
           {req.budgetLineId
             ? <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>Approved vouchers deduct from budget line <strong>{reqLine ? `${reqLine.code} — ${reqLine.description}` : req.budgetLine}</strong>{reqLine ? <> · remaining <strong>{money(reqLine.remaining, c)}</strong></> : null} and post to the ledger automatically.</p>
             : <p className="text-xs mb-3" style={{ color: "var(--warn)" }}>⚠ No budget line is linked to this requisition. Link one in the requisition details above so approved vouchers deduct from the project budget and post to the ledger automatically.</p>}
@@ -316,6 +343,18 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
                             {v.approvedByName ? <> · Approved: {v.approvedByName}</> : null}
                           </div>
                           {v.expenditureId && <div className="text-[11px] mt-0.5" style={{ color: "var(--ok)" }}>✓ deducted from budget line &amp; posted to ledger</div>}
+                          {v.evidenceKey ? (
+                            <div className="text-[11px] mt-0.5">
+                              <a href={`/api/voucher-files/${v.id}`} className="hover:underline" style={{ color: "var(--brand)" }}>📎 {v.evidenceName ?? "Payment evidence"}</a>
+                            </div>
+                          ) : canDisburse ? (
+                            <form action={attachVoucherEvidenceAction} className="flex items-center gap-1 mt-1">
+                              <input type="hidden" name="projectId" value={id} />
+                              <input type="hidden" name="voucherId" value={v.id} />
+                              <input type="file" name="file" required className="input" style={{ maxWidth: 170, fontSize: 11, padding: 2 }} />
+                              <button className="btn btn-sm" type="submit" title="Attach payment evidence (bank slip, MoMo screenshot, receipt)">📎 Evidence</button>
+                            </form>
+                          ) : null}
                         </td>
                         <td className="td text-right tabular-nums">{money(v.amount, c)}</td>
                         <td className="td text-right whitespace-nowrap">
@@ -328,7 +367,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
                                 <button className="btn btn-sm" type="submit">Check</button>
                               </form>
                             )}
-                            {v.status === "checked" && canApproveVoucher && v.checkedBy !== access.user.id && (
+                            {v.status === "checked" && canApproveVoucher && v.checkedBy !== access.user.id && v.preparedBy !== access.user.id && (
                               <form action={approveVoucherAction}>
                                 <input type="hidden" name="projectId" value={id} />
                                 <input type="hidden" name="requisitionId" value={req.id} />

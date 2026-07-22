@@ -7,7 +7,7 @@ import { q, one } from "@/server/db";
 import { id } from "@/lib/ids";
 import { PROJECT_STATUS, PROJECT_ROLES, PERMISSIONS, ROLE_PERMISSIONS, type Permission, type ProjectRole } from "@/lib/enums";
 import { createSession, destroySession, requireUser, verifyPassword } from "@/server/auth";
-import { requirePermission, getProjectAccess, canCreateProjects, requireBudgetBulk, canManageBudgetBulk } from "@/server/policy";
+import { requirePermission, getProjectAccess, canCreateProjects, requireBudgetBulk, canManageBudgetBulk, canDecideStep } from "@/server/policy";
 import { createProject } from "@/server/services/projects";
 import { addProjectMemberByEmail, removeProjectMember, createAdminAccount, issuePasswordToken, consumePasswordToken, markTokenUsed, signupOrganization, getUserOrg, createOrganizationWithAdmin, setOrgState, requestUpgrade } from "@/server/services/accounts";
 import { hashPassword, passwordError } from "@/lib/password";
@@ -810,7 +810,7 @@ export async function sendRequisitionReminderAction(formData: FormData) {
   if (req.lastRemindedAt && Date.now() - new Date(req.lastRemindedAt).getTime() < 86400000) redirect(`/projects/${projectId}/requisitions?rfd=remindsoon`);
   // notify project approvers + org admins, email + in-app
   const ids = new Set<string>();
-  (await q<{ userId: string }>(`SELECT DISTINCT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role IN ('pi','co_pi','finance_admin','project_manager')`, [projectId])).forEach((m) => ids.add(m.userId));
+  (await q<{ userId: string }>(`SELECT DISTINCT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role IN ('pi','co_pi','finance_admin','project_manager','approver')`, [projectId])).forEach((m) => ids.add(m.userId));
   (await q<{ userId: string }>(`SELECT m.user_id AS "userId" FROM org_membership m JOIN role r ON r.id=m.role_id WHERE m.org_id=$1 AND r.key='org_admin'`, [req.orgId])).forEach((m) => ids.add(m.userId));
   for (const uid of ids) await notify({ orgId: req.orgId, userId: uid, type: "approval_needed", title: `Reminder: requisition ${req.number} awaiting approval`, link: `/projects/${projectId}/requisitions/${reqId}`, email: true });
   await q(`UPDATE requisition SET last_reminded_at=now() WHERE id=$1`, [reqId]);
@@ -880,8 +880,15 @@ export async function decideRequisitionAction(formData: FormData) {
   const user = await requireUser();
   const projectId = String(formData.get("projectId"));
   const reqId = String(formData.get("reqId"));
-  await requirePermission(projectId, "requisitions.approve");
+  const access = await requirePermission(projectId, "requisitions.approve");
   await assertReqInProject(reqId, projectId);
+  // The pending step is decided by its OWN role (finance step by the finance
+  // admin, PM/PI step by PI/Co-PI/PM, org admins anywhere) — holding the
+  // generic approve permission is not enough.
+  const pendingStep = await one<{ id: string; role: string }>(
+    `SELECT id, role FROM requisition_approval WHERE requisition_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`, [reqId]);
+  if (pendingStep && !canDecideStep(access, pendingStep.role))
+    redirect(`/projects/${projectId}/requisitions/${reqId}?err=wrongstep`);
   const decision = String(formData.get("decision")) === "approved" ? "approved" : "rejected";
   // attach the approver's signature if they have one (signing the requisition)
   const sig = await one<{ id: string }>(`SELECT id FROM signature_asset WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, [user.id]);
@@ -890,10 +897,15 @@ export async function decideRequisitionAction(formData: FormData) {
       reqId, approverId: user.id, decision,
       comment: String(formData.get("comment") || "") || undefined,
       signatureId: decision === "approved" && sig ? sig.id : undefined,
+      // bind the decision to the exact step this caller was authorised for —
+      // a double-submit or concurrent decision must not roll onto the next step
+      expectedStepId: pendingStep?.id,
     });
   } catch (err) {
     if (err instanceof Error && /own requisition/.test(err.message))
       redirect(`/projects/${projectId}/requisitions/${reqId}?err=selfapprove`);
+    if (err instanceof Error && /already decided/.test(err.message))
+      redirect(`/projects/${projectId}/requisitions/${reqId}?err=raced`);
     throw err;
   }
   revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
@@ -1783,6 +1795,35 @@ export async function createVoucherAction(formData: FormData) {
   redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=ok`);
 }
 
+// Attach proof of payment (bank slip, mobile-money screenshot, signed cash
+// receipt…) to a disbursement voucher — typically when the payment is made on
+// approval. Each upload gets its own storage key so nothing is ever overwritten
+// in place, and once an APPROVED voucher has evidence it is locked: the proof
+// behind a completed payment must stay intact for audit. The audit log records
+// old → new keys on pre-approval replacement.
+export async function attachVoucherEvidenceAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const voucherId = String(formData.get("voucherId"));
+  await requirePermission(projectId, "budget.manage");
+  const v = await one<{ requisitionId: string | null; number: string; status: string; evidenceKey: string | null; evidenceName: string | null }>(
+    `SELECT requisition_id AS "requisitionId", number, status, evidence_key AS "evidenceKey", evidence_name AS "evidenceName"
+     FROM payment_voucher WHERE id=$1 AND project_id=$2`, [voucherId, projectId]);
+  if (!v) redirect(`/projects/${projectId}/requisitions`);
+  const back = `/projects/${projectId}/requisitions/${v!.requisitionId ?? ""}`;
+  if (v!.status === "approved" && v!.evidenceKey) redirect(`${back}?voucher=evidencelocked`);
+  const file = formData.get("file") as File | null;
+  if (!file || file.size === 0) redirect(`${back}?voucher=noevidence`);
+  const buf = Buffer.from(await file!.arrayBuffer());
+  const key = await saveUpload(id("pve"), file!.name, buf); // fresh key — prior evidence blobs are never overwritten
+  await q(`UPDATE payment_voucher SET evidence_key=$2, evidence_name=$3, evidence_mime=$4 WHERE id=$1`, [voucherId, key, file!.name, mimeFor(file!.name)]);
+  await writeAudit({ userId: user.id, action: "update", entity: "payment_voucher", entityId: voucherId,
+    before: v!.evidenceKey ? { evidenceKey: v!.evidenceKey, evidenceName: v!.evidenceName } : undefined,
+    after: { evidenceKey: key, evidenceName: file!.name }, meta: { number: v!.number } });
+  revalidatePath(back);
+  redirect(`${back}?voucher=evidence`);
+}
+
 // Record a STANDALONE payment voucher (not tied to a requisition) and post it to the
 // general ledger so it flows into the monthly bank reconciliation as a cash payment.
 export async function createStandaloneVoucherAction(formData: FormData) {
@@ -2329,12 +2370,15 @@ export async function approveVoucherAction(formData: FormData) {
   if (!access.permissions.has("requisitions.sign") && !access.permissions.has("requisitions.approve"))
     throw new Error("FORBIDDEN — only an authorised signatory can approve a payment voucher");
   if (reqId) await assertReqInProject(reqId, projectId);
-  const v = await one<{ status: string; checkedBy: string | null }>(
-    `SELECT status, checked_by AS "checkedBy" FROM payment_voucher WHERE id=$1 AND project_id=$2`, [vid, projectId]
+  const v = await one<{ status: string; checkedBy: string | null; preparedBy: string | null }>(
+    `SELECT status, checked_by AS "checkedBy", prepared_by AS "preparedBy" FROM payment_voucher WHERE id=$1 AND project_id=$2`, [vid, projectId]
   );
   if (!v || v.status !== "checked") redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=stage`);
-  // The checker cannot also approve their own check.
+  // The checker cannot also approve their own check — and the PREPARER cannot
+  // authorise their own disbursement either (prepared → checked → approved must
+  // involve three distinct people).
   if (v.checkedBy === user.id) redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=samecheck`);
+  if (v.preparedBy === user.id) redirect(`/projects/${projectId}/requisitions/${reqId}?voucher=sameprep2`);
   await q(`UPDATE payment_voucher SET status='approved', approved_by=$2, approved_by_name=$3, approved_at=now() WHERE id=$1`,
     [vid, user.id, user.name]);
   // payment is now made — recompute the requisition's disbursed total

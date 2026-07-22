@@ -2290,6 +2290,42 @@ CREATE TABLE IF NOT EXISTS file_blob (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Proof of payment on a disbursement voucher (bank slip, MoMo screenshot,
+-- signed cash receipt…), attached by finance when the funds go out.
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS evidence_key text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS evidence_name text;
+ALTER TABLE payment_voucher ADD COLUMN IF NOT EXISTS evidence_mime text;
+
+-- The default requisition chain is now Finance review → PM/PI approval. Legacy
+-- bootstrap code pinned the OLD 3-step default into approval_matrix; rewrite
+-- rows that still carry exactly that old default (custom matrices untouched),
+-- then drop now-orphaned PENDING admin steps from in-flight requisitions whose
+-- matrix no longer has an admin step, and unstick any requisition left with no
+-- pending steps. All idempotent.
+UPDATE approval_matrix
+   SET steps = '[{"step":1,"role":"finance_admin","thresholdMin":0},{"step":2,"role":"pm","thresholdMin":0}]'
+ WHERE doc_type = 'requisition'
+   AND steps = '[{"step":1,"role":"finance_admin","thresholdMin":0},{"step":2,"role":"pm","thresholdMin":0},{"step":3,"role":"admin","thresholdMin":5000}]';
+DELETE FROM requisition_approval ra
+ USING requisition r
+ WHERE ra.requisition_id = r.id
+   AND ra.role = 'admin' AND ra.decision = 'pending'
+   AND NOT EXISTS (
+     SELECT 1 FROM approval_matrix am
+     WHERE am.doc_type = 'requisition'
+       AND (am.project_id = r.project_id OR am.project_id IS NULL)
+       AND am.steps LIKE '%"admin"%'
+   );
+UPDATE requisition r SET status='approved', updated_at=now()
+ WHERE r.status = 'admin_approval'
+   AND NOT EXISTS (SELECT 1 FROM requisition_approval ra WHERE ra.requisition_id = r.id AND ra.decision = 'pending');
+-- Rejected requisitions used to leave their untouched later steps 'pending',
+-- which made them resurface on approval queues. New rejections mark them
+-- 'skipped'; this backfills historical ones. Idempotent.
+UPDATE requisition_approval ra SET decision='skipped', decided_at=now()
+  FROM requisition r
+ WHERE r.id = ra.requisition_id AND r.status = 'rejected' AND ra.decision = 'pending';
+
 -- Organisation receiving-bank details, shown on invoices ("pay to").
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS bank_details text;
 

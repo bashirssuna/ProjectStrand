@@ -130,6 +130,16 @@ export async function can(projectId: string, permission: Permission): Promise<bo
   return access.permissions.has(permission);
 }
 
+// File-serving routes must match the page-tier model: restricted logins —
+// staff self-service accounts (without support-department rights) and external
+// collaborators — are blocked from finance/requisition documents even though
+// they hold project.view for the limited tabs.
+export async function canViewProjectFiles(projectId: string): Promise<boolean> {
+  const access = await getProjectAccess(projectId);
+  const restricted = (access.user.isStaff && !access.deptFinance) || access.user.isCollaborator;
+  return access.permissions.has("project.view") && !restricted;
+}
+
 export async function requirePermission(projectId: string, permission: Permission): Promise<ProjectAccess> {
   const access = await getProjectAccess(projectId);
   if (!access.permissions.has(permission)) throw new Error("FORBIDDEN");
@@ -149,6 +159,19 @@ export async function requireBudgetBulk(projectId: string): Promise<ProjectAcces
   const access = await getProjectAccess(projectId);
   if (!canManageBudgetBulk(access)) throw new Error("FORBIDDEN");
   return access;
+}
+
+// Which people may decide a given requisition approval step. Org admins can
+// decide any step; otherwise the step's role maps to specific project roles:
+// the finance review is for the finance admin (incl. support-department staff,
+// who surface as role 'finance_admin'), the PM/PI step for PI / Co-PI / PM,
+// and an admin step (when an org configures one) for designated approvers.
+export function canDecideStep(access: ProjectAccess, stepRole: string): boolean {
+  if (access.isOrgAdmin) return true;
+  if (stepRole === "finance_admin") return access.role === "finance_admin";
+  if (stepRole === "pm") return access.role === "pi" || access.role === "co_pi" || access.role === "project_manager";
+  if (stepRole === "admin") return access.role === "approver";
+  return false;
 }
 
 // Only platform/org admins and Principal Investigators (including Co-PIs) may

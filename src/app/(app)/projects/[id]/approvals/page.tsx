@@ -1,12 +1,12 @@
 import Link from "next/link";
-import { getProjectAccess } from "@/server/policy";
+import { getProjectAccess, canDecideStep } from "@/server/policy";
 import { q, one } from "@/server/db";
 import { SectionTitle, Empty, Badge } from "@/components/ui";
 import { money, fmtDate } from "@/lib/format";
 import { label } from "@/lib/enums";
 import { blockStaff } from "../_staffblock";
 
-type Req = { id: string; number: string; title: string; amount: number; status: string };
+type Req = { id: string; number: string; title: string; amount: number; status: string; requesterId: string | null };
 type Appr = { reqId: string; step: number; role: string; decision: string; approverName: string | null; decidedAt: string | null };
 
 export default async function ApprovalsPage({ params }: { params: Promise<{ id: string }> }) {
@@ -15,7 +15,7 @@ export default async function ApprovalsPage({ params }: { params: Promise<{ id: 
   const access = await getProjectAccess(id);
 
   const project = await one<{ currency: string }>(`SELECT currency FROM project WHERE id=$1`, [id]);
-  const reqs = await q<Req>(`SELECT id, number, title, amount, status FROM requisition WHERE project_id=$1 ORDER BY created_at DESC`, [id]);
+  const reqs = await q<Req>(`SELECT id, number, title, amount, status, requested_by_id AS "requesterId" FROM requisition WHERE project_id=$1 ORDER BY created_at DESC`, [id]);
   const apprs = await q<Appr>(
     `SELECT ra.requisition_id AS "reqId", ra.step, ra.role, ra.decision, ra.decided_at AS "decidedAt", u.name AS "approverName"
      FROM requisition_approval ra JOIN requisition r ON r.id=ra.requisition_id
@@ -25,7 +25,12 @@ export default async function ApprovalsPage({ params }: { params: Promise<{ id: 
   const byReq = new Map<string, Appr[]>();
   for (const a of apprs) { (byReq.get(a.reqId) ?? byReq.set(a.reqId, []).get(a.reqId)!).push(a); }
 
-  const pending = reqs.filter((r) => ["submitted", "under_review", "pending_approval", "awaiting_approval"].includes(r.status) || (byReq.get(r.id) ?? []).some((a) => a.decision === "pending"));
+  // A requisition only belongs in "awaiting approval" while it is actually in
+  // flight — rejected/closed ones must not resurface via leftover pending rows.
+  const TERMINAL = new Set(["rejected", "closed", "retired", "draft", "approved", "partially_funded", "disbursed"]);
+  const pending = reqs.filter((r) => !TERMINAL.has(r.status)
+    && (["submitted", "finance_review", "pm_approval", "admin_approval", "under_review", "pending_approval", "awaiting_approval"].includes(r.status)
+        || (byReq.get(r.id) ?? []).some((a) => a.decision === "pending")));
   const pendingSet = new Set(pending.map((r) => r.id));
   const decided = reqs.filter((r) => !pendingSet.has(r.id));
 
@@ -33,7 +38,15 @@ export default async function ApprovalsPage({ params }: { params: Promise<{ id: 
     `SELECT s.status, s.approved_at AS "approvedAt", u.name AS approver FROM sow s LEFT JOIN app_user u ON u.id=s.approved_by_id WHERE s.project_id=$1`, [id]
   );
 
-  const decisionTone = (d: string) => d === "approved" ? "ok" : d === "rejected" ? "danger" : "warn";
+  const decisionTone = (d: string) => d === "approved" ? "ok" : d === "rejected" ? "danger" : d === "skipped" ? "muted" : "warn";
+
+  // The hint should only promise action the viewer can actually take: at least
+  // one pending requisition whose CURRENT step matches their role (and which
+  // they did not raise themselves).
+  const canActNow = access.permissions.has("requisitions.approve") && pending.some((r) => {
+    const first = (byReq.get(r.id) ?? []).find((a) => a.decision === "pending");
+    return !!first && canDecideStep(access, first.role) && r.requesterId !== access.user.id;
+  });
 
   const Card = ({ r }: { r: Req }) => {
     const chain = byReq.get(r.id) ?? [];
@@ -77,7 +90,11 @@ export default async function ApprovalsPage({ params }: { params: Promise<{ id: 
       </div>
 
       <div>
-        <SectionTitle action={access.permissions.has("requisitions.approve") ? <span className="text-xs" style={{ color: "var(--muted)" }}>You can approve — open a requisition to sign off</span> : undefined}>
+        <SectionTitle action={canActNow
+          ? <span className="text-xs" style={{ color: "var(--muted)" }}>You can approve — open a requisition to sign off</span>
+          : access.permissions.has("requisitions.approve") && pending.length > 0
+          ? <span className="text-xs" style={{ color: "var(--muted)" }}>Pending items are awaiting other roles</span>
+          : undefined}>
           Awaiting approval
         </SectionTitle>
         {pending.length === 0 ? <Empty title="Nothing awaiting approval" hint="Submitted requisitions that need a decision appear here." />

@@ -1,5 +1,5 @@
 import { getCurrentUser } from "@/server/auth";
-import { can } from "@/server/policy";
+import { canViewProjectFiles } from "@/server/policy";
 import { one } from "@/server/db";
 import { readUpload } from "@/server/services/storage";
 
@@ -13,7 +13,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ docId: 
      FROM project_document WHERE id=$1`, [docId]
   );
   if (!doc) return new Response("Not found", { status: 404 });
-  if (!(await can(doc.projectId, "project.view"))) return new Response("Forbidden", { status: 403 });
+  if (!(await canViewProjectFiles(doc.projectId))) return new Response("Forbidden", { status: 403 });
   if (!doc.storageKey) return new Response("No file stored for this record", { status: 404 });
 
   try {

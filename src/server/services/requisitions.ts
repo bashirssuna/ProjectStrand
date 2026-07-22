@@ -109,14 +109,17 @@ async function notifyApprovers(projectId: string, role: Step["role"], reqId: str
   }
 }
 
+// Decides ONE SPECIFIC approval step — the caller signs the row belonging to
+// their own role, never "whatever is earliest" (an org admin who is also the
+// PI must land their signature on the PM/PI row, not silently consume the
+// finance slot). Steps can be signed out of order; the requisition's status
+// always reflects the EARLIEST still-pending step, and it becomes 'approved'
+// only when every step is decided. Requesters MAY decide their own
+// requisitions (organisation policy); payment vouchers still require three
+// distinct people before money moves.
 export async function decideRequisition(input: {
-  reqId: string; approverId: string; decision: "approved" | "rejected";
+  reqId: string; stepId: string; approverId: string; decision: "approved" | "rejected";
   comment?: string; signatureId?: string;
-  // The approval-step row the caller was authorised against. If, by the time we
-  // act, the earliest pending step is a DIFFERENT row (double-submit, or a
-  // concurrent decision advanced the chain), we must not stamp this caller's
-  // decision onto a step they were never validated for.
-  expectedStepId?: string;
 }): Promise<void> {
   const req = await one<{ projectId: string; number: string; amount: number; budgetLineId: string | null; requestedById: string | null }>(
     `SELECT project_id AS "projectId", number, amount, budget_line_id AS "budgetLineId",
@@ -124,25 +127,22 @@ export async function decideRequisition(input: {
     [input.reqId]
   );
   if (!req) throw new Error("Requisition not found");
-  // Segregation of duties: the requester can never approve their own
-  // requisition, whatever approval permissions they hold (mirrors refunds).
-  if (req.requestedById && req.requestedById === input.approverId)
-    throw new Error("You cannot approve your own requisition");
-  const pending = await one<{ id: string; step: number; role: Step["role"] }>(
-    `SELECT id, step, role FROM requisition_approval
-     WHERE requisition_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`,
+  const target = await one<{ id: string; step: number; role: Step["role"] }>(
+    `SELECT id, step, role FROM requisition_approval WHERE id=$1 AND requisition_id=$2`,
+    [input.stepId, input.reqId]
+  );
+  if (!target) throw new Error("Approval step not found");
+  const front = await one<{ id: string }>(
+    `SELECT id FROM requisition_approval WHERE requisition_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`,
     [input.reqId]
   );
-  if (!pending) throw new Error("No pending approval step");
-  if (input.expectedStepId && pending.id !== input.expectedStepId)
-    throw new Error("This approval step was already decided");
 
   // Conditional single-shot write: if a concurrent request decided this row
   // first, zero rows come back and we bail instead of double-deciding.
   const updated = await q<{ id: string }>(
     `UPDATE requisition_approval SET decision=$2, comment=$3, approver_id=$4, signature_id=$5, decided_at=now()
      WHERE id=$1 AND decision='pending' RETURNING id`,
-    [pending.id, input.decision, input.comment ?? null, input.approverId, input.signatureId ?? null]
+    [target.id, input.decision, input.comment ?? null, input.approverId, input.signatureId ?? null]
   );
   if (updated.length === 0) throw new Error("This approval step was already decided");
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
@@ -150,12 +150,12 @@ export async function decideRequisition(input: {
     orgId: org?.orgId, userId: input.approverId,
     action: input.decision === "approved" ? "approve" : "update",
     entity: "requisition", entityId: input.reqId,
-    meta: { step: pending.step, role: pending.role, signed: Boolean(input.signatureId), comment: input.comment },
+    meta: { step: target.step, role: target.role, signed: Boolean(input.signatureId), comment: input.comment },
   });
 
   if (input.decision === "rejected") {
     await q(`UPDATE requisition SET status='rejected', updated_at=now() WHERE id=$1`, [input.reqId]);
-    // Close out the untouched later steps so a rejected requisition never
+    // Close out the untouched steps so a rejected requisition never
     // resurfaces on "awaiting approval" queues via stranded pending rows.
     await q(`UPDATE requisition_approval SET decision='skipped', decided_at=now() WHERE requisition_id=$1 AND decision='pending'`, [input.reqId]);
     if (req.requestedById) await notify({ orgId: org?.orgId, userId: req.requestedById, type: "approval_needed", title: `Requisition ${req.number} was rejected`, link: `/projects/${req.projectId}/requisitions/${input.reqId}`, email: true });
@@ -168,7 +168,9 @@ export async function decideRequisition(input: {
   );
   if (next) {
     await q(`UPDATE requisition SET status=$2, updated_at=now() WHERE id=$1`, [input.reqId, PHASE[next.role]]);
-    await notifyApprovers(req.projectId, next.role, input.reqId, req.number, true);
+    // Only nudge the next pool when the FRONT of the chain advanced — an
+    // out-of-order signature further down changes nothing for them.
+    if (front && front.id === target.id) await notifyApprovers(req.projectId, next.role, input.reqId, req.number, true);
   } else {
     // fully approved → reserve funds via a commitment
     await q(`UPDATE requisition SET status='approved', updated_at=now() WHERE id=$1`, [input.reqId]);
@@ -182,6 +184,42 @@ export async function decideRequisition(input: {
     if (req.requestedById) await notify({ orgId: org?.orgId, userId: req.requestedById, type: "approval_needed", title: `Requisition ${req.number} approved`, body: "Your requisition has been fully approved.", link: `/projects/${req.projectId}/requisitions/${input.reqId}`, email: true });
     await evaluateProject(req.projectId);
   }
+}
+
+// Frees a decided step so the right person can sign it — the remedy when a
+// signature landed on the wrong position (e.g. an org admin's approval consumed
+// the finance slot). Org admins only, and never after money has moved (any
+// approved voucher or disbursement locks the chain). Resetting a rejected
+// requisition's step also revives the steps that were auto-skipped, and a
+// fully-approved requisition loses its reservation commitment again.
+export async function resetRequisitionStep(input: { reqId: string; stepId: string; byId: string }): Promise<void> {
+  const req = await one<{ projectId: string; number: string; status: string; budgetLineId: string | null; disbursedAmount: number }>(
+    `SELECT project_id AS "projectId", number, status, budget_line_id AS "budgetLineId",
+            COALESCE(disbursed_amount,0)::float AS "disbursedAmount" FROM requisition WHERE id=$1`, [input.reqId]);
+  if (!req) throw new Error("Requisition not found");
+  const paid = await one<{ c: number }>(
+    `SELECT COUNT(*)::int c FROM payment_voucher WHERE requisition_id=$1 AND status='approved'`, [input.reqId]);
+  if ((paid?.c ?? 0) > 0 || req.disbursedAmount > 0)
+    throw new Error("Money has already been paid out on this requisition — its approvals can no longer be reset");
+  const step = await one<{ id: string; step: number; role: string; decision: string }>(
+    `SELECT id, step, role, decision FROM requisition_approval WHERE id=$1 AND requisition_id=$2`, [input.stepId, input.reqId]);
+  if (!step || step.decision === "pending") throw new Error("Approval step not found or still pending");
+
+  await q(`UPDATE requisition_approval SET decision='pending', comment=NULL, approver_id=NULL, signature_id=NULL, decided_at=NULL WHERE id=$1`, [step.id]);
+  if (req.status === "rejected") {
+    // revive the steps that were auto-skipped when the rejection landed
+    await q(`UPDATE requisition_approval SET decision='pending', decided_at=NULL WHERE requisition_id=$1 AND decision='skipped'`, [input.reqId]);
+  }
+  if (req.status === "approved" && req.budgetLineId) {
+    // the full-approval reservation no longer holds
+    await q(`DELETE FROM commitment WHERE budget_line_id=$1 AND note=$2`, [req.budgetLineId, `Commitment for ${req.number}`]);
+  }
+  const front = await one<{ role: Step["role"] }>(
+    `SELECT role FROM requisition_approval WHERE requisition_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`, [input.reqId]);
+  await q(`UPDATE requisition SET status=$2, updated_at=now() WHERE id=$1`, [input.reqId, front ? PHASE[front.role] : "approved"]);
+  const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [req.projectId]);
+  await writeAudit({ orgId: org?.orgId, userId: input.byId, action: "update", entity: "requisition", entityId: input.reqId,
+    meta: { resetStep: step.step, role: step.role, was: step.decision } });
 }
 
 export async function disburse(reqId: string, userId: string, amount: number, ref: string): Promise<void> {

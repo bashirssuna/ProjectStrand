@@ -8,7 +8,7 @@ import {
   submitRequisitionAction, decideRequisitionAction,
   addRequisitionAttachmentAction, createVoucherAction, recordReqExpenditureAction,
   editRequisitionAction, retractRequisitionAction, checkVoucherAction, approveVoucherAction,
-  attachVoucherEvidenceAction,
+  attachVoucherEvidenceAction, resetRequisitionStepAction,
 } from "@/app/actions";
 import { budgetLineRollups } from "@/server/services/budget";
 import { blockStaff } from "../../_staffblock";
@@ -17,7 +17,7 @@ const ROLE_LABEL: Record<string, string> = { finance_admin: "Finance review", pm
 
 export default async function RequisitionDetailPage({ params, searchParams }: {
   params: Promise<{ id: string; reqId: string }>;
-  searchParams: Promise<{ voucher?: string; edit?: string; retract?: string; blocked?: string; err?: string }>;
+  searchParams: Promise<{ voucher?: string; edit?: string; retract?: string; blocked?: string; err?: string; reset?: string }>;
 }) {
   const { id, reqId } = await params;
   const sp = await searchParams;
@@ -112,13 +112,18 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
                 (COALESCE(bl.planned,0) - COALESCE((SELECT SUM(amount) FROM expenditure WHERE budget_line_id=bl.id),0))::float AS remaining
            FROM budget_line bl WHERE bl.id=$1`, [req.budgetLineId])
     : null;
-  // The earliest undecided step is the one the next decision applies to. Only
-  // people matching that step's role (or org admins) may act on it, and the
-  // requester never decides their own requisition.
-  const myPending = approvals.find((a) => a.decision === "pending");
-  const iCanDecide = !!myPending && inFlight && canApprove
-    && canDecideStep(access, myPending.role)
-    && req.requesterId !== access.user.id;
+  // Every PENDING step carries its own sign-off, gated to that step's role (or
+  // an org admin) — a signature always lands on the signer's own position.
+  // Steps may be signed in any order; the status tracks the earliest pending.
+  const decidableStepIds = new Set(
+    inFlight && canApprove
+      ? approvals.filter((a) => a.decision === "pending" && canDecideStep(access, a.role)).map((a) => a.id)
+      : []
+  );
+  const anyPending = approvals.some((a) => a.decision === "pending");
+  // A decided step can be reset (org admins) until money moves — the service
+  // rejects resets once any voucher is approved or funds are disbursed.
+  const inFlightOrDecided = inFlight || req.status === "approved" || req.status === "rejected";
 
   return (
     <div className="space-y-6 max-w-4xl">
@@ -126,9 +131,10 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
       {sp.edit === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This requisition can no longer be edited — it has already been submitted.</div>}
       {sp.retract === "ok" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Requisition retracted — it's back to draft and you can edit or re-submit it.</div>}
       {sp.retract === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Too late to retract — an approver has already acted on this requisition.</div>}
-      {sp.err === "selfapprove" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>You cannot approve your own requisition — another approver must act on it (segregation of duties).</div>}
       {sp.err === "wrongstep" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This approval step is not yours to decide — it must be decided by the role shown on the pending step (or an organisation admin).</div>}
       {sp.err === "raced" && <div className="card p-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>That approval step had already been decided (possibly a double-click or another approver acting at the same time) — nothing was changed. Review the chain below.</div>}
+      {sp.err === "resetlocked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Money has already been paid out on this requisition — its approvals can no longer be reset.</div>}
+      {sp.reset && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Approval step cleared — it is pending again and the right person can now sign it.</div>}
       {sp.blocked === "accountability" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
         Can&apos;t submit: the requester still has unaccounted advances exceeding 25% of their previous disbursement. At least 75% of prior funds must be accounted for first (Finance Policy §13.2). See &quot;Advances awaiting accountability&quot; on the requisitions list.
       </div>}
@@ -237,42 +243,50 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
         <div className="card p-4 space-y-3">
           {approvals.length === 0 && <p className="text-sm" style={{ color: "var(--muted)" }}>Not yet submitted — the chain is created on submission.</p>}
           {approvals.map((a) => (
-            <div key={a.id} className="flex items-start justify-between gap-3 pb-3 border-b last:border-0 last:pb-0" style={{ borderColor: "var(--border)" }}>
-              <div>
-                <div className="text-sm font-medium">Step {a.step}: {ROLE_LABEL[a.role] ?? label(a.role)}</div>
-                <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
-                  {a.decision === "pending" ? "Awaiting decision" : `${label(a.decision)} by ${a.approver ?? "—"} · ${fmtDateTime(a.decidedAt)}`}
-                  {a.comment ? ` — “${a.comment}”` : ""}
+            <div key={a.id} className="pb-3 border-b last:border-0 last:pb-0" style={{ borderColor: "var(--border)" }}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium">Step {a.step}: {ROLE_LABEL[a.role] ?? label(a.role)}</div>
+                  <div className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                    {a.decision === "pending" ? "Awaiting decision" : `${label(a.decision)} by ${a.approver ?? "—"} · ${fmtDateTime(a.decidedAt)}`}
+                    {a.comment ? ` — “${a.comment}”` : ""}
+                  </div>
+                  {a.signature && a.decision === "approved" && (
+                    <img src={a.signature} alt="signature" style={{ height: 36, marginTop: 4 }} />
+                  )}
                 </div>
-                {a.signature && a.decision === "approved" && (
-                  <img src={a.signature} alt="signature" style={{ height: 36, marginTop: 4 }} />
-                )}
+                <div className="flex items-center gap-2">
+                  {(a.decision === "approved" || a.decision === "rejected") && access.isOrgAdmin && inFlightOrDecided && (
+                    <form action={resetRequisitionStepAction}>
+                      <input type="hidden" name="projectId" value={id} />
+                      <input type="hidden" name="reqId" value={req.id} />
+                      <input type="hidden" name="stepId" value={a.id} />
+                      <button className="btn btn-sm" type="submit" title="Clear this decision so the right person can sign this step">↺ Reset</button>
+                    </form>
+                  )}
+                  <Badge tone={a.decision === "approved" ? "ok" : a.decision === "rejected" ? "danger" : a.decision === "skipped" ? "muted" : "warn"}>{label(a.decision)}</Badge>
+                </div>
               </div>
-              <Badge tone={a.decision === "approved" ? "ok" : a.decision === "rejected" ? "danger" : a.decision === "skipped" ? "muted" : "warn"}>{label(a.decision)}</Badge>
+              {a.decision === "pending" && decidableStepIds.has(a.id) && (
+                <form action={decideRequisitionAction} className="flex flex-wrap items-end gap-2 mt-2 pl-3" style={{ borderLeft: "2px solid var(--border)" }}>
+                  <input type="hidden" name="projectId" value={id} />
+                  <input type="hidden" name="reqId" value={req.id} />
+                  <input type="hidden" name="stepId" value={a.id} />
+                  <Field label="Comment (optional)"><input name="comment" className="input" /></Field>
+                  <button className="btn btn-primary btn-sm" name="decision" value="approved" type="submit">Approve &amp; sign this step</button>
+                  <button className="btn btn-sm" name="decision" value="rejected" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Reject</button>
+                </form>
+              )}
             </div>
           ))}
-          {iCanDecide && !myHasSignature && (
+          {decidableStepIds.size > 0 && !myHasSignature && (
             <p className="text-xs pt-2" style={{ color: "var(--warn)" }}>
               You have no signature on file. <Link href="/profile" className="underline">Add one</Link> to sign on approval.
             </p>
           )}
-          {iCanDecide && myPending && (
-            <form action={decideRequisitionAction} className="flex flex-wrap items-end gap-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
-              <input type="hidden" name="projectId" value={id} />
-              <input type="hidden" name="reqId" value={req.id} />
-              <div className="w-full text-sm font-medium pt-2">
-                Your decision — Step {myPending.step}: {ROLE_LABEL[myPending.role] ?? label(myPending.role)}
-              </div>
-              <Field label="Comment (optional)"><input name="comment" className="input" /></Field>
-              <button className="btn btn-primary btn-sm" name="decision" value="approved" type="submit">Approve &amp; sign</button>
-              <button className="btn btn-sm" name="decision" value="rejected" type="submit" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Reject</button>
-            </form>
-          )}
-          {myPending && inFlight && !iCanDecide && (
+          {anyPending && inFlight && decidableStepIds.size === 0 && (
             <p className="text-xs pt-2" style={{ color: "var(--muted)" }}>
-              {req.requesterId === access.user.id && canApprove
-                ? "You raised this requisition, so someone else must approve it (segregation of duties)."
-                : <>Waiting on <strong>{ROLE_LABEL[myPending.role] ?? label(myPending.role)}</strong> — only {myPending.role === "finance_admin" ? "the finance admin" : myPending.role === "pm" ? "the PI, Co-PI or project manager" : "a designated approver"} (or an organisation admin) can decide this step.</>}
+              The pending steps above are for other roles — the finance step is signed by the finance admin and the PM/PI step by the PI, Co-PI or project manager (organisation admins can sign any step).
             </p>
           )}
         </div>

@@ -41,12 +41,11 @@ export default async function ApprovalsPage({ params }: { params: Promise<{ id: 
   const decisionTone = (d: string) => d === "approved" ? "ok" : d === "rejected" ? "danger" : d === "skipped" ? "muted" : "warn";
 
   // The hint should only promise action the viewer can actually take: at least
-  // one pending requisition whose CURRENT step matches their role (and which
-  // they did not raise themselves).
-  const canActNow = access.permissions.has("requisitions.approve") && pending.some((r) => {
-    const first = (byReq.get(r.id) ?? []).find((a) => a.decision === "pending");
-    return !!first && canDecideStep(access, first.role) && r.requesterId !== access.user.id;
-  });
+  // one pending requisition with a step matching their role (steps can be
+  // signed in any order, and requesters may sign their own).
+  const canActNow = access.permissions.has("requisitions.approve") && pending.some((r) =>
+    (byReq.get(r.id) ?? []).some((a) => a.decision === "pending" && canDecideStep(access, a.role))
+  );
 
   const Card = ({ r }: { r: Req }) => {
     const chain = byReq.get(r.id) ?? [];

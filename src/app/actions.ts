@@ -17,7 +17,7 @@ import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
 import { extractFile } from "@/server/services/extract";
 import { saveUpload, mimeFor, deleteUpload } from "@/server/services/storage";
 import {
-  createRequisition, submitRequisition, decideRequisition, disburse, recordExpenditureForRequisition,
+  createRequisition, submitRequisition, decideRequisition, resetRequisitionStep, disburse, recordExpenditureForRequisition,
   advanceGateFor,
 } from "@/server/services/requisitions";
 import { generateReport } from "@/server/services/reports";
@@ -882,34 +882,54 @@ export async function decideRequisitionAction(formData: FormData) {
   const reqId = String(formData.get("reqId"));
   const access = await requirePermission(projectId, "requisitions.approve");
   await assertReqInProject(reqId, projectId);
-  // The pending step is decided by its OWN role (finance step by the finance
-  // admin, PM/PI step by PI/Co-PI/PM, org admins anywhere) — holding the
-  // generic approve permission is not enough.
-  const pendingStep = await one<{ id: string; role: string }>(
-    `SELECT id, role FROM requisition_approval WHERE requisition_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`, [reqId]);
-  if (pendingStep && !canDecideStep(access, pendingStep.role))
+  // Every decision targets ONE named step, and that step is decided by its OWN
+  // role (finance step by the finance admin, PM/PI step by PI/Co-PI/PM, org
+  // admins anywhere) — the signature lands on the signer's position, never on
+  // "whatever step happens to be first".
+  const stepId = String(formData.get("stepId"));
+  const step = await one<{ id: string; role: string }>(
+    `SELECT id, role FROM requisition_approval WHERE id=$1 AND requisition_id=$2`, [stepId, reqId]);
+  if (!step) redirect(`/projects/${projectId}/requisitions/${reqId}?err=raced`);
+  if (!canDecideStep(access, step!.role))
     redirect(`/projects/${projectId}/requisitions/${reqId}?err=wrongstep`);
   const decision = String(formData.get("decision")) === "approved" ? "approved" : "rejected";
   // attach the approver's signature if they have one (signing the requisition)
   const sig = await one<{ id: string }>(`SELECT id FROM signature_asset WHERE user_id=$1 ORDER BY created_at DESC LIMIT 1`, [user.id]);
   try {
     await decideRequisition({
-      reqId, approverId: user.id, decision,
+      reqId, stepId, approverId: user.id, decision,
       comment: String(formData.get("comment") || "") || undefined,
       signatureId: decision === "approved" && sig ? sig.id : undefined,
-      // bind the decision to the exact step this caller was authorised for —
-      // a double-submit or concurrent decision must not roll onto the next step
-      expectedStepId: pendingStep?.id,
     });
   } catch (err) {
-    if (err instanceof Error && /own requisition/.test(err.message))
-      redirect(`/projects/${projectId}/requisitions/${reqId}?err=selfapprove`);
     if (err instanceof Error && /already decided/.test(err.message))
       redirect(`/projects/${projectId}/requisitions/${reqId}?err=raced`);
     throw err;
   }
   revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
   revalidatePath(`/projects/${projectId}/requisitions`);
+}
+
+// Free a decided approval step so the right person can sign it (org admins
+// only; blocked once any payment has gone out). The remedy for a signature
+// that landed on the wrong position.
+export async function resetRequisitionStepAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const reqId = String(formData.get("reqId"));
+  const stepId = String(formData.get("stepId"));
+  const access = await getProjectAccess(projectId);
+  if (!access.isOrgAdmin) throw new Error("FORBIDDEN — only an organisation admin can reset an approval step");
+  await assertReqInProject(reqId, projectId);
+  try {
+    await resetRequisitionStep({ reqId, stepId, byId: user.id });
+  } catch (err) {
+    if (err instanceof Error && /already been paid out/.test(err.message))
+      redirect(`/projects/${projectId}/requisitions/${reqId}?err=resetlocked`);
+    throw err;
+  }
+  revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
+  redirect(`/projects/${projectId}/requisitions/${reqId}?reset=1`);
 }
 
 export async function disburseAction(formData: FormData) {

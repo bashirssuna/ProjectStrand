@@ -135,7 +135,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
       {sp.retract === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Too late to retract — an approver has already acted on this requisition.</div>}
       {sp.err === "selfapprove" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>You cannot approve your own requisition — another approver must act on it (segregation of duties).</div>}
       {sp.err === "order" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Approval steps are signed in order — the earlier step must be decided first.</div>}
-      {sp.err === "wrongstep" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This approval step is not yours to decide — it must be decided by the role shown on the pending step (or an organisation admin).</div>}
+      {sp.err === "wrongstep" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This approval step is not yours to decide — only the role named on the pending step can sign it.</div>}
       {sp.err === "raced" && <div className="card p-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>That approval step had already been decided (possibly a double-click or another approver acting at the same time) — nothing was changed. Review the chain below.</div>}
       {sp.err === "resetlocked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Money has already been paid out on this requisition — its approvals can no longer be reset.</div>}
       {sp.reset && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Approval step cleared — it is pending again and the right person can now sign it.</div>}
@@ -296,7 +296,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
             <p className="text-xs pt-2" style={{ color: "var(--muted)" }}>
               {req.requesterId === access.user.id && canApprove
                 ? "You raised this requisition, so someone else must approve it (segregation of duties)."
-                : <>Next to sign: <strong>{ROLE_LABEL[frontPending.role] ?? label(frontPending.role)}</strong> — {frontPending.role === "pm" ? "the PI, Co-PI or project manager" : frontPending.role === "finance_admin" ? "the finance admin" : "a designated approver"} (or an organisation admin). Steps are signed in order.</>}
+                : <>Next to sign: <strong>{ROLE_LABEL[frontPending.role] ?? label(frontPending.role)}</strong> — only {frontPending.role === "pm" ? "the PI, Co-PI or project manager" : frontPending.role === "finance_admin" ? "the finance admin" : "a designated approver or organisation admin"} can sign this step, and steps are signed in order.</>}
             </p>
           )}
         </div>

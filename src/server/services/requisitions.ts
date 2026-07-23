@@ -80,9 +80,10 @@ export async function submitRequisition(reqId: string, userId: string): Promise<
 
 // Notify exactly the people who can DECIDE the step (mirrors canDecideStep in
 // policy.ts): the finance step goes to the finance admin, the PM/PI step to
-// PI / Co-PI / project manager, and an admin step to designated approvers.
-// Org admins are always included — they can decide any step and are the safety
-// net when a project has nobody in the step's role.
+// PI / Co-PI / project manager, and an admin step to designated approvers /
+// org admins. Org admins are NOT notified for the pm/finance steps (they
+// cannot sign those on another role's behalf) — unless the step's role pool is
+// EMPTY, in which case they are alerted so they can add someone with the role.
 async function notifyApprovers(projectId: string, role: Step["role"], reqId: string, number: string, email: boolean) {
   const memberRoles = role === "pm" ? ["project_manager", "pi", "co_pi"]
     : role === "admin" ? ["approver"]
@@ -93,7 +94,8 @@ async function notifyApprovers(projectId: string, role: Step["role"], reqId: str
     `SELECT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role = ANY($2::text[])`,
     [projectId, memberRoles]
   )).forEach((m) => ids.add(m.userId));
-  if (org) {
+  const poolEmpty = ids.size === 0;
+  if (org && (role === "admin" || poolEmpty)) {
     (await q<{ userId: string }>(
       `SELECT m.user_id AS "userId" FROM org_membership m JOIN role r ON r.id=m.role_id
        WHERE m.org_id=$1 AND r.key='org_admin'`, [org.orgId]
@@ -102,8 +104,12 @@ async function notifyApprovers(projectId: string, role: Step["role"], reqId: str
   for (const uid of ids) {
     await notify({
       orgId: org?.orgId, userId: uid, type: "signature",
-      title: `Requisition ${number} awaiting your approval`,
-      body: `A requisition needs your review and signature.`,
+      title: poolEmpty && role !== "admin"
+        ? `Requisition ${number} is stuck — no one holds the ${role === "pm" ? "PI/PM" : "finance admin"} role on this project`
+        : `Requisition ${number} awaiting your approval`,
+      body: poolEmpty && role !== "admin"
+        ? `Add a team member with the required role so the requisition can be approved.`
+        : `A requisition needs your review and signature.`,
       link: `/projects/${projectId}/requisitions/${reqId}`, email,
     });
   }

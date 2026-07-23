@@ -161,16 +161,16 @@ export async function requireBudgetBulk(projectId: string): Promise<ProjectAcces
   return access;
 }
 
-// Which people may decide a given requisition approval step. Org admins can
-// decide any step; otherwise the step's role maps to specific project roles:
-// the finance review is for the finance admin (incl. support-department staff,
-// who surface as role 'finance_admin'), the PM/PI step for PI / Co-PI / PM,
-// and an admin step (when an org configures one) for designated approvers.
+// Which people may decide a given requisition approval step. STRICT role
+// separation: the PM/PI step is signable ONLY by the PI / Co-PI / project
+// manager, and the finance step ONLY by the finance admin (incl.
+// support-department staff, who surface as role 'finance_admin') — being an
+// organisation admin does NOT allow signing on another role's behalf. Only a
+// configured 'admin' step belongs to org admins / designated approvers.
 export function canDecideStep(access: ProjectAccess, stepRole: string): boolean {
-  if (access.isOrgAdmin) return true;
   if (stepRole === "finance_admin") return access.role === "finance_admin";
   if (stepRole === "pm") return access.role === "pi" || access.role === "co_pi" || access.role === "project_manager";
-  if (stepRole === "admin") return access.role === "approver";
+  if (stepRole === "admin") return access.isOrgAdmin || access.role === "approver";
   return false;
 }
 

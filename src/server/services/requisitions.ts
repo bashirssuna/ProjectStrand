@@ -93,23 +93,31 @@ export async function submitRequisition(reqId: string, userId: string): Promise<
   await writeAudit({ orgId: org?.orgId, userId, action: "update", entity: "requisition", entityId: reqId, before: { status: "draft" }, after: { status: firstPhase } });
 }
 
-// Notify exactly the people who can DECIDE the step (mirrors canDecideStep in
-// policy.ts): the finance step goes to the finance admin, the PM/PI step to
-// PI / Co-PI / project manager, and an admin step to designated approvers /
-// org admins. Org admins are NOT notified for the pm/finance steps (they
-// cannot sign those on another role's behalf) — unless the step's role pool is
-// EMPTY, in which case they are alerted so they can add someone with the role.
-async function notifyApprovers(projectId: string, role: Step["role"], reqId: string, number: string, email: boolean) {
-  const memberRoles = role === "pm" ? ["project_manager"]
-    : role === "pi" ? ["pi", "co_pi"]
-    : role === "admin" ? ["approver"]
-    : ["finance_admin"];
+// The ONE role whose members are the current step's signatories. Only they are
+// notified — no one else. The PI step in particular goes to the PI alone:
+// Co-PIs may still sign it as deputies (canDecideStep), but they are only
+// brought in when the project has no PI member, never spammed alongside one.
+export function approverRolesFor(stepRole: Step["role"]): string[] {
+  if (stepRole === "pm") return ["project_manager"];
+  if (stepRole === "pi") return ["pi"];
+  if (stepRole === "admin") return ["approver"];
+  return ["finance_admin"];
+}
+
+// Notify ONLY the current step's signatories. Fallbacks, in order: a PI step
+// with no PI member goes to the Co-PIs (they can sign as deputies); a step
+// whose pool is still empty alerts the org admins that the requisition is
+// stuck until someone with the role is added (org admins cannot sign pm/pi/
+// finance steps themselves). Nobody outside the pending step is emailed.
+async function notifyApprovers(projectId: string, role: Step["role"], reqId: string, number: string, email: boolean, reminder = false) {
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
   const ids = new Set<string>();
-  (await q<{ userId: string }>(
+  const pool = async (roles: string[]) => (await q<{ userId: string }>(
     `SELECT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role = ANY($2::text[])`,
-    [projectId, memberRoles]
+    [projectId, roles]
   )).forEach((m) => ids.add(m.userId));
+  await pool(approverRolesFor(role));
+  if (ids.size === 0 && role === "pi") await pool(["co_pi"]); // deputy PIs step in only when there is no PI
   const poolEmpty = ids.size === 0;
   if (org && (role === "admin" || poolEmpty)) {
     (await q<{ userId: string }>(
@@ -122,13 +130,23 @@ async function notifyApprovers(projectId: string, role: Step["role"], reqId: str
       orgId: org?.orgId, userId: uid, type: "signature",
       title: poolEmpty && role !== "admin"
         ? `Requisition ${number} is stuck — no one holds the ${role === "pm" ? "project manager" : role === "pi" ? "PI / Co-PI" : "finance admin"} role on this project`
-        : `Requisition ${number} awaiting your approval`,
+        : `${reminder ? "Reminder: " : ""}Requisition ${number} awaiting your approval`,
       body: poolEmpty && role !== "admin"
         ? `Add a team member with the required role so the requisition can be approved.`
         : `A requisition needs your review and signature.`,
       link: `/projects/${projectId}/requisitions/${reqId}`, email,
     });
   }
+}
+
+// The reminder nudges exactly the same pool as the original notification for
+// whatever step is currently pending.
+export async function remindCurrentApprovers(projectId: string, reqId: string, number: string): Promise<boolean> {
+  const front = await one<{ role: Step["role"] }>(
+    `SELECT role FROM requisition_approval WHERE requisition_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`, [reqId]);
+  if (!front) return false;
+  await notifyApprovers(projectId, front.role, reqId, number, true, true);
+  return true;
 }
 
 // Decides ONE SPECIFIC approval step — the caller signs the row belonging to

@@ -17,7 +17,7 @@ import { SYSTEM_ADMIN_EMAIL } from "@/lib/config";
 import { extractFile } from "@/server/services/extract";
 import { saveUpload, mimeFor, deleteUpload } from "@/server/services/storage";
 import {
-  createRequisition, submitRequisition, decideRequisition, resetRequisitionStep, disburse, recordExpenditureForRequisition,
+  createRequisition, submitRequisition, decideRequisition, resetRequisitionStep, disburse, recordExpenditureForRequisition, remindCurrentApprovers,
   advanceGateFor,
 } from "@/server/services/requisitions";
 import { generateReport } from "@/server/services/reports";
@@ -808,11 +808,9 @@ export async function sendRequisitionReminderAction(formData: FormData) {
   if (!pendingStates.includes(req.status)) redirect(`/projects/${projectId}/requisitions?rfd=badstate`);
   if (workingDaysSince(req.updatedAt) < 5) redirect(`/projects/${projectId}/requisitions?rfd=tooearly`);
   if (req.lastRemindedAt && Date.now() - new Date(req.lastRemindedAt).getTime() < 86400000) redirect(`/projects/${projectId}/requisitions?rfd=remindsoon`);
-  // notify project approvers + org admins, email + in-app
-  const ids = new Set<string>();
-  (await q<{ userId: string }>(`SELECT DISTINCT user_id AS "userId" FROM project_member WHERE project_id=$1 AND role IN ('pi','co_pi','finance_admin','project_manager','approver')`, [projectId])).forEach((m) => ids.add(m.userId));
-  (await q<{ userId: string }>(`SELECT m.user_id AS "userId" FROM org_membership m JOIN role r ON r.id=m.role_id WHERE m.org_id=$1 AND r.key='org_admin'`, [req.orgId])).forEach((m) => ids.add(m.userId));
-  for (const uid of ids) await notify({ orgId: req.orgId, userId: uid, type: "approval_needed", title: `Reminder: requisition ${req.number} awaiting approval`, link: `/projects/${projectId}/requisitions/${reqId}`, email: true });
+  // Remind ONLY the signatories of the currently pending step — the same pool
+  // the original notification went to, nobody else.
+  await remindCurrentApprovers(projectId, reqId, req.number);
   await q(`UPDATE requisition SET last_reminded_at=now() WHERE id=$1`, [reqId]);
   await writeAudit({ orgId: req.orgId, userId: user.id, action: "remind", entity: "requisition", entityId: projectId, meta: { number: req.number } });
   redirect(`/projects/${projectId}/requisitions?rfd=reminded`);

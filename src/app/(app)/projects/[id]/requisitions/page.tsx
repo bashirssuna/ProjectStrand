@@ -366,8 +366,23 @@ export default async function RequisitionsPage({ params, searchParams }: { param
               <input name="newActivity" className="input" placeholder="e.g. Community sensitisation meeting" />
             </Field>
             <Field label="Needed by"><input type="date" name="neededBy" className="input" /></Field>
-            <Field label="Payee"><input name="payee" className="input" /></Field>
+            <Field label="Payee (name)"><input name="payee" className="input" placeholder="Person or institution to be paid" /></Field>
             <div className="sm:col-span-2"><Field label="Justification"><textarea name="justification" rows={2} className="textarea" /></Field></div>
+
+            <div className="sm:col-span-2 pt-2" style={{ borderTop: "1px solid var(--border)" }}>
+              <div className="text-sm font-medium">Payee payment details</div>
+              <p className="text-xs mt-0.5" style={{ color: "var(--muted)" }}>
+                How the payee should be paid — fill the bank details OR the mobile money option. Finance uses these at disbursement and they appear on the printed requisition.
+              </p>
+            </div>
+            <Field label="Account name"><input name="payeeAccountName" className="input" /></Field>
+            <Field label="Account number"><input name="payeeAccountNumber" className="input" /></Field>
+            <Field label="Bank"><input name="payeeBank" className="input" /></Field>
+            <Field label="Branch"><input name="payeeBankBranch" className="input" /></Field>
+            <Field label="Account currency"><input name="payeeBankCurrency" maxLength={3} className="input" placeholder="UGX / USD…" /></Field>
+            <Field label="Mobile money (alternative)"><input name="payeeMomo" className="input" placeholder="Network, number, registered name" /></Field>
+            <Field label="TIN"><input name="payeeTin" className="input" placeholder="Tax identification number (optional)" /></Field>
+
             <div className="sm:col-span-2 flex justify-end">
               <button className="btn btn-primary" type="submit">Create draft</button>
             </div>

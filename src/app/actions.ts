@@ -846,6 +846,13 @@ export async function createRequisitionAction(formData: FormData) {
     justification: String(formData.get("justification") || "") || undefined,
     neededBy: String(formData.get("neededBy") || "") || undefined,
     payee: String(formData.get("payee") || "") || undefined,
+    payeeAccountName: String(formData.get("payeeAccountName") || "").trim() || undefined,
+    payeeAccountNumber: String(formData.get("payeeAccountNumber") || "").trim() || undefined,
+    payeeBank: String(formData.get("payeeBank") || "").trim() || undefined,
+    payeeBankBranch: String(formData.get("payeeBankBranch") || "").trim() || undefined,
+    payeeBankCurrency: String(formData.get("payeeBankCurrency") || "").trim().toUpperCase().slice(0, 3) || undefined,
+    payeeMomo: String(formData.get("payeeMomo") || "").trim() || undefined,
+    payeeTin: String(formData.get("payeeTin") || "").trim() || undefined,
   });
   const linked = new Set<string>([...activityIds, ...(activityId ? [activityId] : [])]);
   for (const aid of linked) {
@@ -2583,13 +2590,22 @@ export async function editRequisitionAction(formData: FormData) {
     redirect(`/projects/${projectId}/requisitions/${reqId}?edit=forbidden`);
 
   const amount = Number(formData.get("amount") || 0);
-  await q(`UPDATE requisition SET title=$2, amount=$3, budget_line_id=$4, justification=$5, needed_by=$6, payee=$7, updated_at=now()
+  await q(`UPDATE requisition SET title=$2, amount=$3, budget_line_id=$4, justification=$5, needed_by=$6, payee=$7,
+             payee_account_name=$8, payee_account_number=$9, payee_bank=$10, payee_bank_branch=$11,
+             payee_bank_currency=$12, payee_momo=$13, payee_tin=$14, updated_at=now()
            WHERE id=$1`,
     [reqId, String(formData.get("title") || "Requisition"), amount,
      String(formData.get("budgetLineId") || "") || null,
      String(formData.get("justification") || "") || null,
      String(formData.get("neededBy") || "") || null,
-     String(formData.get("payee") || "") || null]);
+     String(formData.get("payee") || "") || null,
+     String(formData.get("payeeAccountName") || "").trim() || null,
+     String(formData.get("payeeAccountNumber") || "").trim() || null,
+     String(formData.get("payeeBank") || "").trim() || null,
+     String(formData.get("payeeBankBranch") || "").trim() || null,
+     String(formData.get("payeeBankCurrency") || "").trim().toUpperCase().slice(0, 3) || null,
+     String(formData.get("payeeMomo") || "").trim() || null,
+     String(formData.get("payeeTin") || "").trim() || null]);
 
   // refresh activity links
   const activityIds = (formData.getAll("activityIds") as string[]).filter(Boolean);

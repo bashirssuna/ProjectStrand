@@ -52,15 +52,21 @@ export async function nextNumber(projectId: string): Promise<string> {
 export async function createRequisition(input: {
   projectId: string; userId: string; title: string; amount: number;
   budgetLineId?: string; activityId?: string; justification?: string; neededBy?: string; payee?: string;
+  // payment instructions for the payee — bank transfer OR mobile money, plus TIN
+  payeeAccountName?: string; payeeAccountNumber?: string; payeeBank?: string;
+  payeeBankBranch?: string; payeeBankCurrency?: string; payeeMomo?: string; payeeTin?: string;
 }): Promise<string> {
   const rid = id("req");
   const number = await nextNumber(input.projectId);
   await q(
     `INSERT INTO requisition (id, project_id, number, title, activity_id, budget_line_id,
-       amount, justification, needed_by, payee, requested_by_id, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'draft')`,
+       amount, justification, needed_by, payee, requested_by_id, status,
+       payee_account_name, payee_account_number, payee_bank, payee_bank_branch, payee_bank_currency, payee_momo, payee_tin)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'draft',$12,$13,$14,$15,$16,$17,$18)`,
     [rid, input.projectId, number, input.title, input.activityId ?? null, input.budgetLineId ?? null,
-     input.amount, input.justification ?? null, input.neededBy ?? null, input.payee ?? null, input.userId]
+     input.amount, input.justification ?? null, input.neededBy ?? null, input.payee ?? null, input.userId,
+     input.payeeAccountName ?? null, input.payeeAccountNumber ?? null, input.payeeBank ?? null,
+     input.payeeBankBranch ?? null, input.payeeBankCurrency ?? null, input.payeeMomo ?? null, input.payeeTin ?? null]
   );
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [input.projectId]);
   await writeAudit({ orgId: org?.orgId, userId: input.userId, action: "create", entity: "requisition", entityId: rid, after: { number, amount: input.amount } });

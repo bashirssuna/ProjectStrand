@@ -19,15 +19,27 @@ export default async function PrintRequisitionPage({ params }: { params: Promise
     number: string; title: string; amount: number; status: string; justification: string | null;
     neededBy: string | null; payee: string | null; createdAt: string; requester: string | null;
     budgetLine: string | null; projectTitle: string; projectCode: string; currency: string; org: string; orgId: string;
+    payeeAccountName: string | null; payeeAccountNumber: string | null; payeeBank: string | null;
+    payeeBankBranch: string | null; payeeBankCurrency: string | null; payeeMomo: string | null; payeeTin: string | null;
   }>(
     `SELECT r.number, r.title, r.amount, r.status, r.justification, r.needed_by AS "neededBy",
             r.payee, r.created_at AS "createdAt",
             (SELECT name FROM app_user WHERE id=r.requested_by_id) AS requester,
             (SELECT code || ' — ' || description FROM budget_line WHERE id=r.budget_line_id) AS "budgetLine",
-            p.title AS "projectTitle", p.code AS "projectCode", p.currency, o.name AS org, p.org_id AS "orgId"
+            p.title AS "projectTitle", p.code AS "projectCode", p.currency, o.name AS org, p.org_id AS "orgId",
+            r.payee_account_name AS "payeeAccountName", r.payee_account_number AS "payeeAccountNumber",
+            r.payee_bank AS "payeeBank", r.payee_bank_branch AS "payeeBankBranch",
+            r.payee_bank_currency AS "payeeBankCurrency", r.payee_momo AS "payeeMomo", r.payee_tin AS "payeeTin"
      FROM requisition r JOIN project p ON p.id=r.project_id JOIN organization o ON o.id=p.org_id
      WHERE r.id=$1`, [rid]
   ))!;
+  const bankDetails = [
+    req.payeeAccountName && `Account name: ${req.payeeAccountName}`,
+    req.payeeAccountNumber && `Account no: ${req.payeeAccountNumber}`,
+    req.payeeBank && `Bank: ${req.payeeBank}`,
+    req.payeeBankBranch && `Branch: ${req.payeeBankBranch}`,
+    req.payeeBankCurrency && `Currency: ${req.payeeBankCurrency}`,
+  ].filter(Boolean).join(" · ");
   const activities = await q<{ code: string | null; title: string }>(
     `SELECT a.code, a.title FROM requisition_activity ra JOIN activity a ON a.id=ra.activity_id WHERE ra.requisition_id=$1
      UNION SELECT a.code, a.title FROM requisition r JOIN activity a ON a.id=r.activity_id WHERE r.id=$1 AND r.activity_id IS NOT NULL`, [rid]
@@ -60,15 +72,18 @@ export default async function PrintRequisitionPage({ params }: { params: Promise
 
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <tbody>
-            {[
+            {([
               ["Title / purpose", req.title],
               ["Requested by", req.requester ?? "—"],
               ["Payee", req.payee ?? "—"],
+              ...(bankDetails ? [["Payee bank details", bankDetails]] : []),
+              ...(req.payeeMomo ? [["Mobile money", req.payeeMomo]] : []),
+              ...(req.payeeTin ? [["TIN", req.payeeTin]] : []),
               ["Budget line", req.budgetLine ?? "—"],
               ["Activities covered", activities.length ? activities.map((a) => `${a.code ? a.code + " " : ""}${a.title}`).join("; ") : "—"],
               ["Needed by", fmtDate(req.neededBy)],
               ["Justification", req.justification ?? "—"],
-            ].map(([k, v]) => (
+            ] as [string, string][]).map(([k, v]) => (
               <tr key={k as string}>
                 <td style={{ border: "1px solid #999", padding: "7px 10px", width: 180, fontWeight: 600, background: "#f5f5f5" }}>{k}</td>
                 <td style={{ border: "1px solid #999", padding: "7px 10px" }}>{v}</td>

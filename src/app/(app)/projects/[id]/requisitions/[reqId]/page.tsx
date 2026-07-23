@@ -29,6 +29,8 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
     justification: string | null; neededBy: string | null; payee: string | null;
     disbursedAmount: number; budgetLine: string | null; requester: string | null; createdAt: string; requesterId: string | null; budgetLineId: string | null;
     accountedAmount: number; accountabilityDue: string | null; daysOverdue: number;
+    payeeAccountName: string | null; payeeAccountNumber: string | null; payeeBank: string | null;
+    payeeBankBranch: string | null; payeeBankCurrency: string | null; payeeMomo: string | null; payeeTin: string | null;
   }>(
     `SELECT r.id, r.number, r.title, r.amount, r.status, r.justification,
             r.needed_by AS "neededBy", r.payee, r.disbursed_amount AS "disbursedAmount",
@@ -37,7 +39,10 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
             GREATEST(0, (CURRENT_DATE - r.accountability_due))::int AS "daysOverdue",
             (SELECT code || ' · ' || description FROM budget_line WHERE id=r.budget_line_id) AS "budgetLine",
             (SELECT name FROM app_user WHERE id=r.requested_by_id) AS requester,
-            r.created_at AS "createdAt", r.requested_by_id AS "requesterId"
+            r.created_at AS "createdAt", r.requested_by_id AS "requesterId",
+            r.payee_account_name AS "payeeAccountName", r.payee_account_number AS "payeeAccountNumber",
+            r.payee_bank AS "payeeBank", r.payee_bank_branch AS "payeeBankBranch",
+            r.payee_bank_currency AS "payeeBankCurrency", r.payee_momo AS "payeeMomo", r.payee_tin AS "payeeTin"
      FROM requisition r WHERE r.id=$1 AND r.project_id=$2`, [reqId, id]
   );
   if (!req) return <Empty title="Requisition not found" hint="It may have been removed." />;
@@ -179,6 +184,16 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
         <div className="grid sm:grid-cols-2 gap-3 mt-4 text-sm">
           <div><span style={{ color: "var(--muted)" }}>Budget line:</span> {req.budgetLine ?? "—"}</div>
           <div><span style={{ color: "var(--muted)" }}>Payee:</span> {req.payee ?? "—"}</div>
+          {(req.payeeAccountName || req.payeeAccountNumber || req.payeeBank) && (
+            <div className="sm:col-span-2">
+              <span style={{ color: "var(--muted)" }}>🏦 Bank:</span>{" "}
+              {[req.payeeAccountName && `Account name: ${req.payeeAccountName}`,
+                req.payeeAccountNumber && `No: ${req.payeeAccountNumber}`,
+                req.payeeBank, req.payeeBankBranch, req.payeeBankCurrency].filter(Boolean).join(" · ")}
+            </div>
+          )}
+          {req.payeeMomo && <div className="sm:col-span-2"><span style={{ color: "var(--muted)" }}>📱 Mobile money:</span> {req.payeeMomo}</div>}
+          {req.payeeTin && <div><span style={{ color: "var(--muted)" }}>TIN:</span> {req.payeeTin}</div>}
           {req.justification && <div className="sm:col-span-2"><span style={{ color: "var(--muted)" }}>Justification:</span> {req.justification}</div>}
         </div>
         {reqActivities.length > 0 && (
@@ -236,8 +251,16 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
               </select>
             </Field>
             <Field label="Needed by"><input type="date" name="neededBy" defaultValue={dateInput(req.neededBy)} className="input" /></Field>
-            <Field label="Payee"><input name="payee" defaultValue={req.payee ?? ""} className="input" /></Field>
+            <Field label="Payee (name)"><input name="payee" defaultValue={req.payee ?? ""} className="input" /></Field>
             <div className="sm:col-span-2"><Field label="Justification"><textarea name="justification" rows={2} defaultValue={req.justification ?? ""} className="textarea" /></Field></div>
+            <div className="sm:col-span-2 text-sm font-medium pt-1" style={{ borderTop: "1px solid var(--border)" }}>Payee payment details (bank OR mobile money)</div>
+            <Field label="Account name"><input name="payeeAccountName" defaultValue={req.payeeAccountName ?? ""} className="input" /></Field>
+            <Field label="Account number"><input name="payeeAccountNumber" defaultValue={req.payeeAccountNumber ?? ""} className="input" /></Field>
+            <Field label="Bank"><input name="payeeBank" defaultValue={req.payeeBank ?? ""} className="input" /></Field>
+            <Field label="Branch"><input name="payeeBankBranch" defaultValue={req.payeeBankBranch ?? ""} className="input" /></Field>
+            <Field label="Account currency"><input name="payeeBankCurrency" maxLength={3} defaultValue={req.payeeBankCurrency ?? ""} className="input" placeholder="UGX / USD…" /></Field>
+            <Field label="Mobile money (alternative)"><input name="payeeMomo" defaultValue={req.payeeMomo ?? ""} className="input" placeholder="Network, number, registered name" /></Field>
+            <Field label="TIN"><input name="payeeTin" defaultValue={req.payeeTin ?? ""} className="input" /></Field>
             <div className="sm:col-span-2 flex justify-end gap-2">
               <button className="btn btn-primary btn-sm" type="submit">Save changes</button>
             </div>

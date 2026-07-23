@@ -2367,6 +2367,17 @@ UPDATE requisition r SET status='pi_approval', updated_at=now()
  WHERE r.status='pm_approval'
    AND (SELECT x.role FROM requisition_approval x WHERE x.requisition_id=r.id AND x.decision='pending' ORDER BY x.step ASC LIMIT 1) = 'pi';
 
+-- Payee payment details captured on the requisition itself, so finance has the
+-- full payment instructions (bank transfer OR mobile money, plus TIN) when the
+-- funds are disbursed and on the printed requisition.
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS payee_account_name text;
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS payee_account_number text;
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS payee_bank text;
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS payee_bank_branch text;
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS payee_bank_currency text;
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS payee_momo text;
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS payee_tin text;
+
 -- Organisation receiving-bank details, shown on invoices ("pay to").
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS bank_details text;
 

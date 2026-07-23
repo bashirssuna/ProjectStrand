@@ -804,7 +804,7 @@ export async function sendRequisitionReminderAction(formData: FormData) {
     `SELECT r.project_id AS "projectId", r.status, r.number, p.org_id AS "orgId", r.updated_at AS "updatedAt", r.last_reminded_at AS "lastRemindedAt"
      FROM requisition r JOIN project p ON p.id=r.project_id WHERE r.id=$1`, [reqId]);
   if (!req || req.projectId !== projectId) redirect(`/projects/${projectId}/requisitions`);
-  const pendingStates = ["submitted", "finance_review", "pm_approval", "admin_approval"];
+  const pendingStates = ["submitted", "finance_review", "pm_approval", "pi_approval", "admin_approval"];
   if (!pendingStates.includes(req.status)) redirect(`/projects/${projectId}/requisitions?rfd=badstate`);
   if (workingDaysSince(req.updatedAt) < 5) redirect(`/projects/${projectId}/requisitions?rfd=tooearly`);
   if (req.lastRemindedAt && Date.now() - new Date(req.lastRemindedAt).getTime() < 86400000) redirect(`/projects/${projectId}/requisitions?rfd=remindsoon`);
@@ -2622,7 +2622,7 @@ export async function retractRequisitionAction(formData: FormData) {
   const decided = await one<{ c: number }>(
     `SELECT COUNT(*)::int c FROM requisition_approval WHERE requisition_id=$1 AND decision<>'pending'`, [reqId]
   );
-  const inFlight = ["submitted", "finance_review", "pm_approval", "admin_approval"].includes(req.status);
+  const inFlight = ["submitted", "finance_review", "pm_approval", "pi_approval", "admin_approval"].includes(req.status);
   if (!inFlight || (decided?.c ?? 0) > 0) redirect(`/projects/${projectId}/requisitions/${reqId}?retract=locked`);
 
   await q(`DELETE FROM requisition_approval WHERE requisition_id=$1`, [reqId]);

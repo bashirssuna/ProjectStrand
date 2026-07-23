@@ -29,7 +29,7 @@ export default async function ApprovalsPage({ params }: { params: Promise<{ id: 
   // flight — rejected/closed ones must not resurface via leftover pending rows.
   const TERMINAL = new Set(["rejected", "closed", "retired", "draft", "approved", "partially_funded", "disbursed"]);
   const pending = reqs.filter((r) => !TERMINAL.has(r.status)
-    && (["submitted", "finance_review", "pm_approval", "admin_approval", "under_review", "pending_approval", "awaiting_approval"].includes(r.status)
+    && (["submitted", "finance_review", "pm_approval", "pi_approval", "admin_approval", "under_review", "pending_approval", "awaiting_approval"].includes(r.status)
         || (byReq.get(r.id) ?? []).some((a) => a.decision === "pending")));
   const pendingSet = new Set(pending.map((r) => r.id));
   const decided = reqs.filter((r) => !pendingSet.has(r.id));

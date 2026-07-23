@@ -16,7 +16,7 @@ export const ACTIVITY_STATUS = [
 export type ActivityStatus = (typeof ACTIVITY_STATUS)[number];
 
 export const REQ_STATUS = [
-  "draft", "submitted", "finance_review", "pm_approval", "admin_approval",
+  "draft", "submitted", "finance_review", "pm_approval", "pi_approval", "admin_approval",
   "approved", "partially_funded", "rejected", "disbursed", "retired", "closed",
 ] as const;
 export type ReqStatus = (typeof REQ_STATUS)[number];
@@ -65,7 +65,7 @@ export const STATUS_TONE: Record<string, "ok" | "warn" | "danger" | "info" | "mu
   // projects
   draft: "muted", setup: "muted", active: "ok", on_hold: "warn", completed: "info", closed: "info", archived: "muted",
   // requisitions
-  submitted: "info", finance_review: "info", pm_approval: "info",
+  submitted: "info", finance_review: "info", pm_approval: "info", pi_approval: "info",
   admin_approval: "info", approved: "ok", partially_funded: "warn", rejected: "danger",
   disbursed: "ok", retired: "ok",
   // refunds
@@ -77,6 +77,9 @@ export const STATUS_TONE: Record<string, "ok" | "warn" | "danger" | "info" | "mu
 const LABEL_OVERRIDES: Record<string, string> = {
   pi: "PI",
   co_pi: "Co-PI / Co-I",
+  pm: "PM",
+  pi_approval: "PI Approval",
+  pm_approval: "PM Review",
 };
 export function label(s: string): string {
   if (LABEL_OVERRIDES[s]) return LABEL_OVERRIDES[s];

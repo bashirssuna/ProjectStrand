@@ -13,7 +13,7 @@ import {
 import { budgetLineRollups } from "@/server/services/budget";
 import { blockStaff } from "../../_staffblock";
 
-const ROLE_LABEL: Record<string, string> = { finance_admin: "Finance review", pm: "PM / PI approval", admin: "Admin approval" };
+const ROLE_LABEL: Record<string, string> = { finance_admin: "Finance approval", pm: "PM review", pi: "PI approval", admin: "Admin approval" };
 
 export default async function RequisitionDetailPage({ params, searchParams }: {
   params: Promise<{ id: string; reqId: string }>;
@@ -91,7 +91,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
   // editing/retracting is for the requester (or an approver acting on their behalf)
   const isRequester = req.requesterId === access.user.id || access.permissions.has("requisitions.approve");
   const anyDecided = (await one<{ c: number }>(`SELECT COUNT(*)::int c FROM requisition_approval WHERE requisition_id=$1 AND decision<>'pending'`, [reqId]))?.c ?? 0;
-  const inFlight = ["submitted", "finance_review", "pm_approval", "admin_approval"].includes(req.status);
+  const inFlight = ["submitted", "finance_review", "pm_approval", "pi_approval", "admin_approval"].includes(req.status);
   const canRetract = canCreate && isRequester && inFlight && anyDecided === 0;
   const canEdit = canCreate && isRequester && req.status === "draft";
 
@@ -296,7 +296,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
             <p className="text-xs pt-2" style={{ color: "var(--muted)" }}>
               {req.requesterId === access.user.id && canApprove
                 ? "You raised this requisition, so someone else must approve it (segregation of duties)."
-                : <>Next to sign: <strong>{ROLE_LABEL[frontPending.role] ?? label(frontPending.role)}</strong> — only {frontPending.role === "pm" ? "the PI, Co-PI or project manager" : frontPending.role === "finance_admin" ? "the finance admin" : "a designated approver or organisation admin"} can sign this step, and steps are signed in order.</>}
+                : <>Next to sign: <strong>{ROLE_LABEL[frontPending.role] ?? label(frontPending.role)}</strong> — only {frontPending.role === "pm" ? "the project manager" : frontPending.role === "pi" ? "the PI or Co-PI" : frontPending.role === "finance_admin" ? "the finance admin" : "a designated approver or organisation admin"} can sign this step, and steps are signed in order.</>}
             </p>
           )}
         </div>

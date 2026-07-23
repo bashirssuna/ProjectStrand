@@ -5,21 +5,33 @@ import { id } from "@/lib/ids";
 import { writeAudit, notify } from "@/server/services/audit";
 import { evaluateProject } from "@/server/services/anomaly";
 
-type Step = { step: number; role: "finance_admin" | "pm" | "admin"; thresholdMin: number };
+type Step = { step: number; role: "finance_admin" | "pm" | "pi" | "admin"; thresholdMin: number };
 const PHASE: Record<Step["role"], string> = {
-  finance_admin: "finance_review", pm: "pm_approval", admin: "admin_approval",
+  finance_admin: "finance_review", pm: "pm_approval", pi: "pi_approval", admin: "admin_approval",
 };
 
-// Default approval chain: the request goes to the PI / PM first, and the
-// FINANCE ADMIN signs last — finance releases the funds right after their own
-// approval. Organisations wanting an extra admin layer can define their own
-// approval_matrix row (doc_type 'requisition') with an 'admin' step.
-const DEFAULT_MATRIX: Step[] = [
-  { step: 1, role: "pm", thresholdMin: 0 },
-  { step: 2, role: "finance_admin", thresholdMin: 0 },
-];
+// The approval chain is built PER REQUISITION from who raised it (org policy):
+//   ordinary member (coordinator, lab manager, RA…) → PM review → PI approval → Finance
+//   the project manager                             → PI approval → Finance
+//   the finance admin                               → PM review → PI approval
+// The PI and finance admin are the standing approvers; the requester's own role
+// is never part of their chain, and the PM review step only exists when the
+// project actually has a project manager. PM and PI are SEPARATE steps — each
+// is signable only by its own role. An org can still override with a custom
+// approval_matrix row (doc_type 'requisition').
+async function buildChain(projectId: string, requestedById: string): Promise<Step["role"][]> {
+  const requesterRole = (await one<{ role: string }>(
+    `SELECT role FROM project_member WHERE project_id=$1 AND user_id=$2`, [projectId, requestedById]))?.role ?? null;
+  const hasPm = !!(await one<{ x: number }>(
+    `SELECT 1 AS x FROM project_member WHERE project_id=$1 AND role='project_manager' LIMIT 1`, [projectId]));
+  const chain: Step["role"][] = [];
+  if (hasPm && requesterRole !== "project_manager") chain.push("pm");
+  chain.push("pi");
+  if (requesterRole !== "finance_admin") chain.push("finance_admin");
+  return chain;
+}
 
-async function matrixFor(projectId: string): Promise<Step[]> {
+async function matrixFor(projectId: string): Promise<Step[] | null> {
   const m = await one<{ steps: string }>(
     `SELECT steps FROM approval_matrix
      WHERE doc_type='requisition' AND (project_id=$1 OR project_id IS NULL)
@@ -27,7 +39,7 @@ async function matrixFor(projectId: string): Promise<Step[]> {
     [projectId]
   );
   if (m?.steps) { try { return JSON.parse(m.steps) as Step[]; } catch {} }
-  return DEFAULT_MATRIX;
+  return null;
 }
 
 export async function nextNumber(projectId: string): Promise<string> {
@@ -56,12 +68,15 @@ export async function createRequisition(input: {
 }
 
 export async function submitRequisition(reqId: string, userId: string): Promise<void> {
-  const req = await one<{ projectId: string; amount: number; number: string; status: string }>(
-    `SELECT project_id AS "projectId", amount, number, status FROM requisition WHERE id=$1`, [reqId]
+  const req = await one<{ projectId: string; amount: number; number: string; status: string; requestedById: string | null }>(
+    `SELECT project_id AS "projectId", amount, number, status, requested_by_id AS "requestedById" FROM requisition WHERE id=$1`, [reqId]
   );
   if (!req || req.status !== "draft") throw new Error("Requisition not in draft");
 
-  const steps = (await matrixFor(req.projectId)).filter((s) => req.amount >= s.thresholdMin);
+  const custom = await matrixFor(req.projectId);
+  const steps = custom
+    ? custom.filter((s) => req.amount >= s.thresholdMin)
+    : (await buildChain(req.projectId, req.requestedById ?? userId)).map((role, i) => ({ step: i + 1, role, thresholdMin: 0 }));
   for (const s of steps) {
     await q(
       `INSERT INTO requisition_approval (id, requisition_id, step, role, decision)
@@ -85,7 +100,8 @@ export async function submitRequisition(reqId: string, userId: string): Promise<
 // cannot sign those on another role's behalf) — unless the step's role pool is
 // EMPTY, in which case they are alerted so they can add someone with the role.
 async function notifyApprovers(projectId: string, role: Step["role"], reqId: string, number: string, email: boolean) {
-  const memberRoles = role === "pm" ? ["project_manager", "pi", "co_pi"]
+  const memberRoles = role === "pm" ? ["project_manager"]
+    : role === "pi" ? ["pi", "co_pi"]
     : role === "admin" ? ["approver"]
     : ["finance_admin"];
   const org = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
@@ -105,7 +121,7 @@ async function notifyApprovers(projectId: string, role: Step["role"], reqId: str
     await notify({
       orgId: org?.orgId, userId: uid, type: "signature",
       title: poolEmpty && role !== "admin"
-        ? `Requisition ${number} is stuck — no one holds the ${role === "pm" ? "PI/PM" : "finance admin"} role on this project`
+        ? `Requisition ${number} is stuck — no one holds the ${role === "pm" ? "project manager" : role === "pi" ? "PI / Co-PI" : "finance admin"} role on this project`
         : `Requisition ${number} awaiting your approval`,
       body: poolEmpty && role !== "admin"
         ? `Add a team member with the required role so the requisition can be approved.`
@@ -116,11 +132,11 @@ async function notifyApprovers(projectId: string, role: Step["role"], reqId: str
 }
 
 // Decides ONE SPECIFIC approval step — the caller signs the row belonging to
-// their own role, so a signature always lands on the signer's position (an org
-// admin who is also the PI signs the PM/PI row, never silently consumes the
-// finance slot). Steps are decided strictly IN ORDER: request → PI/PM
-// approval → finance admin. The requester can never decide their own
-// requisition (segregation of duties, mirrors refunds).
+// their own role, so a signature always lands on the signer's position (a
+// person with several roles signs as the role the step names). Steps are
+// decided strictly IN ORDER along the chain built at submission (PM review →
+// PI approval → Finance, minus the requester's own role). The requester can
+// never decide their own requisition (segregation of duties, mirrors refunds).
 export async function decideRequisition(input: {
   reqId: string; stepId: string; approverId: string; decision: "approved" | "rejected";
   comment?: string; signatureId?: string;
@@ -366,7 +382,7 @@ export type PendingReq = { id: string; number: string; title: string; amount: nu
 export async function myPendingRequisitions(projectId: string, userId: string): Promise<PendingReq[]> {
   return q<PendingReq>(
     `SELECT id, number, title, amount, status, created_at AS "createdAt", updated_at AS "updatedAt", last_reminded_at AS "lastRemindedAt"
-     FROM requisition WHERE project_id=$1 AND requested_by_id=$2 AND status IN ('submitted','finance_review','pm_approval','admin_approval')
+     FROM requisition WHERE project_id=$1 AND requested_by_id=$2 AND status IN ('submitted','finance_review','pm_approval','pi_approval','admin_approval')
      ORDER BY created_at DESC`, [projectId, userId]);
 }
 

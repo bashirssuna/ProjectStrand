@@ -2331,6 +2331,29 @@ UPDATE requisition r SET direct_disbursed_amount =
    AND COALESCE(r.disbursed_amount,0) >
        COALESCE((SELECT SUM(pv.amount) FROM payment_voucher pv WHERE pv.requisition_id=r.id AND pv.status='approved'),0);
 
+-- The approval chain is now built per requisition from who raised it
+-- (PM review -> PI approval -> Finance, minus the requester's own role), with
+-- PM and PI as SEPARATE steps. Default-shaped approval_matrix rows pinned by
+-- old bootstrap/migrations must go so the dynamic chain applies (custom
+-- matrices survive). Fully-pending legacy chains keep their finance step and
+-- have their merged 'pm' (PM/PI) step become the mandatory 'pi' step, with the
+-- status corrected. Idempotent.
+DELETE FROM approval_matrix WHERE doc_type = 'requisition' AND steps IN (
+  '[{"step":1,"role":"pm","thresholdMin":0},{"step":2,"role":"finance_admin","thresholdMin":0}]',
+  '[{"step":1,"role":"finance_admin","thresholdMin":0},{"step":2,"role":"pm","thresholdMin":0}]',
+  '[{"step":1,"role":"finance_admin","thresholdMin":0},{"step":2,"role":"pm","thresholdMin":0},{"step":3,"role":"admin","thresholdMin":5000}]'
+);
+UPDATE requisition_approval ra SET role='pi'
+  FROM requisition r
+ WHERE r.id = ra.requisition_id AND ra.role='pm' AND ra.decision='pending'
+   AND r.status IN ('finance_review','pm_approval','pi_approval')
+   AND NOT EXISTS (SELECT 1 FROM requisition_approval x WHERE x.requisition_id=r.id AND x.decision<>'pending')
+   AND NOT EXISTS (SELECT 1 FROM requisition_approval x WHERE x.requisition_id=r.id AND x.role='pi');
+UPDATE requisition r SET status='pi_approval', updated_at=now()
+ WHERE r.status IN ('finance_review','pm_approval')
+   AND NOT EXISTS (SELECT 1 FROM requisition_approval x WHERE x.requisition_id=r.id AND x.decision<>'pending')
+   AND (SELECT x.role FROM requisition_approval x WHERE x.requisition_id=r.id AND x.decision='pending' ORDER BY x.step ASC LIMIT 1) = 'pi';
+
 -- Organisation receiving-bank details, shown on invoices ("pay to").
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS bank_details text;
 

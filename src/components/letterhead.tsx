@@ -21,7 +21,9 @@ export function PrintLetterhead({ lh, subtitle }: { lh: Letterhead; subtitle?: s
   return (
     <div style={{ textAlign: "center", borderBottom: "3px double #111", paddingBottom: 12, marginBottom: 4 }}>
       {lh.logoDataUrl && (
-        <img src={lh.logoDataUrl} alt="" style={{ maxHeight: 70, maxWidth: 240, objectFit: "contain", marginBottom: 8 }} />
+        // Tailwind's preflight makes <img> block-level, so text-align:center on the
+        // wrapper doesn't centre it — centre it explicitly or it hugs the left edge.
+        <img src={lh.logoDataUrl} alt="" style={{ maxHeight: 70, maxWidth: 240, objectFit: "contain", display: "block", marginLeft: "auto", marginRight: "auto", marginBottom: 8 }} />
       )}
       <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: 0.4 }}>{lh.name}</div>
       {lh.slogan && <div style={{ fontSize: 12, fontStyle: "italic", color: "#555", marginTop: 2 }}>{lh.slogan}</div>}

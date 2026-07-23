@@ -8,7 +8,7 @@ import {
   submitRequisitionAction, decideRequisitionAction,
   addRequisitionAttachmentAction, createVoucherAction, recordReqExpenditureAction,
   editRequisitionAction, retractRequisitionAction, checkVoucherAction, approveVoucherAction,
-  attachVoucherEvidenceAction, resetRequisitionStepAction,
+  attachVoucherEvidenceAction, resetRequisitionStepAction, disburseFundsAction,
 } from "@/app/actions";
 import { budgetLineRollups } from "@/server/services/budget";
 import { blockStaff } from "../../_staffblock";
@@ -17,7 +17,7 @@ const ROLE_LABEL: Record<string, string> = { finance_admin: "Finance review", pm
 
 export default async function RequisitionDetailPage({ params, searchParams }: {
   params: Promise<{ id: string; reqId: string }>;
-  searchParams: Promise<{ voucher?: string; edit?: string; retract?: string; blocked?: string; err?: string; reset?: string }>;
+  searchParams: Promise<{ voucher?: string; edit?: string; retract?: string; blocked?: string; err?: string; reset?: string; disb?: string }>;
 }) {
   const { id, reqId } = await params;
   const sp = await searchParams;
@@ -79,8 +79,10 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
             evidence_key AS "evidenceKey", evidence_name AS "evidenceName"
      FROM payment_voucher WHERE requisition_id=$1 ORDER BY created_at`, [reqId]
   );
-  // Only APPROVED vouchers represent money actually paid out.
-  const disbursed = vouchers.filter((v) => v.status === "approved").reduce((s, v) => s + v.amount, 0);
+  // Money actually paid out: direct disbursements (requisition.disbursed_amount)
+  // and/or approved payment vouchers — whichever trail the org used.
+  const voucherPaid = vouchers.filter((v) => v.status === "approved").reduce((s, v) => s + v.amount, 0);
+  const disbursed = Math.max(voucherPaid, req.disbursedAmount || 0);
   const remaining = Math.max(0, req.amount - disbursed);
 
   const canCreate = access.permissions.has("requisitions.create");
@@ -112,14 +114,14 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
                 (COALESCE(bl.planned,0) - COALESCE((SELECT SUM(amount) FROM expenditure WHERE budget_line_id=bl.id),0))::float AS remaining
            FROM budget_line bl WHERE bl.id=$1`, [req.budgetLineId])
     : null;
-  // Every PENDING step carries its own sign-off, gated to that step's role (or
-  // an org admin) — a signature always lands on the signer's own position.
-  // Steps may be signed in any order; the status tracks the earliest pending.
-  const decidableStepIds = new Set(
-    inFlight && canApprove
-      ? approvals.filter((a) => a.decision === "pending" && canDecideStep(access, a.role)).map((a) => a.id)
-      : []
-  );
+  // Approvals run strictly IN ORDER: request → PI/PM approval → finance admin.
+  // Only the EARLIEST pending step is signable, by the people matching that
+  // step's role (org admins anywhere) — and never by the requester. The
+  // explicit stepId keeps every signature on the signer's own position.
+  const frontPending = approvals.find((a) => a.decision === "pending");
+  const iCanDecideFront = !!frontPending && inFlight && canApprove
+    && canDecideStep(access, frontPending.role)
+    && req.requesterId !== access.user.id;
   const anyPending = approvals.some((a) => a.decision === "pending");
   // A decided step can be reset (org admins) until money moves — the service
   // rejects resets once any voucher is approved or funds are disbursed.
@@ -131,10 +133,16 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
       {sp.edit === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This requisition can no longer be edited — it has already been submitted.</div>}
       {sp.retract === "ok" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Requisition retracted — it's back to draft and you can edit or re-submit it.</div>}
       {sp.retract === "locked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Too late to retract — an approver has already acted on this requisition.</div>}
+      {sp.err === "selfapprove" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>You cannot approve your own requisition — another approver must act on it (segregation of duties).</div>}
+      {sp.err === "order" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Approval steps are signed in order — the earlier step must be decided first.</div>}
       {sp.err === "wrongstep" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This approval step is not yours to decide — it must be decided by the role shown on the pending step (or an organisation admin).</div>}
       {sp.err === "raced" && <div className="card p-3 text-sm" style={{ color: "var(--warn)", borderColor: "var(--warn)" }}>That approval step had already been decided (possibly a double-click or another approver acting at the same time) — nothing was changed. Review the chain below.</div>}
       {sp.err === "resetlocked" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Money has already been paid out on this requisition — its approvals can no longer be reset.</div>}
       {sp.reset && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Approval step cleared — it is pending again and the right person can now sign it.</div>}
+      {sp.disb === "ok" && <div className="card p-3 text-sm" style={{ color: "var(--ok)", borderColor: "var(--ok)" }}>Funds disbursed — the expenditure has been recorded, posted to the ledger and deducted from the budget line.</div>}
+      {sp.disb === "stage" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Funds can only be disbursed once the requisition is fully approved (and not already fully paid out).</div>}
+      {sp.disb === "amount" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>Enter a positive amount no larger than what remains undisbursed.</div>}
+      {sp.disb === "noline" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>This requisition has no budget line linked — link one (edit the requisition) so the disbursement can be deducted from the budget.</div>}
       {sp.blocked === "accountability" && <div className="card p-3 text-sm" style={{ color: "var(--danger)", borderColor: "var(--danger)" }}>
         Can&apos;t submit: the requester still has unaccounted advances exceeding 25% of their previous disbursement. At least 75% of prior funds must be accounted for first (Finance Policy §13.2). See &quot;Advances awaiting accountability&quot; on the requisitions list.
       </div>}
@@ -267,7 +275,7 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
                   <Badge tone={a.decision === "approved" ? "ok" : a.decision === "rejected" ? "danger" : a.decision === "skipped" ? "muted" : "warn"}>{label(a.decision)}</Badge>
                 </div>
               </div>
-              {a.decision === "pending" && decidableStepIds.has(a.id) && (
+              {a.decision === "pending" && frontPending?.id === a.id && iCanDecideFront && (
                 <form action={decideRequisitionAction} className="flex flex-wrap items-end gap-2 mt-2 pl-3" style={{ borderLeft: "2px solid var(--border)" }}>
                   <input type="hidden" name="projectId" value={id} />
                   <input type="hidden" name="reqId" value={req.id} />
@@ -279,14 +287,16 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
               )}
             </div>
           ))}
-          {decidableStepIds.size > 0 && !myHasSignature && (
+          {iCanDecideFront && !myHasSignature && (
             <p className="text-xs pt-2" style={{ color: "var(--warn)" }}>
               You have no signature on file. <Link href="/profile" className="underline">Add one</Link> to sign on approval.
             </p>
           )}
-          {anyPending && inFlight && decidableStepIds.size === 0 && (
+          {anyPending && inFlight && !iCanDecideFront && frontPending && (
             <p className="text-xs pt-2" style={{ color: "var(--muted)" }}>
-              The pending steps above are for other roles — the finance step is signed by the finance admin and the PM/PI step by the PI, Co-PI or project manager (organisation admins can sign any step).
+              {req.requesterId === access.user.id && canApprove
+                ? "You raised this requisition, so someone else must approve it (segregation of duties)."
+                : <>Next to sign: <strong>{ROLE_LABEL[frontPending.role] ?? label(frontPending.role)}</strong> — {frontPending.role === "pm" ? "the PI, Co-PI or project manager" : frontPending.role === "finance_admin" ? "the finance admin" : "a designated approver"} (or an organisation admin). Steps are signed in order.</>}
             </p>
           )}
         </div>
@@ -319,9 +329,34 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
         </div>
       </div>
 
+      {/* Direct disbursement — finance releases the approved funds */}
+      {(access.isOrgAdmin || access.role === "finance_admin") && ["approved", "partially_funded"].includes(req.status) && remaining > 0 && (
+        <div>
+          <SectionTitle>Disburse funds</SectionTitle>
+          <div className="card p-4">
+            <p className="text-xs mb-3" style={{ color: "var(--muted)" }}>
+              Record that the approved funds have been paid out. This immediately records the expenditure,
+              posts it to the ledger and deducts it from budget line{" "}
+              <strong>{reqLine ? `${reqLine.code} — ${reqLine.description}` : req.budgetLine ?? "(none linked)"}</strong>.
+              Attach proof of payment if you have it (bank slip, MoMo screenshot, signed receipt).
+            </p>
+            <form action={disburseFundsAction} className="grid sm:grid-cols-4 gap-3 items-end">
+              <input type="hidden" name="projectId" value={id} />
+              <input type="hidden" name="reqId" value={req.id} />
+              <Field label={`Amount (≤ ${money(remaining, c)})`}>
+                <input type="number" step="any" min={0} max={remaining} name="amount" required defaultValue={remaining} className="input" />
+              </Field>
+              <Field label="Payment reference"><input name="reference" className="input" placeholder="Txn / transfer no." /></Field>
+              <Field label="Evidence (optional)"><input type="file" name="evidence" className="input" /></Field>
+              <button className="btn btn-primary" type="submit">Mark funds disbursed</button>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Disbursement vouchers */}
       <div>
-        <SectionTitle>Disbursement — payment vouchers</SectionTitle>
+        <SectionTitle>Payment vouchers (optional formal trail)</SectionTitle>
         <div className="card p-4">
           {sp.voucher === "ok" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Voucher prepared. It now needs to be checked, then approved before payment is made.</p>}
           {sp.voucher === "checked" && <p className="text-sm mb-2" style={{ color: "var(--ok)" }}>Voucher checked. It now awaits final approval to release payment.</p>}
@@ -426,8 +461,9 @@ export default async function RequisitionDetailPage({ params, searchParams }: {
         </div>
       </div>
 
-      {/* Retirement / accountability */}
-      {(req.status === "disbursed" || req.status === "partially_funded") && canDisburse && (
+      {/* Retirement / accountability — only while part of the advance is still unaccounted
+          (a direct disbursement records its expenditure immediately, so nothing remains) */}
+      {(req.status === "disbursed" || req.status === "partially_funded") && canDisburse && req.disbursedAmount > req.accountedAmount + 0.001 && (
         <div>
           <SectionTitle>Retire / account for funds</SectionTitle>
           <div className="card p-4">

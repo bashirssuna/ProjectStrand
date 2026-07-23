@@ -902,12 +902,76 @@ export async function decideRequisitionAction(formData: FormData) {
       signatureId: decision === "approved" && sig ? sig.id : undefined,
     });
   } catch (err) {
+    if (err instanceof Error && /own requisition/.test(err.message))
+      redirect(`/projects/${projectId}/requisitions/${reqId}?err=selfapprove`);
+    if (err instanceof Error && /must be decided first/.test(err.message))
+      redirect(`/projects/${projectId}/requisitions/${reqId}?err=order`);
     if (err instanceof Error && /already decided/.test(err.message))
       redirect(`/projects/${projectId}/requisitions/${reqId}?err=raced`);
     throw err;
   }
   revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
   revalidatePath(`/projects/${projectId}/requisitions`);
+}
+
+// Finance records that the approved funds have actually GONE OUT — this is the
+// moment the expenditure is created, posted to the ledger and deducted from the
+// requisition's budget line (approval alone only reserves the amount). Optional
+// proof of payment is filed with the requisition's supporting documents.
+export async function disburseFundsAction(formData: FormData) {
+  const user = await requireUser();
+  const projectId = String(formData.get("projectId"));
+  const reqId = String(formData.get("reqId"));
+  const access = await getProjectAccess(projectId);
+  if (!(access.isOrgAdmin || access.role === "finance_admin"))
+    throw new Error("FORBIDDEN — only the finance admin records disbursements");
+  await assertReqInProject(reqId, projectId);
+  const r = await one<{ number: string; amount: number; direct: number; voucherPaid: number; budgetLineId: string | null; status: string; payee: string | null }>(
+    `SELECT number, amount::float AS amount,
+            COALESCE(direct_disbursed_amount,0)::float AS direct,
+            COALESCE((SELECT SUM(pv.amount) FROM payment_voucher pv WHERE pv.requisition_id=requisition.id AND pv.status='approved'),0)::float AS "voucherPaid",
+            budget_line_id AS "budgetLineId", status, payee FROM requisition WHERE id=$1`, [reqId]);
+  if (!r) redirect(`/projects/${projectId}/requisitions`);
+  if (!["approved", "partially_funded"].includes(r!.status)) redirect(`/projects/${projectId}/requisitions/${reqId}?disb=stage`);
+  if (!r!.budgetLineId) redirect(`/projects/${projectId}/requisitions/${reqId}?disb=noline`);
+  const amount = Number(formData.get("amount") || 0);
+  // Remaining is what neither trail (direct payouts + approved vouchers) has covered.
+  const paidSoFar = Math.round((r!.direct + r!.voucherPaid) * 100) / 100;
+  const remaining = Math.round((r!.amount - paidSoFar) * 100) / 100;
+  if (!(amount > 0) || amount > remaining + 0.001) redirect(`/projects/${projectId}/requisitions/${reqId}?disb=amount`);
+  const reference = String(formData.get("reference") || "").trim() || r!.number;
+
+  const newDirect = Math.round((r!.direct + amount) * 100) / 100;
+  const newTotal = Math.round((newDirect + r!.voucherPaid) * 100) / 100;
+  const fullyFunded = newTotal >= r!.amount - 0.001;
+  await q(`UPDATE requisition
+           SET direct_disbursed_amount=$2, disbursed_amount=$3, disbursement_ref=$4, status=$5,
+               disbursed_on=COALESCE(disbursed_on, now()),
+               accountability_due=COALESCE(accountability_due, (CURRENT_DATE + INTERVAL '60 days')::date),
+               updated_at=now()
+           WHERE id=$1`,
+    [reqId, newDirect, newTotal, reference, fullyFunded ? "disbursed" : "partially_funded"]);
+  // Book the payout: expenditure + ledger + budget-line deduction + commitment release.
+  await recordExpenditureForRequisition({ reqId, userId: user.id, amount, reference, payee: r!.payee ?? undefined, mode: "disbursement" });
+  // recordExpenditureForRequisition marks a fully-accounted advance 'retired';
+  // keep the user-facing funded state instead (evidence-backed direct payout).
+  await q(`UPDATE requisition SET status=$2, updated_at=now() WHERE id=$1`, [reqId, fullyFunded ? "disbursed" : "partially_funded"]);
+
+  const file = formData.get("evidence") as File | null;
+  if (file && file.size > 0) {
+    const buf = Buffer.from(await file.arrayBuffer());
+    const aid = id("ratt");
+    const key = await saveUpload(aid, file.name, buf);
+    await q(`INSERT INTO requisition_attachment (id, requisition_id, name, storage_key, mime_type, size_bytes, uploaded_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [aid, reqId, `Payment evidence — ${file.name}`, key, mimeFor(file.name), buf.length, user.id]);
+  }
+  await writeAudit({ userId: user.id, action: "update", entity: "requisition", entityId: reqId,
+    after: { disbursed: amount, reference, evidence: file?.name ?? null }, meta: { number: r!.number, directDisbursement: true } });
+  revalidatePath(`/projects/${projectId}/requisitions/${reqId}`);
+  revalidatePath(`/projects/${projectId}/budget`);
+  revalidatePath(`/projects/${projectId}/spending`);
+  redirect(`/projects/${projectId}/requisitions/${reqId}?disb=ok`);
 }
 
 // Free a decided approval step so the right person can sign it (org admins
@@ -2347,9 +2411,14 @@ export async function recordPayeeSignatureAction(formData: FormData) {
 
 // Recomputes a requisition's disbursed amount + status from APPROVED vouchers only.
 async function recomputeDisbursement(reqId: string) {
-  const req = await one<{ amount: number }>(`SELECT amount FROM requisition WHERE id=$1`, [reqId]);
-  const tot = (await one<{ s: number }>(`SELECT COALESCE(SUM(amount),0) s FROM payment_voucher WHERE requisition_id=$1 AND status='approved'`, [reqId]))?.s ?? 0;
-  const status = tot <= 0 ? "approved" : req && tot >= req.amount ? "disbursed" : "partially_funded";
+  // Two payment trails can coexist: approved vouchers AND direct disbursements
+  // (direct_disbursed_amount). disbursed_amount is always their SUM — never let
+  // one trail overwrite the other's money.
+  const req = await one<{ amount: number; direct: number }>(
+    `SELECT amount, COALESCE(direct_disbursed_amount,0)::float AS direct FROM requisition WHERE id=$1`, [reqId]);
+  const vouchers = (await one<{ s: number }>(`SELECT COALESCE(SUM(amount),0) s FROM payment_voucher WHERE requisition_id=$1 AND status='approved'`, [reqId]))?.s ?? 0;
+  const tot = Math.round((vouchers + (req?.direct ?? 0)) * 100) / 100;
+  const status = tot <= 0 ? "approved" : req && tot >= req.amount - 0.001 ? "disbursed" : "partially_funded";
   if (tot > 0) {
     // First actual disbursement starts the 60-day accountability clock.
     await q(`UPDATE requisition SET disbursed_amount=$2, status=$3,
@@ -2407,8 +2476,8 @@ export async function approveVoucherAction(formData: FormData) {
   // ledger (debit expense, credit cash) so it flows into spending, the financial
   // statements and audit. Idempotent per voucher via expenditure_id; only when the
   // requisition has a budget line linked.
-  const ded = await one<{ reqLine: string | null; amount: number; number: string; payee: string; expenditureId: string | null }>(
-    `SELECT r.budget_line_id AS "reqLine", pv.amount::float AS amount, pv.number, pv.payee, pv.expenditure_id AS "expenditureId"
+  const ded = await one<{ reqLine: string | null; amount: number; number: string; payee: string; expenditureId: string | null; reqNumber: string }>(
+    `SELECT r.budget_line_id AS "reqLine", pv.amount::float AS amount, pv.number, pv.payee, pv.expenditure_id AS "expenditureId", r.number AS "reqNumber"
        FROM payment_voucher pv JOIN requisition r ON r.id=pv.requisition_id WHERE pv.id=$1`, [vid]);
   if (ded?.reqLine && !ded.expenditureId && ded.amount > 0) {
     const orgRow = await one<{ orgId: string }>(`SELECT org_id AS "orgId" FROM project WHERE id=$1`, [projectId]);
@@ -2418,6 +2487,13 @@ export async function approveVoucherAction(formData: FormData) {
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,$9)`,
       [expId, projectId, ded.reqLine, reqId, ded.amount, today, ded.number, ded.payee, user.id]);
     await q(`UPDATE payment_voucher SET expenditure_id=$2, budget_line_id=$3 WHERE id=$1`, [vid, expId, ded.reqLine]);
+    // Release the approval reservation by the amount now actually spent — the
+    // budget line must never carry BOTH the commitment and the expenditure for
+    // the same money (remaining = planned − actual − committed).
+    await q(`UPDATE commitment SET amount = amount - $2 WHERE budget_line_id=$1 AND note LIKE $3`,
+      [ded.reqLine, ded.amount, `Commitment for ${ded.reqNumber}%`]);
+    await q(`DELETE FROM commitment WHERE budget_line_id=$1 AND note LIKE $2 AND amount <= 0.001`,
+      [ded.reqLine, `Commitment for ${ded.reqNumber}%`]);
     if (orgRow) await postExpenditureToLedger({ orgId: orgRow.orgId, projectId, expenditureId: expId, amount: ded.amount, date: today, reference: ded.number, payee: ded.payee, postedBy: user.id, postedByName: user.name });
     await writeAudit({ orgId: orgRow?.orgId, userId: user.id, action: "create", entity: "expenditure", entityId: expId, after: { amount: ded.amount, fromVoucher: ded.number, requisition: reqId, budgetLineId: ded.reqLine } });
     await evaluateProject(projectId);

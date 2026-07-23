@@ -2296,6 +2296,41 @@ UPDATE requisition_approval ra SET decision='skipped', decided_at=now()
   FROM requisition r
  WHERE r.id = ra.requisition_id AND r.status = 'rejected' AND ra.decision = 'pending';
 
+-- The requisition chain now runs PI/PM approval FIRST, then the finance admin
+-- (finance signs last and releases the funds). Rewrite default-shaped matrices
+-- (either historical shape) to the new order, flip fully-pending 2-step chains,
+-- and correct their status. Idempotent; custom matrices untouched.
+UPDATE approval_matrix
+   SET steps = '[{"step":1,"role":"pm","thresholdMin":0},{"step":2,"role":"finance_admin","thresholdMin":0}]'
+ WHERE doc_type = 'requisition' AND steps IN (
+   '[{"step":1,"role":"finance_admin","thresholdMin":0},{"step":2,"role":"pm","thresholdMin":0}]',
+   '[{"step":1,"role":"finance_admin","thresholdMin":0},{"step":2,"role":"pm","thresholdMin":0},{"step":3,"role":"admin","thresholdMin":5000}]'
+ );
+UPDATE requisition_approval SET step = CASE role WHEN 'pm' THEN 1 WHEN 'finance_admin' THEN 2 ELSE step END
+ WHERE requisition_id IN (
+   SELECT r.id FROM requisition r
+   WHERE r.status IN ('finance_review','pm_approval')
+     AND NOT EXISTS (SELECT 1 FROM requisition_approval x WHERE x.requisition_id=r.id AND x.decision<>'pending')
+     AND (SELECT COUNT(*) FROM requisition_approval x WHERE x.requisition_id=r.id) = 2
+     AND EXISTS (SELECT 1 FROM requisition_approval x WHERE x.requisition_id=r.id AND x.role='pm')
+     AND EXISTS (SELECT 1 FROM requisition_approval x WHERE x.requisition_id=r.id AND x.role='finance_admin')
+ );
+UPDATE requisition r SET status='pm_approval', updated_at=now()
+ WHERE r.status='finance_review'
+   AND NOT EXISTS (SELECT 1 FROM requisition_approval x WHERE x.requisition_id=r.id AND x.decision<>'pending')
+   AND EXISTS (SELECT 1 FROM requisition_approval x WHERE x.requisition_id=r.id AND x.role='pm' AND x.step=1 AND x.decision='pending');
+
+-- Direct disbursements and approved payment vouchers are SEPARATE payment
+-- trails; disbursed_amount is always their sum. direct_disbursed_amount tracks
+-- the direct trail so voucher recomputes can never erase direct payouts.
+ALTER TABLE requisition ADD COLUMN IF NOT EXISTS direct_disbursed_amount numeric(18,2) NOT NULL DEFAULT 0;
+UPDATE requisition r SET direct_disbursed_amount =
+  GREATEST(COALESCE(r.disbursed_amount,0)
+    - COALESCE((SELECT SUM(pv.amount) FROM payment_voucher pv WHERE pv.requisition_id=r.id AND pv.status='approved'),0), 0)
+ WHERE COALESCE(r.direct_disbursed_amount,0) = 0
+   AND COALESCE(r.disbursed_amount,0) >
+       COALESCE((SELECT SUM(pv.amount) FROM payment_voucher pv WHERE pv.requisition_id=r.id AND pv.status='approved'),0);
+
 -- Organisation receiving-bank details, shown on invoices ("pay to").
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS bank_details text;
 

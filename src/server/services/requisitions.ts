@@ -10,13 +10,13 @@ const PHASE: Record<Step["role"], string> = {
   finance_admin: "finance_review", pm: "pm_approval", admin: "admin_approval",
 };
 
-// Default approval chain: Finance review, then PM / PI sign-off. Organisations
-// that want an extra admin layer can define their own approval_matrix row
-// (doc_type 'requisition') with an 'admin' step; it is no longer part of the
-// default because the two named approvers are the finance admin and the PI.
+// Default approval chain: the request goes to the PI / PM first, and the
+// FINANCE ADMIN signs last — finance releases the funds right after their own
+// approval. Organisations wanting an extra admin layer can define their own
+// approval_matrix row (doc_type 'requisition') with an 'admin' step.
 const DEFAULT_MATRIX: Step[] = [
-  { step: 1, role: "finance_admin", thresholdMin: 0 },
-  { step: 2, role: "pm", thresholdMin: 0 },
+  { step: 1, role: "pm", thresholdMin: 0 },
+  { step: 2, role: "finance_admin", thresholdMin: 0 },
 ];
 
 async function matrixFor(projectId: string): Promise<Step[]> {
@@ -110,13 +110,11 @@ async function notifyApprovers(projectId: string, role: Step["role"], reqId: str
 }
 
 // Decides ONE SPECIFIC approval step — the caller signs the row belonging to
-// their own role, never "whatever is earliest" (an org admin who is also the
-// PI must land their signature on the PM/PI row, not silently consume the
-// finance slot). Steps can be signed out of order; the requisition's status
-// always reflects the EARLIEST still-pending step, and it becomes 'approved'
-// only when every step is decided. Requesters MAY decide their own
-// requisitions (organisation policy); payment vouchers still require three
-// distinct people before money moves.
+// their own role, so a signature always lands on the signer's position (an org
+// admin who is also the PI signs the PM/PI row, never silently consumes the
+// finance slot). Steps are decided strictly IN ORDER: request → PI/PM
+// approval → finance admin. The requester can never decide their own
+// requisition (segregation of duties, mirrors refunds).
 export async function decideRequisition(input: {
   reqId: string; stepId: string; approverId: string; decision: "approved" | "rejected";
   comment?: string; signatureId?: string;
@@ -127,6 +125,8 @@ export async function decideRequisition(input: {
     [input.reqId]
   );
   if (!req) throw new Error("Requisition not found");
+  if (req.requestedById && req.requestedById === input.approverId)
+    throw new Error("You cannot approve your own requisition");
   const target = await one<{ id: string; step: number; role: Step["role"] }>(
     `SELECT id, step, role FROM requisition_approval WHERE id=$1 AND requisition_id=$2`,
     [input.stepId, input.reqId]
@@ -136,6 +136,8 @@ export async function decideRequisition(input: {
     `SELECT id FROM requisition_approval WHERE requisition_id=$1 AND decision='pending' ORDER BY step ASC LIMIT 1`,
     [input.reqId]
   );
+  if (front && front.id !== target.id)
+    throw new Error("Earlier steps must be decided first");
 
   // Conditional single-shot write: if a concurrent request decided this row
   // first, zero rows come back and we bail instead of double-deciding.
@@ -243,6 +245,11 @@ export async function disburse(reqId: string, userId: string, amount: number, re
 // reserving commitment, then re-run the anomaly engine.
 export async function recordExpenditureForRequisition(input: {
   reqId: string; userId: string; amount: number; reference: string; payee?: string; date?: string; approved?: boolean;
+  // 'accountability' (default): retiring an advance — skips the expenditure when
+  // vouchers already deducted the budget line. 'disbursement': booking a brand-new
+  // DIRECT payout — must ALWAYS create its expenditure, even if some other part of
+  // this requisition was previously paid by voucher.
+  mode?: "accountability" | "disbursement";
 }): Promise<string> {
   const req = await one<{ projectId: string; budgetLineId: string | null; number: string }>(
     `SELECT project_id AS "projectId", budget_line_id AS "budgetLineId", number FROM requisition WHERE id=$1`,
@@ -255,7 +262,7 @@ export async function recordExpenditureForRequisition(input: {
   // records that the advance has been accounted for and releases any remaining commitment.
   // Legacy requisitions disbursed without voucher-linked expenditures keep the original
   // behaviour (the budget line is deducted here).
-  const deductedAtDisbursement = ((await one<{ c: number }>(
+  const deductedAtDisbursement = input.mode !== "disbursement" && ((await one<{ c: number }>(
     `SELECT COUNT(*)::int c FROM payment_voucher WHERE requisition_id=$1 AND expenditure_id IS NOT NULL`, [input.reqId]))?.c ?? 0) > 0;
   let eid = "";
   if (!deductedAtDisbursement) {

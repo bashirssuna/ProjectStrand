@@ -2384,6 +2384,19 @@ UPDATE requisition r SET status='pi_approval', updated_at=now()
    AND NOT EXISTS (SELECT 1 FROM requisition_approval x WHERE x.requisition_id=r.id AND x.decision<>'pending')
    AND (SELECT x.role FROM requisition_approval x WHERE x.requisition_id=r.id AND x.decision='pending' ORDER BY x.step ASC LIMIT 1) = 'pi';
 
+-- Finish the PM/PI split for ALL legacy chains: before the split, one merged
+-- 'pm' step meant "PM or PI" and was usually signed by the PI. Any chain that
+-- has no separate 'pi' row is such a legacy chain — reclassify its 'pm' rows
+-- (signed ones included) as the PI approval they in fact were, so old records
+-- and printouts read correctly. New chains always carry an explicit 'pi' row
+-- and are untouched. Idempotent.
+UPDATE requisition_approval ra SET role='pi'
+ WHERE ra.role='pm'
+   AND NOT EXISTS (SELECT 1 FROM requisition_approval x WHERE x.requisition_id=ra.requisition_id AND x.role='pi');
+UPDATE requisition r SET status='pi_approval', updated_at=now()
+ WHERE r.status='pm_approval'
+   AND (SELECT x.role FROM requisition_approval x WHERE x.requisition_id=r.id AND x.decision='pending' ORDER BY x.step ASC LIMIT 1) = 'pi';
+
 -- Organisation receiving-bank details, shown on invoices ("pay to").
 ALTER TABLE organization ADD COLUMN IF NOT EXISTS bank_details text;
 
